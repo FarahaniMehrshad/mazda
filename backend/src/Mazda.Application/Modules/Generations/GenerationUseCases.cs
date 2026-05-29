@@ -1,5 +1,6 @@
 using FluentValidation;
 using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 using Mazda.Application.Common.Abstractions;
 using Mazda.Domain.Common;
 using Mazda.Domain.Modules.Generations;
@@ -17,6 +18,11 @@ public record GenerationDto(
     GenerationStatus Status,
     string? FailureReason,
     int TokensUsed,
+    ExecutionStatus ExecutionStatus,
+    int? ExitCode,
+    string? ExecutionLog,
+    DateTime? ExecutionStartedAt,
+    DateTime? ExecutionEndedAt,
     DateTime CreatedAt,
     DateTime UpdatedAt);
 
@@ -28,6 +34,8 @@ internal static class GenerationMapper
         g.TestPrompt, g.TestScript,
         g.FinalScript,
         g.Status, g.FailureReason, g.TokensUsed,
+        g.ExecutionStatus, g.ExitCode, g.ExecutionLog,
+        g.ExecutionStartedAt, g.ExecutionEndedAt,
         g.CreatedAt, g.UpdatedAt);
 }
 
@@ -255,6 +263,72 @@ public class GetGenerationHandler(IGenerationRepository repo, ICurrentUser me)
         return g is null
             ? Result.Failure<GenerationDto>(Error.NotFound("Generation"))
             : Result.Success(g.ToDto());
+    }
+}
+
+// ── Execute the final script ──────────────────────────────────────
+public record StartExecutionCommand(Guid GenerationId) : IRequest<Result<GenerationDto>>;
+
+public class StartExecutionHandler(
+    IGenerationRepository generations,
+    IScriptRunner runner,
+    IExecutionRegistry registry,
+    ICurrentUser me,
+    IUnitOfWork uow,
+    IServiceScopeFactory scopeFactory) : IRequestHandler<StartExecutionCommand, Result<GenerationDto>>
+{
+    public async Task<Result<GenerationDto>> Handle(StartExecutionCommand cmd, CancellationToken requestCt)
+    {
+        if (me.UserId is null) return Result.Failure<GenerationDto>(Error.Validation("Not authenticated."));
+
+        var gen = await generations.FindByIdAsync(cmd.GenerationId, me.UserId.Value, CancellationToken.None);
+        if (gen is null) return Result.Failure<GenerationDto>(Error.NotFound("Generation"));
+        if (string.IsNullOrWhiteSpace(gen.FinalScript))
+            return Result.Failure<GenerationDto>(Error.Validation("Final script missing — merge first."));
+        if (registry.IsRunning(gen.Id))
+            return Result.Failure<GenerationDto>(Error.Validation("This run is already executing."));
+
+        gen.MarkExecutionStarted();
+        await uow.SaveChangesAsync(CancellationToken.None);
+        // Wipe any state from a previous run so old log lines do not leak into
+        // the new SSE stream and `Append` is re-enabled for this generation.
+        registry.Reset(gen.Id);
+        var dto = gen.ToDto();
+        var script = gen.FinalScript!;
+        var genId = gen.Id;
+        var ownerId = me.UserId.Value;
+
+        // Fire-and-forget — the runner streams into IExecutionRegistry. The SSE
+        // endpoint reads from there; we persist the terminal state in a new scope
+        // because the MediatR request scope dies as soon as we return.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var result = await runner.RunAsync(genId, script, CancellationToken.None);
+                using var scope = scopeFactory.CreateScope();
+                var repo = scope.ServiceProvider.GetRequiredService<IGenerationRepository>();
+                var sUow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                var fresh = await repo.FindByIdAsync(genId, ownerId, CancellationToken.None);
+                if (fresh is null) return;
+                var terminal = result.Kind switch
+                {
+                    RunnerExitKind.Passed     => Domain.Modules.Generations.ExecutionStatus.Passed,
+                    RunnerExitKind.FailedTest => Domain.Modules.Generations.ExecutionStatus.FailedTest,
+                    RunnerExitKind.Cancelled  => Domain.Modules.Generations.ExecutionStatus.Cancelled,
+                    _                         => Domain.Modules.Generations.ExecutionStatus.Errored,
+                };
+                fresh.MarkExecutionFinished(terminal, result.ExitCode, result.FullLog);
+                await sUow.SaveChangesAsync(CancellationToken.None);
+            }
+            catch
+            {
+                // Swallow — the registry already captured the log. A health monitor
+                // could surface this if we add one.
+            }
+        });
+
+        return Result.Success(dto);
     }
 }
 

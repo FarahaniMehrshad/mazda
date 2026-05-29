@@ -82,6 +82,11 @@ internal class GenerationConfig : IEntityTypeConfiguration<Generation>
         b.Property(x => x.TestScript).HasColumnName("test_script");
         b.Property(x => x.FinalScript).HasColumnName("final_script");
         b.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
+        b.Property(x => x.ExecutionStatus).HasColumnName("execution_status").HasConversion<string>().HasMaxLength(20);
+        b.Property(x => x.ExecutionLog).HasColumnName("execution_log");
+        b.Property(x => x.ExitCode).HasColumnName("exit_code");
+        b.Property(x => x.ExecutionStartedAt).HasColumnName("execution_started_at");
+        b.Property(x => x.ExecutionEndedAt).HasColumnName("execution_ended_at");
         b.HasIndex(x => new { x.OwnerId, x.CreatedAt });
     }
 }

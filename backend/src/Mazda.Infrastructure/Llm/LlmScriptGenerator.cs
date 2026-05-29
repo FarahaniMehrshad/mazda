@@ -59,7 +59,16 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
 
             export const test = base.extend<Fixtures>({
               browser: async ({}, use) => {
-                const browser = await chromium.connectOverCDP('<CDP_ENDPOINT>');
+                // Chrome's DevTools port verifies the Host: header (CVE-mitigation
+                // hardening since v111). If the user's CDP endpoint is anything
+                // other than localhost/127.0.0.1 — for example when the test runs
+                // inside a container reaching the host via host.docker.internal —
+                // the Host header must still be 'localhost:<port>' to pass the
+                // check. Always use the object form so the header can be set.
+                const browser = await chromium.connectOverCDP({
+                  endpointURL: '<CDP_ENDPOINT>',
+                  headers: { Host: 'localhost:<CDP_PORT>' },
+                });
                 await use(browser);
                 // Do NOT close — the browser belongs to the user.
               },
@@ -90,6 +99,9 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         Substitution rules for Pattern A:
           • Replace `<CDP_ENDPOINT>` with the exact endpoint the user specified
             (`http://127.0.0.1:9222` or `http://localhost:9222`, etc.).
+          • Replace `<CDP_PORT>` with the port number from the endpoint.
+            The `headers.Host` line is REQUIRED — do not omit it. Even if the
+            endpoint is already localhost, the line is harmless.
           • Replace `<TARGET_URL_PREFIX>` with the prefix of the URL the user said
             is already open. Use the LONGEST stable prefix that still uniquely
             identifies the tab (strip volatile query params like `id=...` — match

@@ -152,13 +152,20 @@ export function MergePage() {
 
           <div style={{ display: "flex", gap: 10 }}>
             <BtnGhost onClick={() => navigate(`/runs/${id}/test`)}>Back to test</BtnGhost>
-            <BtnPrimary
-              full
+            <BtnGhost
               icon={Icon.download()}
               onClick={download}
               disabled={!gen.finalScript}
             >
               Download
+            </BtnGhost>
+            <BtnPrimary
+              full
+              icon={Icon.arrow()}
+              onClick={() => navigate(`/runs/${id}/execute`)}
+              disabled={!gen.finalScript?.trim()}
+            >
+              Continue to execution
             </BtnPrimary>
           </div>
         </div>

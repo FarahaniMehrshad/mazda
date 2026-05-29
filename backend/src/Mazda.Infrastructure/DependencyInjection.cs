@@ -32,6 +32,10 @@ public static class DependencyInjection
         services.AddSingleton<IComponentAnalyzer, LlmComponentAnalyzer>();
         services.AddSingleton<IScriptGenerator, LlmScriptGenerator>();
 
+        // Script execution (Playwright via Node inside the API container).
+        services.AddSingleton<IExecutionRegistry, Runner.InMemoryExecutionRegistry>();
+        services.AddSingleton<IScriptRunner, Runner.LocalProcessScriptRunner>();
+
         return services;
     }
 }

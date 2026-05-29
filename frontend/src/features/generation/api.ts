@@ -19,6 +19,8 @@ export const generationApi = {
     api.post<GenerationDto>(`/api/generations/${id}/merge`, {}),
   saveFinalScript: (id: string, script: string) =>
     api.put<GenerationDto>(`/api/generations/${id}/final-script`, { script }),
+  execute: (id: string) =>
+    api.post<GenerationDto>(`/api/generations/${id}/execute`, {}),
 };
 
 export function useRecentGenerations(take = 20) {
@@ -100,6 +102,14 @@ export function useSaveFinalScript() {
   return useMutation({
     mutationFn: ({ id, script }: { id: string; script: string }) =>
       generationApi.saveFinalScript(id, script),
+    onSuccess: invalidateOnSuccess(qc),
+  });
+}
+
+export function useExecuteGeneration() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => generationApi.execute(id),
     onSuccess: invalidateOnSuccess(qc),
   });
 }

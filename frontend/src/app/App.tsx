@@ -12,6 +12,7 @@ import { NewRunPage } from "@/features/generation/NewRunPage";
 import { SetupPage } from "@/features/generation/SetupPage";
 import { TestPromptPage } from "@/features/generation/TestPromptPage";
 import { MergePage } from "@/features/generation/MergePage";
+import { ExecutionPage } from "@/features/generation/ExecutionPage";
 import { RunsPage } from "@/features/generation/RunsPage";
 
 const qc = new QueryClient({
@@ -104,10 +105,18 @@ export function App() {
             }
           />
           <Route
+            path="/runs/:id/execute"
+            element={
+              <RequireAuth>
+                <ExecutionPage />
+              </RequireAuth>
+            }
+          />
+          <Route
             path="/runs/:id"
             element={
               <RequireAuth>
-                <MergePage />
+                <ExecutionPage />
               </RequireAuth>
             }
           />

@@ -33,6 +33,10 @@ services:
       Llm__GeneratorModel: "${LLM_GENERATOR_MODEL:-gpt-4o}"
       Cors__AllowedOrigin: "http://localhost:5173"
       ASPNETCORE_ENVIRONMENT: "Development"
+    extra_hosts:
+      # Lets scripts inside the container reach the host (e.g. Chrome on 9222).
+      # The runner auto-rewrites 127.0.0.1/localhost → host.docker.internal.
+      - "host.docker.internal:host-gateway"
     ports:
       - "5080:8080"
 

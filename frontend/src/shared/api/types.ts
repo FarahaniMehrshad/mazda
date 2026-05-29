@@ -24,6 +24,7 @@ export interface SignatureDto {
 }
 
 export type GenerationStatus = "Pending" | "Generating" | "Ready" | "Failed";
+export type ExecutionStatus = "Idle" | "Running" | "Passed" | "FailedTest" | "Errored" | "Cancelled";
 
 export interface GenerationDto {
   id: string;
@@ -36,6 +37,11 @@ export interface GenerationDto {
   status: GenerationStatus;
   failureReason: string | null;
   tokensUsed: number;
+  executionStatus: ExecutionStatus;
+  exitCode: number | null;
+  executionLog: string | null;
+  executionStartedAt: string | null;
+  executionEndedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }

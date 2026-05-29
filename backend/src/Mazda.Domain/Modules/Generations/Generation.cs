@@ -4,6 +4,8 @@ namespace Mazda.Domain.Modules.Generations;
 
 public enum GenerationStatus { Pending, Generating, Ready, Failed }
 
+public enum ExecutionStatus { Idle, Running, Passed, FailedTest, Errored, Cancelled }
+
 /// <summary>
 /// A multi-step request to turn (Signature + setup instructions + test prompt) into
 /// a single Playwright .spec.ts file. The user drives the wizard:
@@ -28,6 +30,12 @@ public class Generation : Entity
     public string? FailureReason { get; private set; }
     public int TokensUsed { get; private set; }
 
+    public ExecutionStatus ExecutionStatus { get; private set; } = ExecutionStatus.Idle;
+    public string? ExecutionLog { get; private set; }
+    public int? ExitCode { get; private set; }
+    public DateTime? ExecutionStartedAt { get; private set; }
+    public DateTime? ExecutionEndedAt { get; private set; }
+
     private Generation() { }
 
     public static Generation Create(Guid ownerId, Guid signatureId)
@@ -51,4 +59,25 @@ public class Generation : Entity
     public void MarkGenerating() { Status = GenerationStatus.Generating; FailureReason = null; Touch(); }
     public void MarkReady(int additionalTokens = 0) { Status = GenerationStatus.Ready; TokensUsed += additionalTokens; Touch(); }
     public void MarkFailed(string reason) { Status = GenerationStatus.Failed; FailureReason = reason; Touch(); }
+
+    public void MarkExecutionStarted()
+    {
+        ExecutionStatus = ExecutionStatus.Running;
+        ExecutionLog = string.Empty;
+        ExitCode = null;
+        ExecutionStartedAt = DateTime.UtcNow;
+        ExecutionEndedAt = null;
+        Touch();
+    }
+
+    public void MarkExecutionFinished(ExecutionStatus terminalStatus, int? exitCode, string log)
+    {
+        if (terminalStatus == ExecutionStatus.Running || terminalStatus == ExecutionStatus.Idle)
+            throw new ArgumentException("Terminal status required.", nameof(terminalStatus));
+        ExecutionStatus = terminalStatus;
+        ExitCode = exitCode;
+        ExecutionLog = log;
+        ExecutionEndedAt = DateTime.UtcNow;
+        Touch();
+    }
 }

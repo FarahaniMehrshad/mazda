@@ -133,7 +133,7 @@ export function ScreenShell({ children }: ScreenShellProps) {
 }
 
 interface StepIndicatorProps {
-  step: 1 | 2 | 3 | 4 | 5;
+  step: 1 | 2 | 3 | 4 | 5 | 6;
 }
 
 const STEPS = [
@@ -142,6 +142,7 @@ const STEPS = [
   { n: "03", t: "Setup" },
   { n: "04", t: "Test prompt" },
   { n: "05", t: "Merge & finalize" },
+  { n: "06", t: "Execution" },
 ];
 
 export function StepIndicator({ step }: StepIndicatorProps) {

@@ -1,6 +1,8 @@
+using System.Text;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
+using Mazda.Application.Common.Abstractions;
 using Mazda.Application.Modules.Generations;
 using Mazda.Application.Modules.Identity;
 using Mazda.Application.Modules.Signatures;
@@ -82,6 +84,36 @@ public static class Endpoints
 
         gens.MapPut("/{id:guid}/final-script", async (Guid id, [FromBody] ScriptBody body, ISender s) =>
             (await s.Send(new UpdateScriptCommand(id, ScriptSlot.Final, body.Script))).ToHttp());
+
+        // Wizard step 6 — execution.
+        gens.MapPost("/{id:guid}/execute", async (Guid id, ISender s) =>
+            (await s.Send(new StartExecutionCommand(id))).ToHttp());
+
+        // SSE log stream. Anonymous — the generation id is an unguessable GUID and the
+        // stream is read-only. EventSource cannot send Authorization headers anyway.
+        app.MapGet("/api/generations/{id:guid}/execution/stream",
+            async (Guid id, IExecutionRegistry registry, HttpContext ctx, CancellationToken ct) =>
+            {
+                ctx.Response.Headers.ContentType = "text/event-stream";
+                ctx.Response.Headers.CacheControl = "no-cache";
+                ctx.Response.Headers["X-Accel-Buffering"] = "no";
+                await ctx.Response.Body.FlushAsync(ct);
+
+                await foreach (var line in registry.Subscribe(id, ct))
+                {
+                    // SSE: each event is "data: <payload>\n\n". Encode JSON so newlines
+                    // and ANSI bytes inside the line don't break the framing.
+                    var payload = System.Text.Json.JsonSerializer.Serialize(line);
+                    var bytes = Encoding.UTF8.GetBytes($"data: {payload}\n\n");
+                    await ctx.Response.Body.WriteAsync(bytes, ct);
+                    await ctx.Response.Body.FlushAsync(ct);
+                }
+
+                // Final event lets the client close cleanly.
+                var endBytes = Encoding.UTF8.GetBytes("event: end\ndata: \"\"\n\n");
+                await ctx.Response.Body.WriteAsync(endBytes, ct);
+                await ctx.Response.Body.FlushAsync(ct);
+            }).WithTags("Generations");
     }
 
     public record GenerateSetupBody(string SetupPrompt);

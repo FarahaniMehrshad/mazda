@@ -72,3 +72,49 @@ public interface IComponentAnalyzer
 
 public record AnalyzedElement(string Selector, string ElementType, string Description);
 public record ComponentAnalysisResult(string SuggestedName, string SuggestedType, IReadOnlyList<AnalyzedElement> Elements, int TokensUsed);
+
+// ── Script execution ─────────────────────────────────────────────────
+
+public enum RunnerExitKind { Passed, FailedTest, Errored, Cancelled }
+
+public sealed record RunnerCompletion(RunnerExitKind Kind, int ExitCode, string FullLog);
+
+/// <summary>
+/// In-memory registry of currently running script executions, so the SSE
+/// endpoint can attach to the live log stream of a given generation.
+/// </summary>
+public interface IExecutionRegistry
+{
+    /// <summary>
+    /// Wipe any previous-run state (lines, completed flag, leftover subscribers)
+    /// before a new run starts. Idempotent.
+    /// </summary>
+    void Reset(Guid generationId);
+
+    /// <summary>Push a new line into the live log buffer for an execution.</summary>
+    void Append(Guid generationId, string line);
+
+    /// <summary>Mark a run as completed (terminal state).</summary>
+    void Complete(Guid generationId, RunnerCompletion result);
+
+    /// <summary>Snapshot of every log line emitted so far, in order.</summary>
+    IReadOnlyList<string> GetLog(Guid generationId);
+
+    /// <summary>
+    /// Subscribe for live updates. Returns a channel that yields each new line
+    /// as it is appended; the channel completes when the run finishes.
+    /// </summary>
+    IAsyncEnumerable<string> Subscribe(Guid generationId, CancellationToken ct);
+
+    bool IsRunning(Guid generationId);
+}
+
+/// <summary>
+/// Outbound port for executing a Playwright script on the host that's running
+/// the API. The runner spawns a child process, streams lines into the
+/// IExecutionRegistry, and returns a terminal result.
+/// </summary>
+public interface IScriptRunner
+{
+    Task<RunnerCompletion> RunAsync(Guid generationId, string script, CancellationToken ct = default);
+}
