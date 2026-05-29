@@ -1,0 +1,185 @@
+/* ─────────────────────────────────────────────────────────────
+   Mazda · Design tokens
+   Ancient orange, glass morphism, dark theme
+   ───────────────────────────────────────────────────────────── */
+
+:root {
+  /* Neutrals — warm, near-black */
+  --bg-0:        #07050a;          /* base canvas behind everything */
+  --bg-1:        #0d0907;          /* surface bg */
+  --bg-2:        #140d09;          /* raised */
+  --bg-3:        #1c130d;          /* hover / pressed */
+
+  /* Ancient orange palette */
+  --orange-50:   #fde7d6;
+  --orange-100:  #f7c69a;
+  --orange-200:  #e88a4c;
+  --orange-400:  #c2410c;          /* PRIMARY — ancient orange */
+  --orange-500:  #a8350a;
+  --orange-600:  #7a2806;
+  --orange-700:  #4a1804;
+
+  /* Glass surfaces */
+  --glass-1:     rgba(255, 236, 214, 0.035);
+  --glass-2:     rgba(255, 236, 214, 0.055);
+  --glass-3:     rgba(255, 236, 214, 0.085);
+  --glass-hover: rgba(255, 236, 214, 0.10);
+  --glass-stroke:rgba(255, 200, 160, 0.10);
+  --glass-stroke-2:rgba(255, 200, 160, 0.18);
+
+  /* Text */
+  --text-1:      rgba(255, 236, 220, 0.96);
+  --text-2:      rgba(255, 222, 198, 0.66);
+  --text-3:      rgba(255, 215, 188, 0.42);
+  --text-4:      rgba(255, 215, 188, 0.26);
+
+  /* Accent / status */
+  --accent:      #c2410c;
+  --accent-hot:  #ea7028;
+  --accent-glow: #ff7a26;
+  --ok:          #6ad19a;
+  --warn:        #e8b04a;
+  --err:         #e85c4a;
+  --info:        #6aa8d1;
+
+  /* Radii */
+  --r-1:  6px;
+  --r-2:  10px;
+  --r-3:  14px;
+  --r-4:  20px;
+  --r-pill: 999px;
+
+  /* Type */
+  --f-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-display: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Shadow */
+  --shadow-1: 0 1px 0 rgba(255,255,255,0.04) inset, 0 8px 24px rgba(0,0,0,0.45);
+  --shadow-glow: 0 0 0 1px rgba(194,65,12,0.35), 0 8px 32px rgba(194,65,12,0.25);
+}
+
+/* ── Canvas-level reset for artboards ─────────────────────── */
+.mz-artboard {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: var(--bg-0);
+  color: var(--text-1);
+  font-family: var(--f-sans);
+  font-size: 14px;
+  line-height: 1.45;
+  letter-spacing: -0.005em;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* Aurora — subtle orange glow that the glass picks up */
+.mz-aurora {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.mz-aurora::before,
+.mz-aurora::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(120px);
+  opacity: 0.55;
+}
+.mz-aurora::before {
+  width: 720px; height: 720px;
+  left: -180px; top: -240px;
+  background: radial-gradient(circle, #c2410c 0%, transparent 65%);
+}
+.mz-aurora::after {
+  width: 620px; height: 620px;
+  right: -120px; bottom: -200px;
+  background: radial-gradient(circle, #7a2806 0%, transparent 70%);
+  opacity: 0.45;
+}
+.mz-aurora .spark {
+  position: absolute;
+  width: 360px; height: 360px;
+  left: 55%; top: 35%;
+  background: radial-gradient(circle, #ea7028 0%, transparent 65%);
+  filter: blur(100px);
+  opacity: 0.18;
+  border-radius: 50%;
+}
+
+/* Grid noise */
+.mz-grid {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255,200,160,0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,200,160,0.025) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse at center, black 30%, transparent 85%);
+}
+
+.mz-stage {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Glass primitives ─────────────────────────────────────── */
+.mz-glass {
+  background: var(--glass-1);
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  border: 1px solid var(--glass-stroke);
+  border-radius: var(--r-3);
+  box-shadow: var(--shadow-1);
+}
+.mz-glass-2 {
+  background: var(--glass-2);
+  backdrop-filter: blur(28px) saturate(150%);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  border: 1px solid var(--glass-stroke-2);
+  border-radius: var(--r-3);
+  box-shadow: var(--shadow-1);
+}
+
+/* ── Typography helpers ───────────────────────────────────── */
+.mz-eyebrow {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--orange-200);
+  font-weight: 500;
+}
+.mz-mono { font-family: var(--f-mono); }
+.mz-num  { font-variant-numeric: tabular-nums; }
+
+/* ── Scrollbar look (decorative) ──────────────────────────── */
+.mz-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.mz-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255,200,160,0.18); border-radius: 999px;
+}
+
+/* ── Tiny visual atoms ────────────────────────────────────── */
+.mz-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+.mz-divider {
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgba(255,200,160,0.18) 50%,
+    transparent 100%);
+}
+
+/* Focus ring */
+.mz-ring {
+  box-shadow: 0 0 0 1px rgba(194,65,12,0.55), 0 0 0 4px rgba(194,65,12,0.18);
+}
