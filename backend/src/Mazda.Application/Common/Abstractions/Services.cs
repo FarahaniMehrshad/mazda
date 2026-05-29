@@ -25,10 +25,34 @@ public interface IJwtIssuer
 /// </summary>
 public interface IScriptGenerator
 {
-    Task<ScriptGenerationResult> GenerateAsync(
+    /// <summary>
+    /// Generate Playwright setup code (before-all / fixture wiring) from a free-form
+    /// English description (e.g. "open https://app.example.com" or
+    /// "connect to a running Chrome on localhost:9222 via CDP").
+    /// </summary>
+    Task<ScriptGenerationResult> GenerateSetupAsync(
         Signature signature,
-        string targetUrl,
-        string prompt,
+        string setupPrompt,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Generate the Playwright test body from the user's test prompt. The setup
+    /// script (if any) is provided as context so the test code references the
+    /// same browser/context/page identifiers.
+    /// </summary>
+    Task<ScriptGenerationResult> GenerateTestAsync(
+        Signature signature,
+        string testPrompt,
+        string? setupScript,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Merge a setup script and a test script into a single coherent
+    /// Playwright .spec.ts file, reconciling imports and fixtures.
+    /// </summary>
+    Task<ScriptGenerationResult> MergeAsync(
+        string setupScript,
+        string testScript,
         CancellationToken ct = default);
 }
 

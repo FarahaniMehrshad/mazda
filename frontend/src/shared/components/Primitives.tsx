@@ -133,14 +133,15 @@ export function ScreenShell({ children }: ScreenShellProps) {
 }
 
 interface StepIndicatorProps {
-  step: 1 | 2 | 3 | 4;
+  step: 1 | 2 | 3 | 4 | 5;
 }
 
 const STEPS = [
   { n: "01", t: "Upload" },
   { n: "02", t: "Review signature" },
-  { n: "03", t: "Target & prompt" },
-  { n: "04", t: "Run" },
+  { n: "03", t: "Setup" },
+  { n: "04", t: "Test prompt" },
+  { n: "05", t: "Merge & finalize" },
 ];
 
 export function StepIndicator({ step }: StepIndicatorProps) {

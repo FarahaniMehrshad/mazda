@@ -178,7 +178,7 @@ export function StudioPage() {
                           whiteSpace: "nowrap",
                         }}
                       >
-                        {r.prompt}
+                        {r.testPrompt || r.setupPrompt || "(empty run)"}
                       </div>
                       <div
                         style={{
@@ -191,7 +191,7 @@ export function StudioPage() {
                           marginTop: 2,
                         }}
                       >
-                        {r.targetUrl}
+                        {r.finalScript ? "final ready" : r.testScript ? "test ready" : r.setupScript ? "setup ready" : "draft"}
                       </div>
                     </div>
                     <Pill

@@ -5,51 +5,50 @@ namespace Mazda.Domain.Modules.Generations;
 public enum GenerationStatus { Pending, Generating, Ready, Failed }
 
 /// <summary>
-/// A request to turn (Signature + target URL + English prompt) into a Playwright .spec.ts file.
-/// Replaces the original live-execution concept — the user runs the script locally.
+/// A multi-step request to turn (Signature + setup instructions + test prompt) into
+/// a single Playwright .spec.ts file. The user drives the wizard:
+///   1. SetupPrompt  → LLM → SetupScript  (user can edit)
+///   2. TestPrompt   → LLM → TestScript   (user can edit)
+///   3. (Setup + Test) → LLM merge → FinalScript (user can edit)
 /// </summary>
 public class Generation : Entity
 {
     public Guid OwnerId { get; private set; }
     public Guid SignatureId { get; private set; }
-    public string TargetUrl { get; private set; } = null!;
-    public string Prompt { get; private set; } = null!;
+
+    public string SetupPrompt { get; private set; } = string.Empty;
+    public string? SetupScript { get; private set; }
+
+    public string TestPrompt { get; private set; } = string.Empty;
+    public string? TestScript { get; private set; }
+
+    public string? FinalScript { get; private set; }
+
     public GenerationStatus Status { get; private set; } = GenerationStatus.Pending;
-    public string? GeneratedScript { get; private set; }
     public string? FailureReason { get; private set; }
     public int TokensUsed { get; private set; }
 
     private Generation() { }
 
-    public static Generation Create(Guid ownerId, Guid signatureId, string targetUrl, string prompt)
+    public static Generation Create(Guid ownerId, Guid signatureId)
     {
-        if (string.IsNullOrWhiteSpace(targetUrl)) throw new ArgumentException("Target URL required.");
-        if (!Uri.TryCreate(targetUrl, UriKind.Absolute, out _)) throw new ArgumentException("Target URL must be absolute.");
-        if (string.IsNullOrWhiteSpace(prompt)) throw new ArgumentException("Prompt required.");
-
+        if (signatureId == Guid.Empty) throw new ArgumentException("Signature required.");
         return new Generation
         {
             OwnerId = ownerId,
             SignatureId = signatureId,
-            TargetUrl = targetUrl.Trim(),
-            Prompt = prompt.Trim()
         };
     }
 
-    public void MarkGenerating() { Status = GenerationStatus.Generating; Touch(); }
+    public void SetSetupPrompt(string prompt) { SetupPrompt = (prompt ?? string.Empty).Trim(); Touch(); }
+    public void SetSetupScript(string script) { SetupScript = script ?? string.Empty; Touch(); }
 
-    public void MarkReady(string script, int tokensUsed)
-    {
-        GeneratedScript = script;
-        TokensUsed = tokensUsed;
-        Status = GenerationStatus.Ready;
-        Touch();
-    }
+    public void SetTestPrompt(string prompt) { TestPrompt = (prompt ?? string.Empty).Trim(); Touch(); }
+    public void SetTestScript(string script) { TestScript = script ?? string.Empty; Touch(); }
 
-    public void MarkFailed(string reason)
-    {
-        FailureReason = reason;
-        Status = GenerationStatus.Failed;
-        Touch();
-    }
+    public void SetFinalScript(string script) { FinalScript = script ?? string.Empty; Touch(); }
+
+    public void MarkGenerating() { Status = GenerationStatus.Generating; FailureReason = null; Touch(); }
+    public void MarkReady(int additionalTokens = 0) { Status = GenerationStatus.Ready; TokensUsed += additionalTokens; Touch(); }
+    public void MarkFailed(string reason) { Status = GenerationStatus.Failed; FailureReason = reason; Touch(); }
 }

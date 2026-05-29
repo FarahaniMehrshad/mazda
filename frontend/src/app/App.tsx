@@ -8,8 +8,10 @@ import { StudioPage } from "@/features/studio/StudioPage";
 import { LibraryPage } from "@/features/signatures/LibraryPage";
 import { UploadPage } from "@/features/signatures/UploadPage";
 import { EditorPage } from "@/features/signatures/EditorPage";
-import { TargetPage } from "@/features/target/TargetPage";
-import { GenerationPage } from "@/features/generation/GenerationPage";
+import { NewRunPage } from "@/features/generation/NewRunPage";
+import { SetupPage } from "@/features/generation/SetupPage";
+import { TestPromptPage } from "@/features/generation/TestPromptPage";
+import { MergePage } from "@/features/generation/MergePage";
 import { RunsPage } from "@/features/generation/RunsPage";
 
 const qc = new QueryClient({
@@ -62,14 +64,6 @@ export function App() {
             }
           />
           <Route
-            path="/target"
-            element={
-              <RequireAuth>
-                <TargetPage />
-              </RequireAuth>
-            }
-          />
-          <Route
             path="/runs"
             element={
               <RequireAuth>
@@ -78,10 +72,42 @@ export function App() {
             }
           />
           <Route
+            path="/runs/new"
+            element={
+              <RequireAuth>
+                <NewRunPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/runs/:id/setup"
+            element={
+              <RequireAuth>
+                <SetupPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/runs/:id/test"
+            element={
+              <RequireAuth>
+                <TestPromptPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/runs/:id/merge"
+            element={
+              <RequireAuth>
+                <MergePage />
+              </RequireAuth>
+            }
+          />
+          <Route
             path="/runs/:id"
             element={
               <RequireAuth>
-                <GenerationPage />
+                <MergePage />
               </RequireAuth>
             }
           />

@@ -58,7 +58,33 @@ public static class Endpoints
         gens.MapGet("/{id:guid}", async (Guid id, ISender s) =>
             (await s.Send(new GetGenerationQuery(id))).ToHttp());
 
-        gens.MapPost("/", async (GenerateScriptCommand cmd, ISender s) =>
+        // Create empty generation tied to a signature.
+        gens.MapPost("/", async (CreateGenerationCommand cmd, ISender s) =>
             (await s.Send(cmd)).ToHttp());
+
+        // Wizard step 3 — setup.
+        gens.MapPost("/{id:guid}/setup", async (Guid id, [FromBody] GenerateSetupBody body, ISender s) =>
+            (await s.Send(new GenerateSetupCommand(id, body.SetupPrompt))).ToHttp());
+
+        gens.MapPut("/{id:guid}/setup-script", async (Guid id, [FromBody] ScriptBody body, ISender s) =>
+            (await s.Send(new UpdateScriptCommand(id, ScriptSlot.Setup, body.Script))).ToHttp());
+
+        // Wizard step 4 — test.
+        gens.MapPost("/{id:guid}/test", async (Guid id, [FromBody] GenerateTestBody body, ISender s) =>
+            (await s.Send(new GenerateTestCommand(id, body.TestPrompt))).ToHttp());
+
+        gens.MapPut("/{id:guid}/test-script", async (Guid id, [FromBody] ScriptBody body, ISender s) =>
+            (await s.Send(new UpdateScriptCommand(id, ScriptSlot.Test, body.Script))).ToHttp());
+
+        // Wizard step 5 — merge & finalize.
+        gens.MapPost("/{id:guid}/merge", async (Guid id, ISender s) =>
+            (await s.Send(new GenerateMergedCommand(id))).ToHttp());
+
+        gens.MapPut("/{id:guid}/final-script", async (Guid id, [FromBody] ScriptBody body, ISender s) =>
+            (await s.Send(new UpdateScriptCommand(id, ScriptSlot.Final, body.Script))).ToHttp());
     }
+
+    public record GenerateSetupBody(string SetupPrompt);
+    public record GenerateTestBody(string TestPrompt);
+    public record ScriptBody(string Script);
 }

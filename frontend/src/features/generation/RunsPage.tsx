@@ -60,7 +60,7 @@ export function RunsPage() {
                     whiteSpace: "nowrap",
                   }}
                 >
-                  {r.prompt}
+                  {r.testPrompt || r.setupPrompt || "(empty run)"}
                 </div>
                 <div
                   style={{
@@ -73,7 +73,7 @@ export function RunsPage() {
                     marginTop: 2,
                   }}
                 >
-                  {r.targetUrl}
+                  {r.finalScript ? "final ready" : r.testScript ? "test ready" : r.setupScript ? "setup ready" : "draft"}
                 </div>
               </div>
               <div style={{ fontFamily: "var(--f-mono)", fontSize: 11, color: "var(--text-3)" }}>

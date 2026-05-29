@@ -64,7 +64,7 @@ export function EditorPage() {
   }
 
   function onContinue() {
-    if (signature) navigate(`/target?signature=${signature.id}`);
+    if (signature) navigate(`/runs/new?signature=${signature.id}`);
   }
 
   if (isLoading || !signature) {

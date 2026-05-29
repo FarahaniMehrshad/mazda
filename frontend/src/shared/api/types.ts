@@ -28,11 +28,14 @@ export type GenerationStatus = "Pending" | "Generating" | "Ready" | "Failed";
 export interface GenerationDto {
   id: string;
   signatureId: string;
-  targetUrl: string;
-  prompt: string;
+  setupPrompt: string;
+  setupScript: string | null;
+  testPrompt: string;
+  testScript: string | null;
+  finalScript: string | null;
   status: GenerationStatus;
-  script: string | null;
   failureReason: string | null;
   tokensUsed: number;
   createdAt: string;
+  updatedAt: string;
 }
