@@ -15,6 +15,17 @@ public class Signature : Entity
     public string Source { get; private set; } = string.Empty;
     public string Type { get; private set; } = "component"; // form | wizard | grid | modal | uploader | tabs | page
     public string HumanDescription { get; private set; } = string.Empty;
+    public string UserFlowsJson { get; private set; } = string.Empty;
+    // Most-recent setup / test prompts used against this signature. New
+    // generations created off the signature pre-fill from these.
+    public string LastSetupPrompt { get; private set; } = string.Empty;
+    public string LastTestPrompt { get; private set; } = string.Empty;
+    // Most-recent generated setup / test SCRIPTS for this signature. Same
+    // pre-fill story — restored onto fresh generations so the wizard isn't
+    // empty after a reload.
+    public string LastSetupScript { get; private set; } = string.Empty;
+    public string LastTestScript { get; private set; } = string.Empty;
+    public string LastFinalScript { get; private set; } = string.Empty;
 
     private readonly List<SignatureElement> _elements = new();
     public IReadOnlyList<SignatureElement> Elements => _elements;
@@ -38,6 +49,12 @@ public class Signature : Entity
     public void SetType(string type) { Type = type.Trim(); Touch(); }
     public void BumpVersion(string version) { Version = version.Trim(); Touch(); }
     public void SetHumanDescription(string? description) { HumanDescription = description?.Trim() ?? string.Empty; Touch(); }
+    public void SetUserFlows(string? json) { UserFlowsJson = json ?? string.Empty; Touch(); }
+    public void SetLastSetupPrompt(string? prompt) { LastSetupPrompt = prompt?.Trim() ?? string.Empty; Touch(); }
+    public void SetLastTestPrompt(string? prompt) { LastTestPrompt = prompt?.Trim() ?? string.Empty; Touch(); }
+    public void SetLastSetupScript(string? script) { LastSetupScript = script ?? string.Empty; Touch(); }
+    public void SetLastTestScript(string? script) { LastTestScript = script ?? string.Empty; Touch(); }
+    public void SetLastFinalScript(string? script) { LastFinalScript = script ?? string.Empty; Touch(); }
 
     public void ReplaceElements(IEnumerable<SignatureElement> elements)
     {

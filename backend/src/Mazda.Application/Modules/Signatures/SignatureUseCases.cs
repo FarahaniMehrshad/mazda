@@ -15,6 +15,7 @@ public record SignatureDto(
     string Source,
     string Type,
     string HumanDescription,
+    string UserFlowsJson,
     int NodeCount,
     DateTime UpdatedAt,
     IReadOnlyList<SignatureElementDto> Elements);
@@ -22,7 +23,7 @@ public record SignatureDto(
 internal static class SignatureMapper
 {
     public static SignatureDto ToDto(this Signature s) => new(
-        s.Id, s.Name, s.Version, s.Source, s.Type, s.HumanDescription,
+        s.Id, s.Name, s.Version, s.Source, s.Type, s.HumanDescription, s.UserFlowsJson,
         s.Elements.Count, s.UpdatedAt,
         s.Elements.OrderBy(e => e.Order).Select(e => new SignatureElementDto(
             e.ElementSelector, e.ElementType, e.ElementDescription)).ToList());
@@ -162,6 +163,73 @@ public class AnalyzeComponentHandler(
         sig.ReplaceElements(elements);
 
         await repo.AddAsync(sig, ct);
+        await uow.SaveChangesAsync(ct);
+        return Result.Success(sig.ToDto());
+    }
+}
+
+// === User flows (LLM-inferred graph of UI states + element-anchored actions) ===
+
+public record GenerateUserFlowsCommand(Guid SignatureId, string? CypressSource) : IRequest<Result<SignatureDto>>;
+
+public class GenerateUserFlowsValidator : AbstractValidator<GenerateUserFlowsCommand>
+{
+    public GenerateUserFlowsValidator()
+    {
+        RuleFor(x => x.SignatureId).NotEmpty();
+        RuleFor(x => x.CypressSource).MaximumLength(200_000).When(x => x.CypressSource is not null);
+    }
+}
+
+public class GenerateUserFlowsHandler(
+    ISignatureRepository repo,
+    IFlowAnalyzer analyzer,
+    ICurrentUser me,
+    IUnitOfWork uow) : IRequestHandler<GenerateUserFlowsCommand, Result<SignatureDto>>
+{
+    public async Task<Result<SignatureDto>> Handle(GenerateUserFlowsCommand cmd, CancellationToken ct)
+    {
+        if (me.UserId is null) return Result.Failure<SignatureDto>(Error.Validation("Not authenticated."));
+        var sig = await repo.FindByIdAsync(cmd.SignatureId, me.UserId.Value, ct);
+        if (sig is null) return Result.Failure<SignatureDto>(Error.NotFound("Signature"));
+
+        FlowAnalysisResult result;
+        try { result = await analyzer.InferFlowsAsync(sig, cmd.CypressSource, ct); }
+        catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Flow analyzer failed: {ex.Message}")); }
+
+        sig.SetUserFlows(result.FlowsJson);
+        await uow.SaveChangesAsync(ct);
+        return Result.Success(sig.ToDto());
+    }
+}
+
+public record UpdateUserFlowsCommand(Guid SignatureId, string FlowsJson) : IRequest<Result<SignatureDto>>;
+
+public class UpdateUserFlowsValidator : AbstractValidator<UpdateUserFlowsCommand>
+{
+    public UpdateUserFlowsValidator()
+    {
+        RuleFor(x => x.SignatureId).NotEmpty();
+        RuleFor(x => x.FlowsJson).NotNull().MaximumLength(200_000);
+    }
+}
+
+public class UpdateUserFlowsHandler(
+    ISignatureRepository repo,
+    ICurrentUser me,
+    IUnitOfWork uow) : IRequestHandler<UpdateUserFlowsCommand, Result<SignatureDto>>
+{
+    public async Task<Result<SignatureDto>> Handle(UpdateUserFlowsCommand cmd, CancellationToken ct)
+    {
+        if (me.UserId is null) return Result.Failure<SignatureDto>(Error.Validation("Not authenticated."));
+        var sig = await repo.FindByIdAsync(cmd.SignatureId, me.UserId.Value, ct);
+        if (sig is null) return Result.Failure<SignatureDto>(Error.NotFound("Signature"));
+
+        // Validate JSON shape lightly here so bad edits do not get persisted.
+        try { using var _ = System.Text.Json.JsonDocument.Parse(cmd.FlowsJson); }
+        catch (System.Text.Json.JsonException ex) { return Result.Failure<SignatureDto>(Error.Validation($"Flows JSON invalid: {ex.Message}")); }
+
+        sig.SetUserFlows(cmd.FlowsJson);
         await uow.SaveChangesAsync(ct);
         return Result.Success(sig.ToDto());
     }

@@ -87,7 +87,7 @@ export function MergePage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={5} />
+        <StepIndicator step={6} />
         <div
           style={{
             display: "grid",
@@ -112,7 +112,7 @@ export function MergePage() {
             }}
             // eslint-disable-next-line react/no-unknown-property
           >
-            <div className="mz-eyebrow">Step 5 · Merge & finalize</div>
+            <div className="mz-eyebrow">Step 6 · Merge & finalize</div>
             <div style={{ color: "var(--text-3)", fontSize: 12.5, lineHeight: 1.5 }}>
               Mazda will reconcile imports, fixtures, and the test body into a single
               ready-to-run <code style={{ fontFamily: "var(--f-mono)" }}>.spec.ts</code>.

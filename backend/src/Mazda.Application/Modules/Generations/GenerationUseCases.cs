@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Mazda.Application.Common.Abstractions;
 using Mazda.Domain.Common;
 using Mazda.Domain.Modules.Generations;
+using Mazda.Domain.Modules.Signatures;
 
 namespace Mazda.Application.Modules.Generations;
 
@@ -64,6 +65,14 @@ public class CreateGenerationHandler(
         if (sig is null) return Result.Failure<GenerationDto>(Error.NotFound("Signature"));
 
         var gen = Generation.Create(me.UserId.Value, cmd.SignatureId);
+        // Pre-fill the wizard prompts AND the generated scripts from whatever
+        // the user last used against this signature, so re-runs do not start
+        // from scratch.
+        if (!string.IsNullOrWhiteSpace(sig.LastSetupPrompt)) gen.SetSetupPrompt(sig.LastSetupPrompt);
+        if (!string.IsNullOrWhiteSpace(sig.LastTestPrompt))  gen.SetTestPrompt(sig.LastTestPrompt);
+        if (!string.IsNullOrWhiteSpace(sig.LastSetupScript)) gen.SetSetupScript(sig.LastSetupScript);
+        if (!string.IsNullOrWhiteSpace(sig.LastTestScript))  gen.SetTestScript(sig.LastTestScript);
+        if (!string.IsNullOrWhiteSpace(sig.LastFinalScript)) gen.SetFinalScript(sig.LastFinalScript);
         await generations.AddAsync(gen, ct);
         await uow.SaveChangesAsync(ct);
         return Result.Success(gen.ToDto());
@@ -100,6 +109,7 @@ public class GenerateSetupHandler(
         if (sig is null) return Result.Failure<GenerationDto>(Error.NotFound("Signature"));
 
         gen.SetSetupPrompt(cmd.SetupPrompt);
+        sig.SetLastSetupPrompt(cmd.SetupPrompt);
         gen.MarkGenerating();
         await uow.SaveChangesAsync(ct);
 
@@ -107,6 +117,7 @@ public class GenerateSetupHandler(
         {
             var result = await generator.GenerateSetupAsync(sig, cmd.SetupPrompt, ct);
             gen.SetSetupScript(result.Script);
+            sig.SetLastSetupScript(result.Script);
             gen.MarkReady(result.TokensUsed);
         }
         catch (Exception ex)
@@ -151,6 +162,7 @@ public class GenerateTestHandler(
         if (sig is null) return Result.Failure<GenerationDto>(Error.NotFound("Signature"));
 
         gen.SetTestPrompt(cmd.TestPrompt);
+        sig.SetLastTestPrompt(cmd.TestPrompt);
         gen.MarkGenerating();
         await uow.SaveChangesAsync(ct);
 
@@ -158,6 +170,7 @@ public class GenerateTestHandler(
         {
             var result = await generator.GenerateTestAsync(sig, cmd.TestPrompt, gen.SetupScript, ct);
             gen.SetTestScript(result.Script);
+            sig.SetLastTestScript(result.Script);
             gen.MarkReady(result.TokensUsed);
         }
         catch (Exception ex)
@@ -176,6 +189,7 @@ public class GenerateTestHandler(
 public record GenerateMergedCommand(Guid GenerationId) : IRequest<Result<GenerationDto>>;
 
 public class GenerateMergedHandler(
+    ISignatureRepository signatures,
     IGenerationRepository generations,
     IScriptGenerator generator,
     ICurrentUser me,
@@ -192,6 +206,9 @@ public class GenerateMergedHandler(
         if (string.IsNullOrWhiteSpace(gen.TestScript))
             return Result.Failure<GenerationDto>(Error.Validation("Test script missing — generate it first."));
 
+        var sig = await signatures.FindByIdAsync(gen.SignatureId, me.UserId.Value, ct);
+        if (sig is null) return Result.Failure<GenerationDto>(Error.NotFound("Signature"));
+
         gen.MarkGenerating();
         await uow.SaveChangesAsync(ct);
 
@@ -199,6 +216,7 @@ public class GenerateMergedHandler(
         {
             var result = await generator.MergeAsync(gen.SetupScript!, gen.TestScript!, ct);
             gen.SetFinalScript(result.Script);
+            sig.SetLastFinalScript(result.Script);
             gen.MarkReady(result.TokensUsed);
         }
         catch (Exception ex)
@@ -228,6 +246,7 @@ public class UpdateScriptValidator : AbstractValidator<UpdateScriptCommand>
 }
 
 public class UpdateScriptHandler(
+    ISignatureRepository signatures,
     IGenerationRepository generations,
     ICurrentUser me,
     IUnitOfWork uow) : IRequestHandler<UpdateScriptCommand, Result<GenerationDto>>
@@ -239,11 +258,24 @@ public class UpdateScriptHandler(
         var gen = await generations.FindByIdAsync(cmd.GenerationId, me.UserId.Value, ct);
         if (gen is null) return Result.Failure<GenerationDto>(Error.NotFound("Generation"));
 
+        // Mirror user edits of every slot (setup/test/final) onto the signature
+        // so a fresh run starts where the last one left off.
+        var sig = await signatures.FindByIdAsync(gen.SignatureId, me.UserId.Value, ct);
+
         switch (cmd.Slot)
         {
-            case ScriptSlot.Setup: gen.SetSetupScript(cmd.Script); break;
-            case ScriptSlot.Test:  gen.SetTestScript(cmd.Script); break;
-            case ScriptSlot.Final: gen.SetFinalScript(cmd.Script); break;
+            case ScriptSlot.Setup:
+                gen.SetSetupScript(cmd.Script);
+                sig?.SetLastSetupScript(cmd.Script);
+                break;
+            case ScriptSlot.Test:
+                gen.SetTestScript(cmd.Script);
+                sig?.SetLastTestScript(cmd.Script);
+                break;
+            case ScriptSlot.Final:
+                gen.SetFinalScript(cmd.Script);
+                sig?.SetLastFinalScript(cmd.Script);
+                break;
         }
         await uow.SaveChangesAsync(ct);
         return Result.Success(gen.ToDto());

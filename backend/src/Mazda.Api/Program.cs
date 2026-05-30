@@ -66,6 +66,18 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<MazdaDbContext>();
     db.Database.EnsureCreated();
+
+    // EnsureCreated() does nothing on an existing DB, so columns added
+    // after the table was first materialized never appear. Patch them in
+    // idempotently. Postgres ADD COLUMN IF NOT EXISTS is safe to re-run.
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE signatures
+            ADD COLUMN IF NOT EXISTS last_setup_prompt varchar(4000) NOT NULL DEFAULT '',
+            ADD COLUMN IF NOT EXISTS last_test_prompt  varchar(4000) NOT NULL DEFAULT '',
+            ADD COLUMN IF NOT EXISTS last_setup_script text          NOT NULL DEFAULT '',
+            ADD COLUMN IF NOT EXISTS last_test_script  text          NOT NULL DEFAULT '',
+            ADD COLUMN IF NOT EXISTS last_final_script text          NOT NULL DEFAULT '';
+        """);
 }
 
 app.UseExceptionHandler();

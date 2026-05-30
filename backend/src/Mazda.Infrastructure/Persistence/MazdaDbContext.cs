@@ -49,6 +49,12 @@ internal class SignatureConfig : IEntityTypeConfiguration<Signature>
         b.Property(x => x.Source).HasMaxLength(500);
         b.Property(x => x.Type).HasMaxLength(40);
         b.Property(x => x.HumanDescription).HasColumnName("human_description").HasMaxLength(50_000);
+        b.Property(x => x.UserFlowsJson).HasColumnName("user_flows").HasMaxLength(200_000);
+        b.Property(x => x.LastSetupPrompt).HasColumnName("last_setup_prompt").HasMaxLength(4000);
+        b.Property(x => x.LastTestPrompt).HasColumnName("last_test_prompt").HasMaxLength(4000);
+        b.Property(x => x.LastSetupScript).HasColumnName("last_setup_script");
+        b.Property(x => x.LastTestScript).HasColumnName("last_test_script");
+        b.Property(x => x.LastFinalScript).HasColumnName("last_final_script");
         b.HasIndex(x => new { x.OwnerId, x.Name });
         b.HasMany(x => x.Elements).WithOne()
          .HasForeignKey(e => e.SignatureId).OnDelete(DeleteBehavior.Cascade);

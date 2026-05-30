@@ -18,9 +18,24 @@ export interface SignatureDto {
   source: string;
   type: string;
   humanDescription: string;
+  userFlowsJson: string;
   nodeCount: number;
   updatedAt: string;
   elements: SignatureElementDto[];
+}
+
+export interface UserFlowsGraph {
+  nodes: Array<{ id: string; label: string; description?: string }>;
+  edges: Array<{
+    id: string;
+    from: string;
+    to: string;
+    action: string;
+    elementSelector: string;
+    label: string;
+    description?: string;
+    value?: string;
+  }>;
 }
 
 export type GenerationStatus = "Pending" | "Generating" | "Ready" | "Failed";

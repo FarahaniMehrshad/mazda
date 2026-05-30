@@ -160,6 +160,12 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         You will receive:
         - (Optional) A "Human-written description" block grounding the component context.
         - A Signature: a structured list of CSS-selector-anchored elements.
+        - (Optional) A "User flows" graph: pre-analyzed UI states (nodes) and the
+          element-anchored actions (edges) that transition between them. When present,
+          treat it as the canonical map of what the UI can do — your job is to map the
+          user's test prompt onto a path through this graph, then translate each edge
+          on that path into Playwright actions. The graph already validates which
+          interactions are possible; do not invent new ones.
         - (Optional) A "Setup script" block showing the surrounding fixture/hook code,
           so you know what `page` / `context` / `browser` looks like and which imports
           already exist.
@@ -253,10 +259,13 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
 
     public Task<ScriptGenerationResult> GenerateTestAsync(Signature signature, string testPrompt, string? setupScript, CancellationToken ct = default)
     {
+        var flowsBlock = string.IsNullOrWhiteSpace(signature.UserFlowsJson)
+            ? string.Empty
+            : $"\n\nUser flows (canonical UI states + element-anchored transitions — map the prompt onto a path here):\n```json\n{signature.UserFlowsJson}\n```";
         var setupBlock = string.IsNullOrWhiteSpace(setupScript)
             ? string.Empty
             : $"\n\nSetup script (for context — do not re-emit imports or fixtures):\n```ts\n{setupScript}\n```";
-        var userMsg = BuildSignatureContext(signature) + setupBlock +
+        var userMsg = BuildSignatureContext(signature) + flowsBlock + setupBlock +
             $"\n\nTest prompt:\n{testPrompt}";
         return Call(opts => opts.GeneratorModel, TestSystemPrompt, userMsg, ct);
     }

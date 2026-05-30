@@ -30,6 +30,7 @@ public static class DependencyInjection
         // LLM (any OpenAI-compatible provider: OpenAI, Ollama, vLLM, OpenRouter, …)
         services.Configure<LlmOptions>(cfg.GetSection("Llm"));
         services.AddSingleton<IComponentAnalyzer, LlmComponentAnalyzer>();
+        services.AddSingleton<IFlowAnalyzer, LlmFlowAnalyzer>();
         services.AddSingleton<IScriptGenerator, LlmScriptGenerator>();
 
         // Script execution (Playwright via Node inside the API container).

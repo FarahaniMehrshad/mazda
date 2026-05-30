@@ -28,8 +28,19 @@ public sealed class LocalProcessScriptRunner(
         export default defineConfig({
           testDir: '.',
           timeout: 60_000,
-          reporter: [['list']],
-          use: { trace: 'off', screenshot: 'off', video: 'off' },
+          // Print each step (await page.click(...), expect(...), etc.) as it runs so
+          // a hang shows the LAST step it was stuck on rather than just "timeout".
+          reporter: [['list', { printSteps: true }]],
+          use: {
+            // Per-action timeout (default is 30s = half the test budget). 10s is short
+            // enough to fail fast on a stuck locator and surface a precise stack trace
+            // pointing at the offending line.
+            actionTimeout: 10_000,
+            navigationTimeout: 15_000,
+            trace: 'retain-on-failure',
+            screenshot: 'only-on-failure',
+            video: 'off',
+          },
         });
         """;
 
@@ -88,7 +99,8 @@ public sealed class LocalProcessScriptRunner(
         psi.ArgumentList.Add("playwright");
         psi.ArgumentList.Add("test");
         psi.ArgumentList.Add("mazda.spec.ts");
-        psi.ArgumentList.Add("--reporter=list");
+        // No --reporter flag here: the CLI form `list` would override the config's
+        // reporter array and drop `printSteps: true`. Let playwright.config.ts win.
 
         using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
         proc.OutputDataReceived += (_, e) => { if (e.Data is not null) Emit(e.Data); };
@@ -129,6 +141,21 @@ public sealed class LocalProcessScriptRunner(
             1 => RunnerExitKind.FailedTest, // Playwright returns 1 on test failure.
             _ => RunnerExitKind.Errored,
         };
+
+        // Point the user at any trace zips Playwright left behind on failure.
+        // `trace: 'retain-on-failure'` writes to <runDir>/test-results/.../trace.zip.
+        if (kind != RunnerExitKind.Passed)
+        {
+            var resultsDir = Path.Combine(runDir, "test-results");
+            if (Directory.Exists(resultsDir))
+            {
+                foreach (var tracePath in Directory.EnumerateFiles(resultsDir, "trace.zip", SearchOption.AllDirectories))
+                {
+                    Emit($"runner: trace saved → {tracePath}");
+                    Emit("runner: open with `npx playwright show-trace " + tracePath + "` (run on host)");
+                }
+            }
+        }
         Emit($"runner: exit {proc.ExitCode} ({kind.ToString().ToLowerInvariant()})");
 
         var done = new RunnerCompletion(kind, proc.ExitCode, fullLog.ToString());

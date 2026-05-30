@@ -72,7 +72,7 @@ export function TestPromptPage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={4} />
+        <StepIndicator step={5} />
         <div
           style={{
             display: "grid",
@@ -95,7 +95,7 @@ export function TestPromptPage() {
               minHeight: 0,
             }}
           >
-            <div className="mz-eyebrow">Step 4 · Test prompt</div>
+            <div className="mz-eyebrow">Step 5 · Test prompt</div>
             <div style={{ color: "var(--text-3)", fontSize: 12.5, lineHeight: 1.5 }}>
               Tell Mazda what the test should actually <em>do</em>. The setup you wrote in
               the previous step provides the <code style={{ fontFamily: "var(--f-mono)" }}>page</code>.

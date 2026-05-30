@@ -73,6 +73,20 @@ public interface IComponentAnalyzer
 public record AnalyzedElement(string Selector, string ElementType, string Description);
 public record ComponentAnalysisResult(string SuggestedName, string SuggestedType, IReadOnlyList<AnalyzedElement> Elements, int TokensUsed);
 
+/// <summary>
+/// Outbound port for inferring a UI user-flow graph from a Signature
+/// (and optional Cypress integration test source as grounding context).
+/// </summary>
+public interface IFlowAnalyzer
+{
+    Task<FlowAnalysisResult> InferFlowsAsync(
+        Signature signature,
+        string? cypressSource,
+        CancellationToken ct = default);
+}
+
+public record FlowAnalysisResult(string FlowsJson, int TokensUsed);
+
 // ── Script execution ─────────────────────────────────────────────────
 
 public enum RunnerExitKind { Passed, FailedTest, Errored, Cancelled }

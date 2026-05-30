@@ -72,7 +72,7 @@ export function SetupPage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={3} />
+        <StepIndicator step={4} />
         <div
           style={{
             display: "grid",
@@ -95,7 +95,7 @@ export function SetupPage() {
               minHeight: 0,
             }}
           >
-            <div className="mz-eyebrow">Step 3 · Setup</div>
+            <div className="mz-eyebrow">Step 4 · Setup</div>
             <div style={{ color: "var(--text-3)", fontSize: 12.5, lineHeight: 1.5 }}>
               Describe what should happen <em>before</em> the test runs. Mazda turns this
               into Playwright setup code — hooks, fixtures, or a CDP attach.
@@ -158,8 +158,8 @@ export function SetupPage() {
           </div>
 
           <div style={{ display: "flex", gap: 10 }}>
-            <BtnGhost onClick={() => navigate(`/signatures/${gen.signatureId}`)}>
-              Back to signature
+            <BtnGhost onClick={() => navigate(`/signatures/${gen.signatureId}/flows`)}>
+              Back to flows
             </BtnGhost>
             <BtnPrimary
               full

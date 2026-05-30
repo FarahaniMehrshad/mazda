@@ -8,6 +8,7 @@ import { StudioPage } from "@/features/studio/StudioPage";
 import { LibraryPage } from "@/features/signatures/LibraryPage";
 import { UploadPage } from "@/features/signatures/UploadPage";
 import { EditorPage } from "@/features/signatures/EditorPage";
+import { UserFlowsPage } from "@/features/signatures/UserFlowsPage";
 import { NewRunPage } from "@/features/generation/NewRunPage";
 import { SetupPage } from "@/features/generation/SetupPage";
 import { TestPromptPage } from "@/features/generation/TestPromptPage";
@@ -61,6 +62,14 @@ export function App() {
             element={
               <RequireAuth>
                 <EditorPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/signatures/:id/flows"
+            element={
+              <RequireAuth>
+                <UserFlowsPage />
               </RequireAuth>
             }
           />

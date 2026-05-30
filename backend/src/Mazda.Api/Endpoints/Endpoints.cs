@@ -51,6 +51,13 @@ public static class Endpoints
         sigs.MapPost("/analyze", async ([FromBody] AnalyzeComponentCommand cmd, ISender s) =>
             (await s.Send(cmd)).ToHttp());
 
+        // Wizard step 3 — user flows.
+        sigs.MapPost("/{id:guid}/flows/generate", async (Guid id, [FromBody] GenerateFlowsBody body, ISender s) =>
+            (await s.Send(new GenerateUserFlowsCommand(id, body.CypressSource))).ToHttp());
+
+        sigs.MapPut("/{id:guid}/flows", async (Guid id, [FromBody] FlowsBody body, ISender s) =>
+            (await s.Send(new UpdateUserFlowsCommand(id, body.FlowsJson))).ToHttp());
+
         // ── Generations (auth) ────────────────────────────────────
         var gens = app.MapGroup("/api/generations").RequireAuthorization().WithTags("Generations");
 
@@ -119,4 +126,6 @@ public static class Endpoints
     public record GenerateSetupBody(string SetupPrompt);
     public record GenerateTestBody(string TestPrompt);
     public record ScriptBody(string Script);
+    public record GenerateFlowsBody(string? CypressSource);
+    public record FlowsBody(string FlowsJson);
 }

@@ -64,7 +64,7 @@ export function EditorPage() {
   }
 
   function onContinue() {
-    if (signature) navigate(`/runs/new?signature=${signature.id}`);
+    if (signature) navigate(`/signatures/${signature.id}/flows`);
   }
 
   if (isLoading || !signature) {
@@ -175,7 +175,7 @@ export function EditorPage() {
               {save.isPending ? "Saving…" : "Save changes"}
             </BtnGhost>
             <BtnPrimary icon={Icon.arrow()} onClick={onContinue}>
-              Continue to target
+              Continue to flows
             </BtnPrimary>
           </div>
         </div>
