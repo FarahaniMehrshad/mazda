@@ -158,7 +158,9 @@ export function SetupPage() {
           </div>
 
           <div style={{ display: "flex", gap: 10 }}>
-            <BtnGhost onClick={() => navigate(-1)}>Back</BtnGhost>
+            <BtnGhost onClick={() => navigate(`/signatures/${gen.signatureId}`)}>
+              Back to signature
+            </BtnGhost>
             <BtnPrimary
               full
               icon={Icon.arrow()}

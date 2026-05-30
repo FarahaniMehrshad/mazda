@@ -31,29 +31,10 @@ export function StudioPage() {
         }}
       >
         {/* ── Hero ── */}
-        <div
-          className="mz-glass-2 mz-fade-in"
-          style={{
-            padding: "48px 40px",
-            display: "grid",
-            gridTemplateColumns: "1fr auto",
-            gap: 32,
-            alignItems: "center",
-            position: "relative",
-            overflow: "hidden",
-          }}
-        >
-          <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 640 }}>
+        <div className="mz-glass-2 mz-fade-in mz-hero">
+          <div className="mz-hero-text">
             <div className="mz-eyebrow">The studio</div>
-            <div
-              style={{
-                fontFamily: "var(--f-display)",
-                fontSize: 56,
-                fontWeight: 500,
-                letterSpacing: "-0.03em",
-                lineHeight: 1.02,
-              }}
-            >
+            <div className="mz-hero-title">
               The one
               <br />
               <span
@@ -72,7 +53,7 @@ export function StudioPage() {
               <br />
               Get back a Playwright spec you can run on your own machine.
             </div>
-            <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <div style={{ display: "flex", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
               <BtnPrimary icon={Icon.spark()} onClick={() => navigate("/signatures/new")}>
                 New signature
               </BtnPrimary>
@@ -81,12 +62,7 @@ export function StudioPage() {
               </BtnGhost>
             </div>
           </div>
-          <div
-            style={{
-              opacity: 0.6,
-              filter: "drop-shadow(0 0 36px rgba(234,112,40,0.5))",
-            }}
-          >
+          <div className="mz-hero-glyph">
             <MazdaGlyph size={200} glow />
           </div>
         </div>
