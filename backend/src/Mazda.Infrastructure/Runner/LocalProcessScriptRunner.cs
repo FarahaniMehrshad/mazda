@@ -114,9 +114,10 @@ public sealed class LocalProcessScriptRunner(
         {
             var msg = $"runner: failed to start npx — {ex.Message}";
             Emit(msg);
-            var fail = new RunnerCompletion(RunnerExitKind.Errored, -1, fullLog.ToString());
-            registry.Complete(generationId, fail);
-            return fail;
+            // NOTE: do NOT call registry.Complete here. The handler will call it
+            // AFTER the terminal status has been persisted, so the SSE end event
+            // only fires once the DB reflects the final state.
+            return new RunnerCompletion(RunnerExitKind.Errored, -1, fullLog.ToString());
         }
 
         proc.BeginOutputReadLine();
@@ -130,9 +131,7 @@ public sealed class LocalProcessScriptRunner(
         {
             try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
             Emit("runner: cancelled by user");
-            var cancelled = new RunnerCompletion(RunnerExitKind.Cancelled, -1, fullLog.ToString());
-            registry.Complete(generationId, cancelled);
-            return cancelled;
+            return new RunnerCompletion(RunnerExitKind.Cancelled, -1, fullLog.ToString());
         }
 
         var kind = proc.ExitCode switch
@@ -158,9 +157,10 @@ public sealed class LocalProcessScriptRunner(
         }
         Emit($"runner: exit {proc.ExitCode} ({kind.ToString().ToLowerInvariant()})");
 
-        var done = new RunnerCompletion(kind, proc.ExitCode, fullLog.ToString());
-        registry.Complete(generationId, done);
-        return done;
+        // Caller (StartExecutionHandler) is responsible for calling
+        // registry.Complete AFTER it has persisted the terminal status so the
+        // SSE end event arrives at the client only once the DB reflects it.
+        return new RunnerCompletion(kind, proc.ExitCode, fullLog.ToString());
     }
 
     // Injected helper. Solves the CDP-via-host.docker.internal triple-bind:

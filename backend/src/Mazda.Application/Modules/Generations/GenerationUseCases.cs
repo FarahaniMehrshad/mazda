@@ -335,28 +335,41 @@ public class StartExecutionHandler(
         // because the MediatR request scope dies as soon as we return.
         _ = Task.Run(async () =>
         {
+            RunnerCompletion? result = null;
             try
             {
-                var result = await runner.RunAsync(genId, script, CancellationToken.None);
+                result = await runner.RunAsync(genId, script, CancellationToken.None);
                 using var scope = scopeFactory.CreateScope();
                 var repo = scope.ServiceProvider.GetRequiredService<IGenerationRepository>();
                 var sUow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
                 var fresh = await repo.FindByIdAsync(genId, ownerId, CancellationToken.None);
-                if (fresh is null) return;
-                var terminal = result.Kind switch
+                if (fresh is not null)
                 {
-                    RunnerExitKind.Passed     => Domain.Modules.Generations.ExecutionStatus.Passed,
-                    RunnerExitKind.FailedTest => Domain.Modules.Generations.ExecutionStatus.FailedTest,
-                    RunnerExitKind.Cancelled  => Domain.Modules.Generations.ExecutionStatus.Cancelled,
-                    _                         => Domain.Modules.Generations.ExecutionStatus.Errored,
-                };
-                fresh.MarkExecutionFinished(terminal, result.ExitCode, result.FullLog);
-                await sUow.SaveChangesAsync(CancellationToken.None);
+                    var terminal = result.Kind switch
+                    {
+                        RunnerExitKind.Passed     => Domain.Modules.Generations.ExecutionStatus.Passed,
+                        RunnerExitKind.FailedTest => Domain.Modules.Generations.ExecutionStatus.FailedTest,
+                        RunnerExitKind.Cancelled  => Domain.Modules.Generations.ExecutionStatus.Cancelled,
+                        _                         => Domain.Modules.Generations.ExecutionStatus.Errored,
+                    };
+                    fresh.MarkExecutionFinished(terminal, result.ExitCode, result.FullLog);
+                    await sUow.SaveChangesAsync(CancellationToken.None);
+                }
             }
             catch
             {
                 // Swallow — the registry already captured the log. A health monitor
                 // could surface this if we add one.
+            }
+            finally
+            {
+                // Signal end-of-stream to SSE subscribers ONLY AFTER the terminal
+                // status has been persisted. Otherwise the client refetches on
+                // 'end' and races the DB write — frontend gets stuck on Running.
+                if (result is not null)
+                    registry.Complete(genId, result);
+                else
+                    registry.Complete(genId, new RunnerCompletion(RunnerExitKind.Errored, -1, string.Empty));
             }
         });
 
