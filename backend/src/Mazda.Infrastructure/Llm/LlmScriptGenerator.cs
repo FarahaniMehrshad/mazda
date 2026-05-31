@@ -312,6 +312,45 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         Use `await` consistently. Use `expect(locator).toBeVisible()`,
         `.toHaveText(...)`, `.toHaveValue(...)`, `.toBeChecked()`, etc. as appropriate.
 
+        ── DRAG-AND-DROP — HARD RULE ──
+        For ANY drag-and-drop interaction (reordering rows, moving items between
+        zones, sortable lists, kanban columns, drop-to-map cards, etc.), the
+        DEFAULT is the runner-injected pointer-event helper:
+
+            await __mzPointerDrag(page, sourceLocator, targetLocator);
+
+        The helper exists in scope automatically — do NOT import or define it.
+        It dispatches real pointer events (mouse.move/down/move/up with the
+        intermediate steps that pointer-based drag libraries require).
+
+        DO NOT use `locator.dragTo(...)` UNLESS you have concrete evidence the
+        source element is HTML5-native draggable. Two pieces of evidence count:
+          1. The Signature selector / human description explicitly mentions
+             `draggable="true"` or `draggable: true` on the source element.
+          2. The source is a natively-draggable HTML tag (`<a>` with href that
+             a sane file-manager-style UI relies on, `<img>`).
+
+        For everything else — and that includes every drag in a typical
+        React/Vue/Angular app, regardless of which library is behind it —
+        `dragTo` dispatches HTML5 `dragstart`/`dragover`/`drop` events that
+        the framework's drag handler ignores, so the test "passes" the call,
+        nothing moves, and your subsequent assertions fail mysteriously fast.
+
+        Examples:
+
+            ✗ await firstHandle.dragTo(secondHandle);
+
+            ✓ const handles = page.locator('.draggable-area');
+              await __mzPointerDrag(page, handles.nth(0), handles.nth(1));
+
+            ✓ const card  = page.locator('[data-testid="row-0"]');
+              const zone  = page.locator('[data-testid="trash-zone"]');
+              await __mzPointerDrag(page, card, zone);
+
+        After the drag, you may re-measure the layout or assert on the new
+        order — the helper yields one animation frame before returning so
+        framework re-renders commit first.
+
         ── "select" ELEMENT TYPE — HARD RULE ──
         When the Signature lists an element with `elementType: "select"` (or
         `"combobox"` / `"multiselect"`), NEVER call `locator.selectOption(...)`.

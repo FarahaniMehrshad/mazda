@@ -203,6 +203,47 @@ async function __mzConnectViaHost(c: any, host: string, port: number): Promise<a
 
 """;
 
+    // Pointer-event drag helper. Use for drag-and-drop on UIs whose drag is
+    // wired via pointer/mouse events (Angular CDK, @dnd-kit, react-dnd,
+    // react-beautiful-dnd, custom mousedown/move/up handlers) — anything where
+    // the source element does NOT carry HTML5 `draggable="true"`.
+    //   - Moves to the source's center, presses, nudges a few pixels (to cross
+    //     the library's minimum-drag threshold), then smoothly moves to the
+    //     target's center in 25 steps so the library's pointermove handler
+    //     fires along the path and runs its hit-testing / drop-zone logic.
+    //   - Releases at the target. Awaits one rAF before returning so any
+    //     framework re-render commits before the test re-measures positions.
+    private const string PointerDragHelperBlock = """
+
+// === Mazda runner: pointer-event drag helper (auto-injected) ===
+async function __mzPointerDrag(page: any, source: any, target: any): Promise<void> {
+  const a = await source.boundingBox();
+  const b = await target.boundingBox();
+  if (!a || !b) {
+    throw new Error('__mzPointerDrag: source or target has no bounding box (off-screen or not visible?)');
+  }
+  const sx = a.x + a.width / 2;
+  const sy = a.y + a.height / 2;
+  const tx = b.x + b.width / 2;
+  const ty = b.y + b.height / 2;
+  await page.mouse.move(sx, sy);
+  await page.mouse.down();
+  // Cross the library's minimum-drag threshold with a small initial move.
+  // CDK / @dnd-kit ignore a single jump-to-target — they only start tracking
+  // once the pointer has moved a few pixels.
+  await page.mouse.move(sx + 8, sy + 8, { steps: 5 });
+  // Smooth path so the library's pointermove handler runs continuously and
+  // emits its over/enter/leave callbacks at intermediate drop zones.
+  await page.mouse.move(tx, ty, { steps: 25 });
+  await page.mouse.up();
+  // Yield once so any synchronous framework re-render commits before the
+  // caller re-measures DOM positions.
+  await page.evaluate(() => new Promise(r => requestAnimationFrame(() => r(null))));
+}
+// === end auto-injected ===
+
+""";
+
     private static string RewriteHosts(string source)
     {
         // NOTE: we do NOT blanket-rewrite localhost → host.docker.internal anymore.
@@ -240,9 +281,14 @@ async function __mzConnectViaHost(c: any, host: string, port: number): Promise<a
             },
             RegexOptions.IgnoreCase);
 
-        if (!changed) return rewritten;
+        // 3 — figure out which helpers the test actually uses, and inject only those.
+        var needsCdpHelper = changed;
+        var needsDragHelper = Regex.IsMatch(rewritten, @"\b__mzPointerDrag\s*\(");
 
-        // 3 — inject the helper after the last top-level import statement.
+        if (!needsCdpHelper && !needsDragHelper) return rewritten;
+
+        // Inject after the last top-level import statement so type imports stay
+        // valid and our helpers can reference imported types if they ever need to.
         var importMatches = Regex.Matches(rewritten, @"^[ \t]*import\s.*$", RegexOptions.Multiline);
         int insertPos = 0;
         if (importMatches.Count > 0)
@@ -250,6 +296,10 @@ async function __mzConnectViaHost(c: any, host: string, port: number): Promise<a
             var last = importMatches[importMatches.Count - 1];
             insertPos = last.Index + last.Length;
         }
-        return rewritten.Insert(insertPos, CdpHelperBlock);
+
+        var injection = string.Empty;
+        if (needsCdpHelper) injection += CdpHelperBlock;
+        if (needsDragHelper) injection += PointerDragHelperBlock;
+        return rewritten.Insert(insertPos, injection);
     }
 }
