@@ -216,8 +216,28 @@ async function __mzConnectViaHost(c: any, host: string, port: number): Promise<a
     private const string PointerDragHelperBlock = """
 
 // === Mazda runner: pointer-event drag helper (auto-injected) ===
+// Selectors that frameworks commonly use to mark "this child is the drag handle
+// — pointerdown must happen here for the drag to start". When the caller passes
+// in a whole card and the card contains exactly one of these, the helper uses
+// the handle's center instead of the card's center. Saves the test from having
+// to know the handle selector when the card has only one obvious one.
+const __mzDragHandleSelector =
+  '[cdkDragHandle], [cdk-drag-handle], .cdk-drag-handle, ' +
+  '[data-drag-handle], [data-rbd-drag-handle-draggable-id], ' +
+  '.draggable-area, .drag-handle, .handle';
+async function __mzResolveDragSource(source: any): Promise<any> {
+  // Try to find a single, obvious drag handle inside the source. If exactly
+  // one match exists, use it; otherwise, fall back to the source itself.
+  // (Multiple matches are ambiguous — caller should pass the handle directly.)
+  try {
+    const handle = source.locator(__mzDragHandleSelector);
+    if ((await handle.count()) === 1) return handle.first();
+  } catch { /* ignore: source may not be a Locator with .locator() */ }
+  return source;
+}
 async function __mzPointerDrag(page: any, source: any, target: any): Promise<void> {
-  const a = await source.boundingBox();
+  const src = await __mzResolveDragSource(source);
+  const a = await src.boundingBox();
   const b = await target.boundingBox();
   if (!a || !b) {
     throw new Error('__mzPointerDrag: source or target has no bounding box (off-screen or not visible?)');
@@ -239,6 +259,40 @@ async function __mzPointerDrag(page: any, source: any, target: any): Promise<voi
   // Yield once so any synchronous framework re-render commits before the
   // caller re-measures DOM positions.
   await page.evaluate(() => new Promise(r => requestAnimationFrame(() => r(null))));
+}
+// === end auto-injected ===
+
+""";
+
+    // True swap of two items at positions i and j in a sortable list, where the
+    // underlying library treats a drop as INSERT-AT-POSITION (the case for most
+    // sortable libraries: CDK cdkDropList, @dnd-kit useSortable, react-dnd
+    // sortable, react-beautiful-dnd, etc.). A single drag from i to j in those
+    // libraries is a REORDER, not a swap: every item between i and j shifts by
+    // one. To exchange only items-at-i and items-at-j and leave everything else
+    // in place, two drags are needed (one if they are adjacent).
+    //
+    // Protocol for non-adjacent (lo = min(i,j), hi = max(i,j)):
+    //   step 1: drag from hi to lo   → originally-at-hi sits at lo,
+    //                                   originally-at-lo sits at lo+1.
+    //   step 2: drag from lo+1 to hi → originally-at-lo sits at hi.
+    // Adjacent (hi == lo+1): a single insert-at-position IS the swap.
+    private const string PointerSwapHelperBlock = """
+
+// === Mazda runner: sortable-list swap helper (auto-injected) ===
+async function __mzPointerSwap(page: any, items: any, i: number, j: number): Promise<void> {
+  if (i === j) return;
+  const lo = Math.min(i, j);
+  const hi = Math.max(i, j);
+  if (hi === lo + 1) {
+    // Adjacent — a single insert-at-position IS the swap.
+    await __mzPointerDrag(page, items.nth(hi), items.nth(lo));
+    return;
+  }
+  // Non-adjacent — two-step protocol. After step 1 the originally-at-lo item
+  // sits at lo+1; step 2 puts it where originally-at-hi used to be.
+  await __mzPointerDrag(page, items.nth(hi), items.nth(lo));
+  await __mzPointerDrag(page, items.nth(lo + 1), items.nth(hi));
 }
 // === end auto-injected ===
 
@@ -282,10 +336,13 @@ async function __mzPointerDrag(page: any, source: any, target: any): Promise<voi
             RegexOptions.IgnoreCase);
 
         // 3 — figure out which helpers the test actually uses, and inject only those.
+        //   Swap depends on Drag, so requesting Swap implicitly requests Drag too.
         var needsCdpHelper = changed;
-        var needsDragHelper = Regex.IsMatch(rewritten, @"\b__mzPointerDrag\s*\(");
+        var needsSwapHelper = Regex.IsMatch(rewritten, @"\b__mzPointerSwap\s*\(");
+        var needsDragHelper = needsSwapHelper
+            || Regex.IsMatch(rewritten, @"\b__mzPointerDrag\s*\(");
 
-        if (!needsCdpHelper && !needsDragHelper) return rewritten;
+        if (!needsCdpHelper && !needsDragHelper && !needsSwapHelper) return rewritten;
 
         // Inject after the last top-level import statement so type imports stay
         // valid and our helpers can reference imported types if they ever need to.
@@ -300,6 +357,7 @@ async function __mzPointerDrag(page: any, source: any, target: any): Promise<voi
         var injection = string.Empty;
         if (needsCdpHelper) injection += CdpHelperBlock;
         if (needsDragHelper) injection += PointerDragHelperBlock;
+        if (needsSwapHelper) injection += PointerSwapHelperBlock;
         return rewritten.Insert(insertPos, injection);
     }
 }

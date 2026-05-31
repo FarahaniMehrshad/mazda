@@ -351,6 +351,203 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         order — the helper yields one animation frame before returning so
         framework re-renders commit first.
 
+        ── DRAG HANDLE — HARD RULE ──
+        Many sortable libraries (Angular CDK with `cdkDragHandle`, @dnd-kit
+        with a listener-bound child, react-dnd with a `drag` ref on a sub-node)
+        only initiate a drag when pointerdown fires INSIDE the explicit drag
+        handle — not anywhere on the card body. Dropping pointerdown on the
+        card body is silently ignored, and your test "succeeds" with the DOM
+        unchanged.
+
+        ── BEFORE choosing the source of any drag/swap, do this check ──
+        1. Identify the entity the prompt wants to drag (e.g. "mapping card",
+           "row", "tile", "item").
+        2. Scan ALL Signature elements. If any element's `elementType` is
+           "draggable" AND its `elementDescription` references THAT SAME entity
+           (uses words like "handle for", "reorder", "drag … card/row/item",
+           "grip", "move"), THAT element is the drag handle and it is the
+           ONLY correct source for the drag.
+        3. Use the handle's selector — NOT the card/container/entity's
+           own selector — as the source passed to `__mzPointerDrag` /
+           `__mzPointerSwap`.
+
+        This rule overrides any lexical-match reasoning. If the Signature
+        contains both:
+          • a card-like selector whose description matches the prompt's noun
+            (e.g. `.configs-container` — "Existing mapping card container")
+          • a handle selector whose description references reordering that card
+            (e.g. `.draggable-area` — "Drag handle for reordering mapping cards")
+        the handle wins. Do not pass the card.
+
+            ✗ // Prompt: "swap first and third mapping cards"
+              // Signature has BOTH .configs-container (card) and
+              // .draggable-area (drag handle for reordering cards).
+              const cards = page.locator('.configs-container');
+              await __mzPointerSwap(page, cards, 0, 2);
+              // Pointerdown lands at card-body center; CDK ignores it.
+
+            ✓ const handles = page.locator('.draggable-area');
+              await __mzPointerSwap(page, handles, 0, 2);
+
+        If the Signature does NOT contain a separate handle, fall back to the
+        entity selector itself — the helper will also try to auto-find a
+        handle inside the source via common handle-marker selectors
+        (`[cdkDragHandle]`, `.cdk-drag-handle`, `[data-drag-handle]`,
+        `.draggable-area`, `.drag-handle`, `.handle`, etc.). Treat that
+        auto-fallback as a safety net only — if the Signature names a
+        handle, name it in your test.
+
+        ── SWAPPING TWO ITEMS IN A SORTABLE LIST — HARD RULE ──
+        When the prompt asks you to SWAP two items at specific positions in a
+        sortable / draggable list (item at position i and item at position j
+        exchange places, every other item stays put), do NOT write a single
+        drag and do NOT write your own two-drag sequence. Use the
+        runner-injected helper:
+
+            const items = page.locator('<each-item-selector>');
+            await __mzPointerSwap(page, items, i, j);
+
+        Why a helper, not a single drag: nearly every sortable drag library
+        (Angular CDK cdkDropList, @dnd-kit useSortable, react-dnd sortable,
+        react-beautiful-dnd, custom mousedown handlers, …) treats a drop as
+        INSERT-AT-POSITION rather than a swap. Drag from i to j and every
+        item between them shifts by one — a reorder, not a swap.
+        `__mzPointerSwap` runs the two-step protocol that actually
+        exchanges only the two endpoints; it also short-circuits to a
+        single drag when i and j are adjacent.
+
+        The helper is in scope automatically — no import, no definition.
+        Indices are 0-based. Order doesn't matter:
+        `__mzPointerSwap(page, items, 2, 0)` ≡ `__mzPointerSwap(page, items, 0, 2)`.
+
+        Examples:
+
+            ✗ // Single drag — leaves everything between i and j off by one
+              await __mzPointerDrag(page, items.nth(0), items.nth(3));
+
+            ✓ // True swap of items at 0 and 3
+              await __mzPointerSwap(page, items, 0, 3);
+
+            ✗ // Manually written two-step swap — error-prone, brittle
+              await __mzPointerDrag(page, items.nth(2), items.nth(0));
+              await __mzPointerDrag(page, items.nth(1), items.nth(2));
+
+            ✓ await __mzPointerSwap(page, items, 0, 2);
+
+        Use `__mzPointerSwap` ONLY for swaps within a single sortable list.
+        For moving an item to a different container or zone, use plain
+        `__mzPointerDrag`.
+
+        ── ASSERTING A SWAP / REORDER — HARD RULE ──
+        After a positional swap or reorder inside a sortable list, ASSERT BY
+        IDENTITY, NOT BY POSITION.
+
+        In a vertical (or horizontal) sortable list, slot N stays at a fixed
+        y (or x). What changes is which CARD occupies that slot. So:
+
+            ✗ // Bounding boxes are tied to slots, not cards. After a real
+              // swap these numbers are UNCHANGED — y of slot 0 is still
+              // whatever it was before; only the content at slot 0 changed.
+              const firstBeforeY = (await handles.nth(0).boundingBox())!.y;
+              const thirdBeforeY = (await handles.nth(2).boundingBox())!.y;
+              await __mzPointerSwap(page, handles, 0, 2);
+              const firstAfterY = (await handles.nth(0).boundingBox())!.y;
+              expect(firstAfterY).toBeCloseTo(thirdBeforeY, 10);
+              // Will always fail on a successful swap.
+
+        Always compare something that travels WITH the card:
+
+            ✓ // innerText (works for most cards)
+              const firstBefore = await cards.nth(0).innerText();
+              const thirdBefore = await cards.nth(2).innerText();
+              await __mzPointerSwap(page, cards, 0, 2);
+              expect(await cards.nth(0).innerText()).toBe(thirdBefore);
+              expect(await cards.nth(2).innerText()).toBe(firstBefore);
+
+            ✓ // A stable identity attribute (preferred when the card has one)
+              const firstId = await cards.nth(0).getAttribute('data-id');
+              const thirdId = await cards.nth(2).getAttribute('data-id');
+              await __mzPointerSwap(page, cards, 0, 2);
+              expect(await cards.nth(0).getAttribute('data-id')).toBe(thirdId);
+              expect(await cards.nth(2).getAttribute('data-id')).toBe(firstId);
+
+        Acceptable identity anchors, in order of preference:
+          1. Stable id attribute (`data-id`, `data-testid`, `id`) — ONLY when
+             the Signature element for the card / item EXPLICITLY shows that
+             attribute. Look in the element's `elementSelector` (does it
+             contain `[data-id]`, `[data-testid="..."]`, `#someId`?) AND in
+             its `elementDescription` (does it mention the attribute by
+             name?). If neither shows it, the attribute may not exist on
+             the rendered DOM — DO NOT GUESS. Skip to (2).
+          2. `innerText` of the whole card — when the Signature does not
+             surface a stable identity attribute. Combine with plain
+             `expect(x).toBe(y)` (see "DO NOT MIX TEXT-READING APIS" below).
+          3. Inner text of a child that uniquely identifies the card
+             (a title element, a name span) — when the Signature names
+             such a child element.
+
+        Defensive coding for attribute reads:
+        If you decide to use `getAttribute`, after capturing assert that the
+        value is non-null before passing it to a matcher. Passing `null` to
+        `toHaveAttribute(name, value)` crashes Playwright with a TypeError
+        ("Cannot read properties of null") — the matcher expects a string
+        or RegExp. The TypeScript `!` operator silences the compile-time
+        check but does NOTHING at runtime. Either:
+          • Guard with `if (firstIdBefore === null) throw new Error(...)`
+            before the swap, so a missing attribute fails fast and clearly.
+          • OR fall back to innerText capture (option 2) — preferred when
+            you're unsure whether the attribute exists.
+
+        NEVER use `boundingBox`, `evaluate(el => el.getBoundingClientRect())`,
+        computed CSS `top`/`left`, or any other layout-position read to verify
+        that a swap took effect. Those numbers are properties of the slot the
+        card is in, not of the card itself, and stay constant across the swap.
+
+        ── DO NOT MIX TEXT-READING APIS — HARD RULE ──
+        Playwright has TWO different views of an element's text:
+
+          • `.innerText()` — RENDERED text. Inserts `\n` between block-level
+            children because that's what the user sees on screen.
+          • `.textContent()` and `toHaveText()` — DOM text. Raw concatenation
+            of descendant text nodes with NO inserted whitespace.
+
+        These return DIFFERENT strings for any card whose body has multiple
+        block-level children with no whitespace between them in the source HTML.
+        After `toHaveText`'s whitespace normalisation the two views STILL
+        differ — the innerText view has spaces where block boundaries were,
+        the textContent view does not.
+
+        ALWAYS use the same family on both sides of the comparison:
+
+            ✗ // Capture with innerText, assert with toHaveText — different APIs.
+              // The captured string has \n between block children that the
+              // live readback never produces. Times out.
+              const thirdBefore = await cards.nth(2).innerText();
+              await __mzPointerSwap(page, handles, 0, 2);
+              await expect(cards.nth(0)).toHaveText(thirdBefore);
+
+            ✓ // Both sides go through innerText. Use plain `.toBe()` because
+              //   `toHaveText` is textContent-flavored.
+              const thirdBefore = await cards.nth(2).innerText();
+              await __mzPointerSwap(page, handles, 0, 2);
+              expect(await cards.nth(0).innerText()).toBe(thirdBefore);
+
+            ✓ // Both sides go through textContent — `toHaveText` works.
+              const thirdBefore = await cards.nth(2).textContent();
+              await __mzPointerSwap(page, handles, 0, 2);
+              await expect(cards.nth(0)).toHaveText(thirdBefore!);
+
+            ✓ // Identity attribute — no text-API ambiguity at all.
+              const thirdId = await cards.nth(2).getAttribute('data-id');
+              await __mzPointerSwap(page, handles, 0, 2);
+              await expect(cards.nth(0)).toHaveAttribute('data-id', thirdId!);
+
+        The rule of thumb: `toHaveText(literalString)` is fine when the literal
+        is hand-written by the test (auto-normalisation handles it). But when
+        the "expected" value was captured at runtime via `.innerText()`,
+        switch to plain `expect(x).toBe(y)` so both sides are produced by the
+        SAME API.
+
         ── "select" ELEMENT TYPE — HARD RULE ──
         When the Signature lists an element with `elementType: "select"` (or
         `"combobox"` / `"multiselect"`), NEVER call `locator.selectOption(...)`.
