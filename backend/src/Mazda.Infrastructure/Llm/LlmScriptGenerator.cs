@@ -214,11 +214,153 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         comment explaining you fell back. Just write the locator. The test must
         read like a human wrote it on purpose.
 
+        ── INDEXING REPEATED ELEMENTS — HARD RULE ──
+        Your generated test MUST NOT contain `:nth-of-type(…)` or
+        `:nth-child(…)` or `:first-of-type` / `:last-of-type` /
+        `:first-child` / `:last-child` ANYWHERE in any selector string.
+        No exceptions. Not even when the Signature emits them.
+
+        WHY: CSS `:nth-of-type(n)` means "an element matching the selector
+        AND that is the n-th element of its tag among its siblings within
+        its parent". It is RELATIVE TO THE PARENT'S CHILDREN, not to the
+        matched set. So `.column-placeholder:nth-of-type(2)` returns null
+        whenever the 2nd `.column-placeholder` isn't its parent's 2nd
+        child of that tag — which is the rule rather than the exception
+        in real layouts.
+
+        WHAT TO DO INSTEAD:
+
+        (a) If you want the i-th of the matched set, separate the index
+            from the selector and use Playwright's `.nth(i)` method
+            (0-indexed) on the locator:
+
+                ✗ page.locator('.column-placeholder:nth-of-type(2)')
+                ✓ page.locator('.column-placeholder').nth(1)
+
+                ✗ page.locator('.columns-list li:nth-of-type(1)')
+                ✗ page.locator('.columns-list li:nth-of-type(2)')
+                ✗ page.locator('.columns-list li:nth-of-type(3)')
+                ✓ const items = page.locator('.columns-list li');
+                  // items.nth(0), items.nth(1), items.nth(2), …
+
+        (b) If you want the first or last, use the dedicated method:
+
+                ✗ page.locator('.row:first-of-type')
+                ✓ page.locator('.row').first()
+
+                ✗ page.locator('.row:last-child')
+                ✓ page.locator('.row').last()
+
+        REWRITE OBLIGATION:
+        If a selector you would otherwise pass to `page.locator(...)`
+        contains `:nth-of-type(n)`, `:nth-child(n)`, `:first-of-type`,
+        `:last-of-type`, `:first-child`, or `:last-child`, you MUST
+        rewrite it before using it:
+
+          1. Strip the pseudo from the selector string.
+          2. Wrap the cleaned selector in `page.locator(...)`.
+          3. Apply `.nth(n - 1)` / `.first()` / `.last()` as appropriate.
+
+        Example: the Signature gives you `.foo li:nth-of-type(3)`.
+        Do NOT write `page.locator('.foo li:nth-of-type(3)')`.
+        Write `page.locator('.foo li').nth(2)`.
+
+        This rewrite applies whether the pseudo came from the Signature,
+        from the User flows graph, or from your own reasoning.
+
+        ── LOCATOR SCOPING — CRITICAL ──
+        Every Signature selector is intended to be a UNIQUE, PAGE-LEVEL locator on
+        its own. Use it directly off `page`:
+
+            ✓ page.locator('[data-testid="editButton"]')
+            ✓ page.locator('[data-testid="editButton"]').nth(i)
+
+        DO NOT chain a Signature selector onto another locator unless the Signature
+        itself encodes the parent-child relationship in the selector string (e.g.
+        a selector like `.row .edit` is explicit about the nesting; a bare
+        `[data-testid="editButton"]` is NOT). The DOM relationships you might
+        assume from element names — "the edit button lives inside the card",
+        "the icon is inside the row" — are GUESSES and are frequently wrong.
+
+            ✗ page.locator('.column-placeholder').nth(i)
+                  .locator('[data-testid="editButton"]').click();
+              // Assumes editButton is a descendant of .column-placeholder.
+              // Often false: action buttons are commonly rendered in an
+              // overlay, modal, popper, or portal at the document root.
+
+            ✓ page.locator('[data-testid="editButton"]').nth(i).click();
+              // Trusts the Signature selector. Indexes across the global list
+              // of edit buttons — the natural correspondence the UI exposes.
+
+        Rules:
+          • To disambiguate among repeated elements, prefer `.nth(i)` /
+            `.first()` / `.last()` on the page-level locator, NOT
+            parent-scoped chaining.
+          • Only chain `parent.locator(child)` when the Signature explicitly
+            documents that the child is nested under that parent (selector
+            string contains a descendant combinator) or when the parent is a
+            modal/dialog/popover that you yourself just opened in the
+            preceding lines.
+          • If two unrelated elements happen to share a selector, that is a
+            Signature gap — call it with `.nth(i)` and rely on order, not
+            on imagined DOM hierarchy.
+          • Never write a chain longer than two levels.
+
         ── ACTIONS ──
         Translate the prompt into a sequence of: fill / click / check / uncheck /
         selectOption / setInputFiles / focus / press / hover / waitFor / expect.
         Use `await` consistently. Use `expect(locator).toBeVisible()`,
         `.toHaveText(...)`, `.toHaveValue(...)`, `.toBeChecked()`, etc. as appropriate.
+
+        ── "select" ELEMENT TYPE — HARD RULE ──
+        When the Signature lists an element with `elementType: "select"` (or
+        `"combobox"` / `"multiselect"`), NEVER call `locator.selectOption(...)`.
+        Playwright's `selectOption` only works on native `<select>` elements,
+        and modern apps almost universally implement these as custom dropdowns
+        built from `<div>`/`<button>`/`<ul>` + popper/portal. Calling
+        `selectOption` on them either errors or silently does nothing.
+
+        Use a two-step click pattern, and pick the option by its VISIBLE TEXT —
+        NOT by ARIA role. Most custom dropdowns render options as plain
+        `<div>` / `<li>` / `<span>` elements WITHOUT `role="option"` (e.g. an
+        option might be `<div data-testid="single-option-text">عدد صحیح</div>`).
+        Defaulting to `getByRole('option', …)` hangs on a node that does not
+        exist in the rendered DOM. Text-match is the only universally-safe
+        way to pick the option without prior knowledge of the dropdown's
+        internal structure.
+
+        Canonical pattern — use this by default:
+
+            // Step 1: open the dropdown.
+            await page.locator('<select selector>').click();
+
+            // Step 2: click the option by its visible text. Exact match,
+            //         `.first()` to disambiguate against stray same-text
+            //         nodes elsewhere on the page.
+            await page.getByText('<option text>', { exact: true }).first().click();
+
+        FORBIDDEN by default (will time out on custom dropdowns):
+
+            ✗ await page.getByRole('option', { name: '<option text>' }).click();
+            ✗ await page.locator('[role="option"]', { hasText: '<option text>' }).click();
+
+        You may use `getByRole('option', …)` ONLY if there is concrete evidence
+        in the Signature, human description, or User flows that the dropdown
+        is ARIA-compliant (e.g. it explicitly mentions Headless UI, MUI Select,
+        Radix Select, shadcn — libraries that emit `role="option"` themselves).
+        Without that evidence, default to `getByText`.
+
+        Optional refinements when plain text match would be ambiguous (multiple
+        same-text nodes visible at once, e.g. the dropdown trigger also shows
+        the text):
+
+            await page.locator('[data-testid="<option-testid-from-signature>"]', { hasText: '<text>' }).click();
+            await page.getByText('<option text>', { exact: true }).nth(1).click();
+
+        Apply this rule UNCONDITIONALLY for every Signature element whose
+        `elementType` is "select", "combobox", or "multiselect", regardless of
+        whether the prompt phrased it as "select X" or "choose X" or "pick X".
+        Do NOT add a comment explaining the substitution.
         """;
 
     // ── MERGE ────────────────────────────────────────────────────────

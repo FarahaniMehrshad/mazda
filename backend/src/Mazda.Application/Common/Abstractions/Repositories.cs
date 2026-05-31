@@ -22,6 +22,14 @@ public interface ISignatureRepository
     Task<IReadOnlyList<Signature>> ListAsync(Guid ownerId, CancellationToken ct = default);
     Task AddAsync(Signature signature, CancellationToken ct = default);
     Task RemoveAsync(Signature signature, CancellationToken ct = default);
+
+    /// <summary>
+    /// Hard-replace the element collection of an existing signature. Hard-deletes any
+    /// current rows at the SQL level (so we don't depend on EF Core's orphan-tracking,
+    /// which is fragile with field-backed collections under <c>WithOne()</c> mappings)
+    /// then attaches the new collection through the aggregate.
+    /// </summary>
+    Task ReplaceElementsAsync(Signature signature, IEnumerable<SignatureElement> newElements, CancellationToken ct = default);
 }
 
 public interface IGenerationRepository

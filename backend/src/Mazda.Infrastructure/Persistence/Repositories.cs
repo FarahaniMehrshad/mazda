@@ -40,6 +40,41 @@ public class SignatureRepository(MazdaDbContext db) : ISignatureRepository
         db.Signatures.Remove(signature);
         return Task.CompletedTask;
     }
+
+    public async Task ReplaceElementsAsync(Signature signature, IEnumerable<SignatureElement> newElements, CancellationToken ct = default)
+    {
+        var sigId = signature.Id;
+
+        // 1. Wipe the change tracker. Every previous attempt failed because the
+        //    parent's navigation snapshot kept old element references around, and
+        //    SaveChanges then computed a diff against rows we'd already deleted
+        //    (or were about to delete) — producing DbUpdateConcurrencyException
+        //    "expected 1 row, affected 0".
+        //
+        //    With the tracker cleared we lose ALL snapshots, so the SaveChanges
+        //    diff cannot reach back to phantom rows. Safe in this handler — the
+        //    only entities loaded here are this signature and its elements.
+        db.ChangeTracker.Clear();
+
+        // 2. Hard-delete the existing element rows at the DB level. ExecuteDelete
+        //    emits a single SQL statement and bypasses the change tracker entirely.
+        await db.SignatureElements
+            .Where(e => e.SignatureId == sigId)
+            .ExecuteDeleteAsync(ct);
+
+        // 3. Reset the in-memory navigation collection on the (detached) signature
+        //    to the new elements.
+        signature.ReplaceElements(newElements);
+
+        // 4. Re-attach with explicit states. Don't rely on EF inference: each
+        //    SignatureElement has a non-default Guid Id (Entity base ctor sets
+        //    Guid.NewGuid()), so Attach would default them to Unchanged and EF
+        //    would skip inserting them. We force Added.
+        db.Signatures.Attach(signature);
+        db.Entry(signature).State = EntityState.Modified;
+        foreach (var child in signature.Elements)
+            db.Entry(child).State = EntityState.Added;
+    }
 }
 
 public class GenerationRepository(MazdaDbContext db) : IGenerationRepository

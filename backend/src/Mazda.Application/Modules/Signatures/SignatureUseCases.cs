@@ -88,9 +88,10 @@ public class SaveSignatureHandler(ISignatureRepository repo, ICurrentUser me, IU
         if (me.UserId is null) return Result.Failure<SignatureDto>(Error.Validation("Not authenticated."));
 
         Signature sig;
-        if (cmd.Id is { } id)
+        var isUpdate = cmd.Id is { } id;
+        if (isUpdate)
         {
-            var found = await repo.FindByIdAsync(id, me.UserId.Value, ct);
+            var found = await repo.FindByIdAsync(cmd.Id!.Value, me.UserId.Value, ct);
             if (found is null) return Result.Failure<SignatureDto>(Error.NotFound("Signature"));
             sig = found;
             sig.Rename(cmd.Name);
@@ -105,7 +106,19 @@ public class SaveSignatureHandler(ISignatureRepository repo, ICurrentUser me, IU
         var elements = cmd.Elements
             .Select((e, i) => SignatureElement.Create(e.Selector, e.ElementType, e.Description, i))
             .ToList();
-        sig.ReplaceElements(elements);
+
+        if (isUpdate)
+        {
+            // Explicit hard-replace via the repo: bulk-deletes old element rows in SQL,
+            // then attaches the new collection. Avoids EF orphan-tracking pitfalls.
+            await repo.ReplaceElementsAsync(sig, elements, ct);
+        }
+        else
+        {
+            // Brand-new signature — no rows in DB yet, the simple aggregate method
+            // is sufficient (everything goes in as INSERTs).
+            sig.ReplaceElements(elements);
+        }
 
         await uow.SaveChangesAsync(ct);
         return Result.Success(sig.ToDto());
