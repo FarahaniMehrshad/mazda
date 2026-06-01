@@ -261,6 +261,33 @@ function ElementRow({ index, el }: { index: number; el: SignatureElementDto }) {
         <div style={{ fontSize: 11.5, color: "var(--text-3)", marginTop: 2 }}>
           {el.description || <em style={{ opacity: 0.5 }}>no description</em>}
         </div>
+        {el.logic && el.logic.trim().length > 0 && (
+          <div
+            style={{
+              fontSize: 11,
+              color: "var(--text-4)",
+              marginTop: 6,
+              paddingLeft: 8,
+              borderLeft: "2px solid rgba(234,112,40,0.25)",
+              lineHeight: 1.45,
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            <span
+              style={{
+                fontFamily: "var(--f-mono)",
+                fontSize: 9.5,
+                color: "var(--orange-200)",
+                letterSpacing: "0.04em",
+                display: "block",
+                marginBottom: 2,
+              }}
+            >
+              LOGIC
+            </span>
+            {el.logic}
+          </div>
+        )}
       </div>
       <Pill>{el.elementType}</Pill>
     </div>

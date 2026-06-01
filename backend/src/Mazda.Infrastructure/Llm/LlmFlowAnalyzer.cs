@@ -102,8 +102,10 @@ public class LlmFlowAnalyzer(IOptions<LlmOptions> options) : IFlowAnalyzer
             elements = signature.Elements.OrderBy(e => e.Order).Select(e => new
             {
                 selector = e.ElementSelector,
+                category = e.Category.ToString().ToLowerInvariant(),
                 elementType = e.ElementType,
                 description = e.ElementDescription,
+                logic = string.IsNullOrWhiteSpace(e.ElementLogic) ? null : e.ElementLogic,
             }),
         }, new JsonSerializerOptions { WriteIndented = true });
 

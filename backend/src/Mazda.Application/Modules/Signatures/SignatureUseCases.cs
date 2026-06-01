@@ -6,7 +6,7 @@ using Mazda.Domain.Modules.Signatures;
 
 namespace Mazda.Application.Modules.Signatures;
 
-public record SignatureElementDto(string Selector, string Category, string ElementType, string Description);
+public record SignatureElementDto(string Selector, string Category, string ElementType, string Description, string Logic);
 
 public record SignatureDto(
     Guid Id,
@@ -26,7 +26,7 @@ internal static class SignatureMapper
         s.Id, s.Name, s.Version, s.Source, s.Type, s.HumanDescription, s.UserFlowsJson,
         s.Elements.Count, s.UpdatedAt,
         s.Elements.OrderBy(e => e.Order).Select(e => new SignatureElementDto(
-            e.ElementSelector, e.Category.ToString(), e.ElementType, e.ElementDescription)).ToList());
+            e.ElementSelector, e.Category.ToString(), e.ElementType, e.ElementDescription, e.ElementLogic)).ToList());
 
     internal static ElementCategory ParseCategory(string? raw)
     {
@@ -117,7 +117,7 @@ public class SaveSignatureHandler(ISignatureRepository repo, ICurrentUser me, IU
         }
 
         var elements = cmd.Elements
-            .Select((e, i) => SignatureElement.Create(e.Selector, SignatureMapper.ParseCategory(e.Category), e.ElementType, e.Description, i))
+            .Select((e, i) => SignatureElement.Create(e.Selector, SignatureMapper.ParseCategory(e.Category), e.ElementType, e.Description, i, e.Logic))
             .ToList();
 
         if (isUpdate)
@@ -184,7 +184,7 @@ public class AnalyzeComponentHandler(
 
         var sig = Signature.Create(me.UserId.Value, analysis.SuggestedName, cmd.FileName, analysis.SuggestedType, cmd.Description);
         var elements = analysis.Elements
-            .Select((e, i) => SignatureElement.Create(e.Selector, SignatureMapper.ParseCategory(e.Category), e.ElementType, e.Description, i))
+            .Select((e, i) => SignatureElement.Create(e.Selector, SignatureMapper.ParseCategory(e.Category), e.ElementType, e.Description, i, e.Logic))
             .ToList();
         sig.ReplaceElements(elements);
 

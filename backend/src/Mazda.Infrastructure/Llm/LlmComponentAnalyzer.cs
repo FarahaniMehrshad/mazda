@@ -26,7 +26,8 @@ public class LlmComponentAnalyzer(IOptions<LlmOptions> options) : IComponentAnal
               "elementSelector":     "a Playwright-ready CSS selector — see SELECTOR RULES below",
               "elementCategory":     "interactive" | "informational",
               "elementType":         one of the type tokens (per-category) below,
-              "elementDescription":  "one short sentence in plain English about what this element does"
+              "elementDescription":  "one short sentence in plain English about what this element does",
+              "elementLogic":        "OPTIONAL — structural / lifecycle / relational notes; see LOGIC RULES below. Empty string when there is nothing non-obvious to say."
             }
           ]
         }
@@ -141,6 +142,76 @@ public class LlmComponentAnalyzer(IOptions<LlmOptions> options) : IComponentAnal
         status / value / count displays that the rest of the UI is built
         around. If you have 50 informational elements on a component with 5
         buttons, you are over-including decorative text.
+
+        ── LOGIC RULES — STRUCTURAL / LIFECYCLE / RELATIONAL NOTES ──
+        elementDescription says WHAT an element IS (one sentence, user-visible).
+        elementLogic captures the structural / non-visible knowledge a test
+        author would otherwise have to read the source to understand.
+
+        Emit elementLogic ONLY when the answer to ANY of these is non-obvious:
+
+          1. CARDINALITY: how many of these exist? Is the count fixed, bound
+             to another collection (one badge per row), or N+1 / N-1 of
+             another element?
+          2. INDEX SEMANTICS: what does `.nth(i)` MEAN for this element
+             relative to the rest of the UI? (e.g. ".new-card-placement"
+             at index `i` represents the slot BEFORE card `i`; the last
+             one — at index `cardCount` — is the slot AFTER the final card.)
+          3. LIFECYCLE: when does this element exist in the DOM?
+             • Always present from initial render? → no logic needed.
+             • Only present on hover / focus / drag / a parent's open state?
+             • Created/destroyed by a user action (`*ngIf`, conditional render)?
+             • Disappears after a timeout or animation?
+          4. RELATIONSHIPS: depends on, mutually exclusive with, or affects
+             the existence of another element? (e.g. "Submit button is
+             disabled until at least one row is added"; "Edit button is
+             hidden when this row is in edit mode — the inputs replace it.")
+          5. ORDER / SORT: does this element's display order follow a rule
+             a test might care about? (e.g. "Rows are sorted by the value
+             of the status column ascending"; "New rows are appended to
+             the end of the list, not prepended.")
+
+        Skip elementLogic (leave it `""`) for self-explanatory elements:
+          • A standalone "Save" button.
+          • A page heading.
+          • A text input bound to a single field.
+          • An icon button whose description already says everything.
+
+        STYLE:
+          • Plain English, 1–4 sentences. No code.
+          • Use concrete numbers / index relationships when possible
+            ("N+1 for N cards", "indices 0..cardCount-1", "exactly one per row").
+          • Reference OTHER elements by their conceptual name (the parent
+            entity), not their selector. ("between cards" beats "between
+            `.configs-container` elements").
+          • Avoid restating the description. The two fields complement, not
+            duplicate.
+
+        Worked example for the placeholder case the user raised:
+          selector:    ".new-card-placement"
+          category:    "interactive"
+          type:        "dropzone"
+          description: "Drop zone between mapping cards. Dropping an input
+                        column here inserts a new mapping card at that slot."
+          logic:       "There are N+1 placements for N mapping cards. The
+                        placement at index `i` represents the slot BEFORE
+                        card `i`. The last placement (index = cardCount) is
+                        the slot AFTER the final card. To insert between
+                        the first and second card, use index 1, not 0.
+                        Placements remain in the DOM whether or not a drag
+                        is active."
+
+        Other examples worth modelling:
+          • "Edit input on a row" → logic: "Replaces the row's name display
+            only while the row is in edit mode (after Edit click). The
+            display reappears on Save or Cancel."
+          • "Status badge" → logic: "One per row. Text is bound to
+            row.status; possible values are 'Pending' | 'Ready' | 'Failed'."
+          • "Submit button" → logic: "Disabled until the form has at least
+            one valid mapping row; clicking it submits and closes the modal."
+
+        Leave logic empty when none of (1)–(5) yields a non-obvious answer.
+        Don't pad. Empty is the right value for most elements.
 
         ── DRAG HANDLES — DETECT AND EMIT SEPARATELY (CRITICAL) ──
         Sortable / draggable libraries (Angular CDK, @dnd-kit, react-dnd,
@@ -321,8 +392,9 @@ public class LlmComponentAnalyzer(IOptions<LlmOptions> options) : IComponentAnal
                     var category = e.TryGetProperty("elementCategory", out var v0) ? v0.GetString() ?? "" : "";
                     var etype    = e.TryGetProperty("elementType", out var v2) ? v2.GetString() ?? "input" : "input";
                     var desc     = e.TryGetProperty("elementDescription", out var v3) ? v3.GetString() ?? "" : "";
+                    var logic    = e.TryGetProperty("elementLogic", out var v4) ? v4.GetString() ?? "" : "";
                     if (!string.IsNullOrWhiteSpace(selector))
-                        elements.Add(new AnalyzedElement(selector, category, etype, desc));
+                        elements.Add(new AnalyzedElement(selector, category, etype, desc, logic));
                 }
             }
         }

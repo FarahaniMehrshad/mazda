@@ -94,9 +94,12 @@ using (var scope = app.Services.CreateScope())
     // Existing rows back-fill to Interactive — that's what they all were before
     // this feature existed, so the default keeps prior signatures behaving the
     // same. Subsequent analyzer runs can also include Informational rows.
+    // element_logic: free-form structural / lifecycle / relational notes —
+    // empty by default; populated by the analyzer when worth describing.
     db.Database.ExecuteSqlRaw("""
         ALTER TABLE signature_elements
-            ADD COLUMN IF NOT EXISTS category varchar(20) NOT NULL DEFAULT 'Interactive';
+            ADD COLUMN IF NOT EXISTS category      varchar(20) NOT NULL DEFAULT 'Interactive',
+            ADD COLUMN IF NOT EXISTS element_logic text        NOT NULL DEFAULT '';
         """);
 }
 

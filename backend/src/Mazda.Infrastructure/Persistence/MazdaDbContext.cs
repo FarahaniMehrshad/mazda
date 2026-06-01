@@ -74,6 +74,7 @@ internal class SignatureElementConfig : IEntityTypeConfiguration<SignatureElemen
         b.Property(x => x.ElementSelector).HasColumnName("element_selector").HasMaxLength(500).IsRequired();
         b.Property(x => x.Category).HasColumnName("category").HasConversion<string>().HasMaxLength(20);
         b.Property(x => x.ElementType).HasMaxLength(40).IsRequired();
+        b.Property(x => x.ElementLogic).HasColumnName("element_logic");
         b.Property(x => x.ElementDescription).HasMaxLength(1000);
         b.HasIndex(x => new { x.SignatureId, x.Order });
     }

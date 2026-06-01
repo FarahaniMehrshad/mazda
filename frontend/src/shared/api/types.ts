@@ -10,6 +10,8 @@ export interface SignatureElementDto {
   category: "Interactive" | "Informational" | string;
   elementType: string;
   description: string;
+  /** Optional structural / lifecycle / relational notes. May be empty. */
+  logic?: string;
 }
 
 export interface SignatureDto {

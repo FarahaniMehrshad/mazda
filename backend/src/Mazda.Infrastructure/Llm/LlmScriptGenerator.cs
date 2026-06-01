@@ -191,6 +191,48 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         - End with at least one `expect(...)` assertion. If the prompt implies several
           verifiable outcomes, assert each one.
 
+        ── elementLogic — READ IT BEFORE PICKING INDEXES ──
+        Every Signature element MAY carry an optional `elementLogic` string. When
+        present, it captures the STRUCTURAL knowledge a test author would
+        otherwise have to read the source to understand: cardinality (how many
+        of these exist relative to other elements), index semantics (what does
+        `.nth(i)` MEAN for this element), lifecycle (when does the element
+        exist), and relationships to other elements.
+
+        Always read `elementLogic` of every element you target BEFORE deciding:
+          • which index to pass to `.nth(i)`,
+          • whether the element will exist at the moment of your action,
+          • whether you need to open / hover / drag-start to reveal it first,
+          • whether the order you see on screen matches the DOM order.
+
+        Worked example. Suppose the Signature contains:
+
+            {
+              "elementSelector":  ".new-card-placement",
+              "elementType":      "dropzone",
+              "elementDescription": "Drop zone between mapping cards…",
+              "elementLogic":     "There are N+1 placements for N mapping
+                                   cards. Placement at index `i` represents
+                                   the slot BEFORE card `i`. The last
+                                   placement (index = cardCount) is the slot
+                                   AFTER the final card."
+            }
+
+        Then if the prompt says "insert a new mapping between card 1 and
+        card 2":
+
+            ✗ // Treats "between 1 and 2" as the *first* gap → wrong slot.
+              await __mzPointerDrag(page, source,
+                  page.locator('.new-card-placement').nth(0));
+
+            ✓ // Logic says: placement at index `i` = slot BEFORE card `i`.
+              // Between card 1 (0-indexed) and card 2 = before card 2 = nth(2).
+              await __mzPointerDrag(page, source,
+                  page.locator('.new-card-placement').nth(2));
+
+        If `elementLogic` is absent or empty, fall back to your usual
+        assumptions but be aware that any index reasoning is guessing.
+
         ── INTERACTIVE vs INFORMATIONAL ELEMENTS ──
         Every Signature element carries `elementCategory` which is either
         `"interactive"` or `"informational"`:
@@ -727,7 +769,10 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
                 elementSelector = e.ElementSelector,
                 elementCategory = e.Category.ToString().ToLowerInvariant(), // "interactive" | "informational"
                 elementType = e.ElementType,
-                elementDescription = e.ElementDescription
+                elementDescription = e.ElementDescription,
+                // Optional structural / lifecycle / relational notes. Omitted from the
+                // serialisation when empty so the LLM sees fewer noisy keys.
+                elementLogic = string.IsNullOrWhiteSpace(e.ElementLogic) ? null : e.ElementLogic,
             })
         }, new JsonSerializerOptions { WriteIndented = true });
 

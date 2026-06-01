@@ -87,11 +87,22 @@ public class SignatureElement : Entity
     public ElementCategory Category { get; private set; } = ElementCategory.Interactive;
     public string ElementType { get; private set; } = null!; // input | select | button | text | status | value | ...
     public string ElementDescription { get; private set; } = null!;
+
+    /// <summary>
+    /// Optional STRUCTURAL / LOGICAL description that goes beyond "what is this".
+    /// Captures lifecycle (when the element exists, when it's created/destroyed),
+    /// cardinality relationships to other elements (N+1 placements per N cards,
+    /// one badge per row, etc.), index semantics (what does .nth(i) mean for
+    /// THIS element relative to its siblings), and any non-obvious dependency
+    /// on UI state. Empty when the element is self-explanatory.
+    /// </summary>
+    public string ElementLogic { get; private set; } = string.Empty;
+
     public int Order { get; private set; }
 
     private SignatureElement() { }
 
-    public static SignatureElement Create(string selector, ElementCategory category, string type, string description, int order)
+    public static SignatureElement Create(string selector, ElementCategory category, string type, string description, int order, string? logic = null)
     {
         if (string.IsNullOrWhiteSpace(selector)) throw new ArgumentException("selector required.");
         if (string.IsNullOrWhiteSpace(type)) throw new ArgumentException("type required.");
@@ -101,6 +112,7 @@ public class SignatureElement : Entity
             Category = category,
             ElementType = type.Trim().ToLowerInvariant(),
             ElementDescription = description?.Trim() ?? string.Empty,
+            ElementLogic = logic?.Trim() ?? string.Empty,
             Order = order
         };
     }
