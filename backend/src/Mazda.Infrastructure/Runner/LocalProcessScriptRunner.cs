@@ -81,8 +81,18 @@ public sealed class LocalProcessScriptRunner(
         var fullLog = new StringBuilder();
         void Emit(string line)
         {
-            registry.Append(generationId, line);
-            fullLog.AppendLine(line);
+            // Strip ANSI escape sequences before storing/streaming. Two reasons:
+            //   1. NO_COLOR + FORCE_COLOR env hints do NOT actually scrub
+            //      everything — Jest's expect() emits inverse-video markers
+            //      (\x1b[7m … \x1b[27m) to highlight diffing characters
+            //      regardless of color env vars; Playwright's list reporter
+            //      occasionally slips through codes too.
+            //   2. The browser sees these through SSE → JSON.stringify → <pre>
+            //      and renders the ESC byte as nothing, leaving garbage like
+            //      `[33m`, `[7m`, `[27m` interleaved with the actual text.
+            var stripped = StripAnsi(line);
+            registry.Append(generationId, stripped);
+            fullLog.AppendLine(stripped);
         }
 
         var psi = new ProcessStartInfo
@@ -93,8 +103,10 @@ public sealed class LocalProcessScriptRunner(
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
-            // NO_COLOR so the line reporter emits plain text — easier to render in the browser.
-            Environment = { ["NO_COLOR"] = "1", ["FORCE_COLOR"] = "0" },
+            // Only NO_COLOR. Setting FORCE_COLOR to *any* value (even "0")
+            // makes Node ignore NO_COLOR and emit a warning to stderr —
+            // exactly the warning the user saw in the broken log.
+            Environment = { ["NO_COLOR"] = "1" },
         };
         psi.ArgumentList.Add("playwright");
         psi.ArgumentList.Add("test");
@@ -297,6 +309,30 @@ async function __mzPointerSwap(page: any, items: any, i: number, j: number): Pro
 // === end auto-injected ===
 
 """;
+
+    // ANSI escape stripper. Covers the three sequence families Playwright /
+    // Jest / Node ever actually emit:
+    //   - CSI (most common): ESC '[' <params> <intermediates> <final 0x40-0x7E>
+    //     — matches SGR colour codes ([33m, [39m, [7m, [27m, ...),
+    //       cursor moves, erase-line, etc.
+    //   - OSC (set-window-title, hyperlinks): ESC ']' <body> (BEL | ESC '\')
+    //   - Lone two-byte ESC sequences (rare ESC + single char forms).
+    //
+    // Also strips bare CSI bodies (e.g. "[27m") that occasionally appear
+    // without their leading ESC byte — when something upstream eats the ESC
+    // before we see the line.
+    private static readonly Regex AnsiSequences = new(
+        "(?:" +
+        "\\u001B\\[[\\x30-\\x3F]*[\\x20-\\x2F]*[\\x40-\\x7E]" +
+        "|\\u001B\\][^\\x07\\u001B]*(?:\\x07|\\u001B\\\\)" +
+        "|\\u001B[@-Z\\\\\\-_]" +
+        ")" +
+        "|\\[\\d+(?:;\\d+)*m",
+        RegexOptions.Compiled);
+
+    private static string StripAnsi(string s) =>
+        string.IsNullOrEmpty(s) ? s : AnsiSequences.Replace(s, string.Empty);
+
 
     private static string RewriteHosts(string source)
     {
