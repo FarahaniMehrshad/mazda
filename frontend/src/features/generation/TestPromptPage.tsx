@@ -102,7 +102,7 @@ export function TestPromptPage() {
             </div>
             <textarea
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value.slice(0, 4000))}
+              onChange={(e) => setPrompt(e.target.value)}
               placeholder="e.g. Add a row, set the output type to Number, and assert the chip shows '1 mapped'."
               style={{
                 width: "100%",
@@ -141,7 +141,7 @@ export function TestPromptPage() {
               ))}
             </div>
             <div style={{ fontFamily: "var(--f-mono)", fontSize: 11, color: "var(--text-4)", textAlign: "right" }}>
-              {prompt.length} / 4000
+              {prompt.length.toLocaleString()} chars
             </div>
             <BtnPrimary
               full

@@ -87,7 +87,7 @@ public class GenerateSetupValidator : AbstractValidator<GenerateSetupCommand>
     public GenerateSetupValidator()
     {
         RuleFor(x => x.GenerationId).NotEmpty();
-        RuleFor(x => x.SetupPrompt).NotEmpty().MaximumLength(4000);
+        RuleFor(x => x.SetupPrompt).NotEmpty();
     }
 }
 
@@ -140,7 +140,7 @@ public class GenerateTestValidator : AbstractValidator<GenerateTestCommand>
     public GenerateTestValidator()
     {
         RuleFor(x => x.GenerationId).NotEmpty();
-        RuleFor(x => x.TestPrompt).NotEmpty().MaximumLength(4000);
+        RuleFor(x => x.TestPrompt).NotEmpty();
     }
 }
 

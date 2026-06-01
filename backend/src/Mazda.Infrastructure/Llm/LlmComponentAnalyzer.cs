@@ -66,6 +66,81 @@ public class LlmComponentAnalyzer(IOptions<LlmOptions> options) : IComponentAnal
         SKIP only purely decorative nodes: presentational <div>/<span>, headings,
         plain text, static icons without handlers, images without onClick.
 
+        ── DRAG HANDLES — DETECT AND EMIT SEPARATELY (CRITICAL) ──
+        Sortable / draggable libraries (Angular CDK, @dnd-kit, react-dnd,
+        react-beautiful-dnd, native HTML5 drag) routinely declare a SEPARATE
+        drag-handle child inside a draggable card / row / item. The handle is
+        the only element where pointerdown actually starts the drag —
+        pointerdown anywhere else on the card is silently ignored by the
+        library. If you fail to emit the handle as its own Signature element,
+        downstream tests will target the card body and never actually drag.
+
+        Be aggressive about detecting handles. Markers to look for in source:
+
+        Angular CDK:
+          • Attribute  [cdkDragHandle]  (most common)
+          • Selector   cdkDragHandle    (as an Angular directive)
+          • Class      .cdk-drag-handle (rendered onto the host element)
+          • Sibling indicator: the parent has [cdkDrag] / cdkDrag
+
+        @dnd-kit:
+          • A child receives the spread of `attributes` and `listeners` from
+            `useSortable` / `useDraggable`. The handle is wherever
+            `{...listeners}` is applied — NOT the wrapper `setNodeRef` target.
+          • Class names containing "handle" / "grip" are strong hints.
+
+        react-dnd / react-beautiful-dnd:
+          • react-dnd: a child receives the `drag` connector ref.
+          • react-beautiful-dnd: a child receives `dragHandleProps`.
+          • Attribute  [data-rbd-drag-handle-draggable-id]
+
+        Generic / custom:
+          • Class names: .drag-handle, .draggable-area, .handle, .grip,
+            .move-handle, .reorder-handle, .sortable-handle
+          • Attributes: [data-drag-handle], [data-handle], [draggable="true"]
+            applied to a child of a larger card
+          • A visually-small icon child (☰, ⋮⋮, grip icon SVG) inside an
+            otherwise non-draggable-looking row.
+
+        When you detect a drag handle, emit TWO signature elements:
+
+        1. The DRAG HANDLE itself (the inner element):
+             elementType:        "draggable"
+             elementSelector:    selector targeting the HANDLE element
+                                 (e.g. ".cdk-drag-handle", ".draggable-area",
+                                 ".configs-container .drag-handle", etc.)
+             elementDescription: MUST say "Drag handle for reordering …" or
+                                 "Grip to drag … card/row/item". Spell out
+                                 what entity it drags — be specific.
+                                 ✓ "Drag handle for reordering mapping cards.
+                                    Pointerdown must occur here for the drag
+                                    to start."
+                                 ✗ "Draggable element."  (too vague)
+
+        2. The CONTAINER / CARD (the outer element), if it's separately
+           meaningful (a drop zone, a click target, the parent of the row):
+             elementType:        "card" | "row" | "listitem" | "dropzone"
+                                 — pick what FITS THE CONTAINER'S ROLE.
+                                 Do NOT use "draggable" on the container
+                                 when a separate handle exists; the
+                                 container is not where the drag starts.
+             elementDescription: describe the container's role (drop zone,
+                                 the card being dragged, etc.). If the
+                                 container is itself a drop target, say so
+                                 explicitly.
+
+        Cross-reference the descriptions so the downstream test generator
+        can connect handle ↔ container: in the handle's description, name
+        the entity (e.g. "mapping card"). In the container's description,
+        use the same entity name. The lexical link is what lets the
+        downstream generator know "to drag a mapping card, use the handle
+        whose description mentions mapping card".
+
+        NEVER mark a card container with elementType "draggable" when an
+        inner drag handle exists. Doing so misleads the test generator
+        into clicking the card body — which the drag library will silently
+        ignore.
+
         ── SELECTOR RULES ──
         elementSelector MUST be a single Playwright-compatible CSS selector string.
         Pick the most stable anchor available, in this order of preference:

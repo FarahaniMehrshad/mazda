@@ -102,7 +102,7 @@ export function SetupPage() {
             </div>
             <textarea
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value.slice(0, 4000))}
+              onChange={(e) => setPrompt(e.target.value)}
               placeholder="e.g. Connect to Chrome on localhost:9222 via CDP and use the first page."
               style={{
                 width: "100%",
@@ -141,7 +141,7 @@ export function SetupPage() {
               ))}
             </div>
             <div style={{ fontFamily: "var(--f-mono)", fontSize: 11, color: "var(--text-4)", textAlign: "right" }}>
-              {prompt.length} / 4000
+              {prompt.length.toLocaleString()} chars
             </div>
             <BtnPrimary
               full

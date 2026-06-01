@@ -72,11 +72,22 @@ using (var scope = app.Services.CreateScope())
     // idempotently. Postgres ADD COLUMN IF NOT EXISTS is safe to re-run.
     db.Database.ExecuteSqlRaw("""
         ALTER TABLE signatures
-            ADD COLUMN IF NOT EXISTS last_setup_prompt varchar(4000) NOT NULL DEFAULT '',
-            ADD COLUMN IF NOT EXISTS last_test_prompt  varchar(4000) NOT NULL DEFAULT '',
-            ADD COLUMN IF NOT EXISTS last_setup_script text          NOT NULL DEFAULT '',
-            ADD COLUMN IF NOT EXISTS last_test_script  text          NOT NULL DEFAULT '',
-            ADD COLUMN IF NOT EXISTS last_final_script text          NOT NULL DEFAULT '';
+            ADD COLUMN IF NOT EXISTS last_setup_prompt text NOT NULL DEFAULT '',
+            ADD COLUMN IF NOT EXISTS last_test_prompt  text NOT NULL DEFAULT '',
+            ADD COLUMN IF NOT EXISTS last_setup_script text NOT NULL DEFAULT '',
+            ADD COLUMN IF NOT EXISTS last_test_script  text NOT NULL DEFAULT '',
+            ADD COLUMN IF NOT EXISTS last_final_script text NOT NULL DEFAULT '';
+        """);
+
+    // Lift the legacy varchar(4000) cap on prompt columns. Non-locking conversion
+    // since text → varchar(4000) was the original direction; widening is a no-op
+    // for existing data. Idempotent — once these are already text, the ALTERs
+    // are no-ops at the Postgres planner level.
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE signatures        ALTER COLUMN last_setup_prompt TYPE text;
+        ALTER TABLE signatures        ALTER COLUMN last_test_prompt  TYPE text;
+        ALTER TABLE generations       ALTER COLUMN setup_prompt      TYPE text;
+        ALTER TABLE generations       ALTER COLUMN test_prompt       TYPE text;
         """);
 }
 

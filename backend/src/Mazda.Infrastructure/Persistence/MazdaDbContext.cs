@@ -50,8 +50,10 @@ internal class SignatureConfig : IEntityTypeConfiguration<Signature>
         b.Property(x => x.Type).HasMaxLength(40);
         b.Property(x => x.HumanDescription).HasColumnName("human_description").HasMaxLength(50_000);
         b.Property(x => x.UserFlowsJson).HasColumnName("user_flows").HasMaxLength(200_000);
-        b.Property(x => x.LastSetupPrompt).HasColumnName("last_setup_prompt").HasMaxLength(4000);
-        b.Property(x => x.LastTestPrompt).HasColumnName("last_test_prompt").HasMaxLength(4000);
+        // Prompts are intentionally unbounded so the user can paste arbitrarily
+        // large context (long English instructions, copied logs, etc.).
+        b.Property(x => x.LastSetupPrompt).HasColumnName("last_setup_prompt");
+        b.Property(x => x.LastTestPrompt).HasColumnName("last_test_prompt");
         b.Property(x => x.LastSetupScript).HasColumnName("last_setup_script");
         b.Property(x => x.LastTestScript).HasColumnName("last_test_script");
         b.Property(x => x.LastFinalScript).HasColumnName("last_final_script");
@@ -82,9 +84,9 @@ internal class GenerationConfig : IEntityTypeConfiguration<Generation>
     {
         b.ToTable("generations");
         b.HasKey(x => x.Id);
-        b.Property(x => x.SetupPrompt).HasColumnName("setup_prompt").HasMaxLength(4000);
+        b.Property(x => x.SetupPrompt).HasColumnName("setup_prompt");
         b.Property(x => x.SetupScript).HasColumnName("setup_script");
-        b.Property(x => x.TestPrompt).HasColumnName("test_prompt").HasMaxLength(4000);
+        b.Property(x => x.TestPrompt).HasColumnName("test_prompt");
         b.Property(x => x.TestScript).HasColumnName("test_script");
         b.Property(x => x.FinalScript).HasColumnName("final_script");
         b.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
