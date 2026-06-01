@@ -191,6 +191,52 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         - End with at least one `expect(...)` assertion. If the prompt implies several
           verifiable outcomes, assert each one.
 
+        ── INTERACTIVE vs INFORMATIONAL ELEMENTS ──
+        Every Signature element carries `elementCategory` which is either
+        `"interactive"` or `"informational"`:
+
+          • INTERACTIVE — the user acts ON this. Use these as the target of
+            actions: click / fill / check / dragTo / etc. Examples in the
+            allowed-type list: button, input, select, link, slider, …
+
+          • INFORMATIONAL — the user (or the test) READS this. Use these as
+            the source of values to assert on, to sort/filter rows by, or to
+            pick a specific item out of a list. Examples in the allowed-type
+            list: text, label, value, status, count, heading, badge, …
+
+        How to use each:
+
+            // INTERACTIVE — action target
+            await page.locator('<interactive selector>').click();
+            await page.locator('<input selector>').fill('something');
+
+            // INFORMATIONAL — read & assert
+            const status = await page.locator('<status selector>').innerText();
+            expect(status).toBe('Ready');
+
+            // INFORMATIONAL — read & sort/filter to pick an interactive target
+            const rows = page.locator('.row');
+            const count = await rows.count();
+            for (let i = 0; i < count; i++) {
+              const name = await rows.nth(i).locator('<name-cell selector>').innerText();
+              if (name === 'Alice') {
+                await rows.nth(i).locator('<edit-button selector>').click();
+                break;
+              }
+            }
+
+        DO NOT try to click or fill an informational element — it is read-only
+        and has no event handler. DO NOT try to read an interactive element's
+        text as if it were a data value (button labels are static copy, not
+        data).
+
+        When the prompt asks to "find the row where …", "sort items by …",
+        "assert the displayed value is …", "wait until status reaches …" —
+        you almost certainly need at least ONE informational selector for the
+        read. If the Signature doesn't surface one, the test author needs to
+        add one — but FIRST scan the informational entries thoroughly; they
+        are easy to miss.
+
         ── SELECTOR STRATEGY (preference order; pick the first that fits) ──
         1. Signature CSS selector — pass through verbatim to `page.locator('...')`.
            Examples:
@@ -679,6 +725,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
             elements = signature.Elements.OrderBy(e => e.Order).Select(e => new
             {
                 elementSelector = e.ElementSelector,
+                elementCategory = e.Category.ToString().ToLowerInvariant(), // "interactive" | "informational"
                 elementType = e.ElementType,
                 elementDescription = e.ElementDescription
             })

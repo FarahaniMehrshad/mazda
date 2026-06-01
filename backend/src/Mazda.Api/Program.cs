@@ -89,6 +89,15 @@ using (var scope = app.Services.CreateScope())
         ALTER TABLE generations       ALTER COLUMN setup_prompt      TYPE text;
         ALTER TABLE generations       ALTER COLUMN test_prompt       TYPE text;
         """);
+
+    // Category discriminator on signature_elements (Interactive vs Informational).
+    // Existing rows back-fill to Interactive — that's what they all were before
+    // this feature existed, so the default keeps prior signatures behaving the
+    // same. Subsequent analyzer runs can also include Informational rows.
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE signature_elements
+            ADD COLUMN IF NOT EXISTS category varchar(20) NOT NULL DEFAULT 'Interactive';
+        """);
 }
 
 app.UseExceptionHandler();

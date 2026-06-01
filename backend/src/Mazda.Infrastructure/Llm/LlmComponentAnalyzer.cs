@@ -24,16 +24,37 @@ public class LlmComponentAnalyzer(IOptions<LlmOptions> options) : IComponentAnal
           "elements": [
             {
               "elementSelector":     "a Playwright-ready CSS selector — see SELECTOR RULES below",
-              "elementType":         one of the type tokens below,
+              "elementCategory":     "interactive" | "informational",
+              "elementType":         one of the type tokens (per-category) below,
               "elementDescription":  "one short sentence in plain English about what this element does"
             }
           ]
         }
 
-        Allowed elementType tokens (pick the closest fit):
+        elementCategory MUST be exactly one of:
+          • "interactive"   — something the user ACTS ON (click, fill, drag, toggle, …).
+          • "informational" — something the user READS or the test ASSERTS / SORTS / FILTERS
+                              by. Carries data, not actions.
+
+        Allowed elementType tokens depend on elementCategory.
+
+        Interactive (existing vocabulary):
           input, textarea, select, combobox, multiselect, checkbox, radio, switch, toggle,
           button, link, menuitem, tab, accordion, slider, datepicker, timepicker, colorpicker,
           file-input, dropzone, search, chip, card, listitem, treeitem, row, cell, icon-button
+
+        Informational (read-only):
+          text       — generic visible text content (a paragraph, a description block).
+          label      — a fixed label that names a value next to it.
+          value      — a dynamic value displayed (a number, name, date, currency).
+          status     — a status / state indicator (badge color, "Active" / "Pending" …).
+          count      — a count or numeric tally ("12 results", "3 selected").
+          heading    — a section title / page heading.
+          badge      — a non-clickable badge / pill / tag carrying meaning.
+          image-alt  — an image whose alt text or descriptive role matters.
+          timestamp  — a date/time display.
+          error-text — a validation or error message.
+          tooltip    — a non-interactive tooltip / hint carrying info.
 
         ── WHAT COUNTS AS INTERACTIVE — BE EXHAUSTIVE ──
         Include an element if ANY of these are true:
@@ -64,7 +85,62 @@ public class LlmComponentAnalyzer(IOptions<LlmOptions> options) : IComponentAnal
             tabs in tablists, accordion headers, table column resizers if interactive.
 
         SKIP only purely decorative nodes: presentational <div>/<span>, headings,
-        plain text, static icons without handlers, images without onClick.
+        plain text, static icons without handlers, images without onClick — UNLESS
+        they qualify as informational under the rules below.
+
+        ── INFORMATIONAL ELEMENTS — WHAT TO INCLUDE ──
+        Test code routinely needs to READ values, not just press buttons:
+          • "Sort the rows by their status text."
+          • "Find the row whose name is X and click its delete."
+          • "Assert the displayed total equals 42."
+          • "Wait until the badge reads 'Ready'."
+
+        For these, the test needs SELECTORS for the read targets too. Include an
+        element as informational when ALL of these hold:
+
+          1. The element renders user-visible text content (or an attribute
+             like alt= / title= / aria-label= that carries meaning).
+          2. The text is one a test would plausibly ASSERT ON, SORT BY,
+             FILTER BY, or use to PICK a specific item out of a list.
+          3. The text or value is BOUND to a model variable or otherwise can
+             change (dynamic). Hard-coded copy that never changes — section
+             headings, navigation labels, button labels themselves — usually
+             does NOT qualify unless the user prompt is likely to assert on it.
+
+        Worth-including informational examples (good signals):
+          • A status badge whose text comes from `status: "Pending" | "Done"`.
+          • A column-name display like {column.name} inside a sortable row.
+          • A count like `{items.length} results` or `{selected.size} selected`.
+          • A displayed total / price / date that the UI computes.
+          • An inline validation error message bound to a form field.
+          • Cells in a data row that the test would identify a row by
+            (e.g. user table row identified by email cell).
+
+        Worth-skipping (NOT informational signal):
+          • Decorative SVG icons with no text.
+          • Static instruction copy ("Click the button below to continue.").
+          • Empty wrapper <div>s.
+          • Repeated visual chrome (separators, dividers, dots).
+
+        For repeated rows / cards / list items: emit ONE informational element
+        per kind of read target, with a templated selector + a description that
+        says it is per-row (just like interactive list items). E.g.:
+          selector: ".row .status-badge"
+          description: "Status badge text on each row (per row)."
+
+        Tag each informational element with the most specific type from the
+        informational vocabulary. If you genuinely don't know, use "text".
+
+        ── BALANCING THE TWO CATEGORIES ──
+        Interactive elements are MANDATORY — every interactive element a user
+        could touch must be emitted (the original coverage rule still applies).
+        Informational elements are SELECTIVE — include only those a test would
+        realistically read. For a typical component expect roughly 60–80%
+        interactive and 20–40% informational. If you have 30 interactive
+        elements and zero informational, you are probably missing reads on
+        status / value / count displays that the rest of the UI is built
+        around. If you have 50 informational elements on a component with 5
+        buttons, you are over-including decorative text.
 
         ── DRAG HANDLES — DETECT AND EMIT SEPARATELY (CRITICAL) ──
         Sortable / draggable libraries (Angular CDK, @dnd-kit, react-dnd,
@@ -242,10 +318,11 @@ public class LlmComponentAnalyzer(IOptions<LlmOptions> options) : IComponentAnal
                 foreach (var e in el.EnumerateArray())
                 {
                     var selector = e.TryGetProperty("elementSelector", out var v1) ? v1.GetString() ?? "" : "";
+                    var category = e.TryGetProperty("elementCategory", out var v0) ? v0.GetString() ?? "" : "";
                     var etype    = e.TryGetProperty("elementType", out var v2) ? v2.GetString() ?? "input" : "input";
                     var desc     = e.TryGetProperty("elementDescription", out var v3) ? v3.GetString() ?? "" : "";
                     if (!string.IsNullOrWhiteSpace(selector))
-                        elements.Add(new AnalyzedElement(selector, etype, desc));
+                        elements.Add(new AnalyzedElement(selector, category, etype, desc));
                 }
             }
         }

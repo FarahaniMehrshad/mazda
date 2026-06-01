@@ -70,23 +70,35 @@ public class Signature : Entity
     }
 }
 
+/// <summary>
+/// Whether the element is something the user acts ON (interactive) or
+/// something the test reads / asserts against / sorts by (informational).
+/// </summary>
+public enum ElementCategory
+{
+    Interactive,
+    Informational
+}
+
 public class SignatureElement : Entity
 {
     public Guid SignatureId { get; private set; }
     public string ElementSelector { get; private set; } = null!;
-    public string ElementType { get; private set; } = null!; // input | select | button | checkbox | ...
+    public ElementCategory Category { get; private set; } = ElementCategory.Interactive;
+    public string ElementType { get; private set; } = null!; // input | select | button | text | status | value | ...
     public string ElementDescription { get; private set; } = null!;
     public int Order { get; private set; }
 
     private SignatureElement() { }
 
-    public static SignatureElement Create(string selector, string type, string description, int order)
+    public static SignatureElement Create(string selector, ElementCategory category, string type, string description, int order)
     {
         if (string.IsNullOrWhiteSpace(selector)) throw new ArgumentException("selector required.");
         if (string.IsNullOrWhiteSpace(type)) throw new ArgumentException("type required.");
         return new SignatureElement
         {
             ElementSelector = selector.Trim(),
+            Category = category,
             ElementType = type.Trim().ToLowerInvariant(),
             ElementDescription = description?.Trim() ?? string.Empty,
             Order = order

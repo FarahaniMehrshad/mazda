@@ -6,7 +6,7 @@ using Mazda.Domain.Modules.Signatures;
 
 namespace Mazda.Application.Modules.Signatures;
 
-public record SignatureElementDto(string Selector, string ElementType, string Description);
+public record SignatureElementDto(string Selector, string Category, string ElementType, string Description);
 
 public record SignatureDto(
     Guid Id,
@@ -26,7 +26,20 @@ internal static class SignatureMapper
         s.Id, s.Name, s.Version, s.Source, s.Type, s.HumanDescription, s.UserFlowsJson,
         s.Elements.Count, s.UpdatedAt,
         s.Elements.OrderBy(e => e.Order).Select(e => new SignatureElementDto(
-            e.ElementSelector, e.ElementType, e.ElementDescription)).ToList());
+            e.ElementSelector, e.Category.ToString(), e.ElementType, e.ElementDescription)).ToList());
+
+    internal static ElementCategory ParseCategory(string? raw)
+    {
+        // Accept any case + a few common synonyms. Default to Interactive (matches
+        // pre-feature behaviour) when the value is missing or unrecognised.
+        if (string.IsNullOrWhiteSpace(raw)) return ElementCategory.Interactive;
+        var n = raw.Trim().ToLowerInvariant();
+        return n switch
+        {
+            "informational" or "info" or "readonly" or "static" or "data" => ElementCategory.Informational,
+            _ => ElementCategory.Interactive,
+        };
+    }
 }
 
 // ── List ──────────────────────────────────────────────────────────
@@ -104,7 +117,7 @@ public class SaveSignatureHandler(ISignatureRepository repo, ICurrentUser me, IU
         }
 
         var elements = cmd.Elements
-            .Select((e, i) => SignatureElement.Create(e.Selector, e.ElementType, e.Description, i))
+            .Select((e, i) => SignatureElement.Create(e.Selector, SignatureMapper.ParseCategory(e.Category), e.ElementType, e.Description, i))
             .ToList();
 
         if (isUpdate)
@@ -171,7 +184,7 @@ public class AnalyzeComponentHandler(
 
         var sig = Signature.Create(me.UserId.Value, analysis.SuggestedName, cmd.FileName, analysis.SuggestedType, cmd.Description);
         var elements = analysis.Elements
-            .Select((e, i) => SignatureElement.Create(e.Selector, e.ElementType, e.Description, i))
+            .Select((e, i) => SignatureElement.Create(e.Selector, SignatureMapper.ParseCategory(e.Category), e.ElementType, e.Description, i))
             .ToList();
         sig.ReplaceElements(elements);
 

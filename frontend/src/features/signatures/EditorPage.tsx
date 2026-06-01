@@ -148,26 +148,41 @@ export function EditorPage() {
           )}
         </div>
 
-        {/* ── RIGHT — element list preview ── */}
+        {/* ── RIGHT — element list preview, split by category ── */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
-          <div className="mz-eyebrow">Detected elements · {signature.elements.length}</div>
           <div
-            className="mz-glass mz-scroll"
+            className="mz-scroll"
             style={{
               flex: 1,
               minHeight: 0,
-              padding: 0,
               overflow: "auto",
+              display: "flex",
+              flexDirection: "column",
+              gap: 16,
             }}
           >
-            {signature.elements.map((el, i) => (
-              <ElementRow key={i} index={i} el={el} />
-            ))}
-            {signature.elements.length === 0 && (
-              <div style={{ padding: 24, color: "var(--text-4)", fontSize: 13 }}>
-                No elements detected yet.
-              </div>
-            )}
+            {(() => {
+              const interactive = signature.elements.filter(
+                (e) => (e.category || "Interactive").toLowerCase() !== "informational"
+              );
+              const informational = signature.elements.filter(
+                (e) => (e.category || "").toLowerCase() === "informational"
+              );
+              return (
+                <>
+                  <ElementSection
+                    title={`Interactive · ${interactive.length}`}
+                    elements={interactive}
+                    empty="No interactive elements detected."
+                  />
+                  <ElementSection
+                    title={`Informational · ${informational.length}`}
+                    elements={informational}
+                    empty="No informational elements detected — the analyzer did not surface any read targets (status, value, count, …)."
+                  />
+                </>
+              );
+            })()}
           </div>
 
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
@@ -181,6 +196,34 @@ export function EditorPage() {
         </div>
       </div>
     </ScreenShell>
+  );
+}
+
+function ElementSection({
+  title,
+  elements,
+  empty,
+}: {
+  title: string;
+  elements: SignatureElementDto[];
+  empty: string;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div className="mz-eyebrow">{title}</div>
+      <div
+        className="mz-glass"
+        style={{ padding: 0, overflow: "hidden" }}
+      >
+        {elements.length === 0 ? (
+          <div style={{ padding: 18, color: "var(--text-4)", fontSize: 12 }}>
+            {empty}
+          </div>
+        ) : (
+          elements.map((el, i) => <ElementRow key={i} index={i} el={el} />)
+        )}
+      </div>
+    </div>
   );
 }
 

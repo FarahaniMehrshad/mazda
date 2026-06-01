@@ -70,7 +70,7 @@ public interface IComponentAnalyzer
         CancellationToken ct = default);
 }
 
-public record AnalyzedElement(string Selector, string ElementType, string Description);
+public record AnalyzedElement(string Selector, string Category, string ElementType, string Description);
 public record ComponentAnalysisResult(string SuggestedName, string SuggestedType, IReadOnlyList<AnalyzedElement> Elements, int TokensUsed);
 
 /// <summary>

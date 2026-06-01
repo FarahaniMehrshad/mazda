@@ -7,6 +7,7 @@ export interface AuthResponse {
 
 export interface SignatureElementDto {
   selector: string;
+  category: "Interactive" | "Informational" | string;
   elementType: string;
   description: string;
 }
