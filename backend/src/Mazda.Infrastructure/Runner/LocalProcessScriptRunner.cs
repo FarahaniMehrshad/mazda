@@ -175,6 +175,88 @@ public sealed class LocalProcessScriptRunner(
         return new RunnerCompletion(kind, proc.ExitCode, fullLog.ToString());
     }
 
+    public async Task<RunnerCompletion> RunOnceAsync(string script, CancellationToken ct = default)
+    {
+        // Isolated run dir per call — analyze-state extraction runs concurrent
+        // with the wizard's main run flow potentially, so don't collide.
+        var workdirRoot = Environment.GetEnvironmentVariable("MAZDA_RUNNER_WORKDIR") ?? "/var/mazda/runs";
+        var runDir = Path.Combine(workdirRoot, "once-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(runDir);
+
+        var rewritten = RewriteHosts(script);
+        await File.WriteAllTextAsync(Path.Combine(runDir, "mazda.spec.ts"), rewritten, ct);
+        await File.WriteAllTextAsync(Path.Combine(runDir, "playwright.config.ts"), PlaywrightConfig, ct);
+        await File.WriteAllTextAsync(Path.Combine(runDir, "package.json"), PackageJson, ct);
+
+        var localNodeModules = Path.Combine(runDir, "node_modules");
+        var globalNodeModules = Environment.GetEnvironmentVariable("MAZDA_GLOBAL_NODE_MODULES")
+                                ?? "/usr/lib/node_modules";
+        if (!Directory.Exists(localNodeModules) && !File.Exists(localNodeModules))
+        {
+            try { File.CreateSymbolicLink(localNodeModules, globalNodeModules); }
+            catch (Exception ex) { log.LogWarning(ex, "Could not symlink node_modules → {Global}", globalNodeModules); }
+        }
+
+        var fullLog = new StringBuilder();
+        void Capture(string line)
+        {
+            // No registry interaction — just buffer for the caller. We still
+            // strip ANSI so the captured log is clean for downstream parsing.
+            fullLog.AppendLine(StripAnsi(line));
+        }
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = "npx",
+            WorkingDirectory = runDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            Environment = { ["NO_COLOR"] = "1" },
+        };
+        psi.ArgumentList.Add("playwright");
+        psi.ArgumentList.Add("test");
+        psi.ArgumentList.Add("mazda.spec.ts");
+
+        using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
+        proc.OutputDataReceived += (_, e) => { if (e.Data is not null) Capture(e.Data); };
+        proc.ErrorDataReceived  += (_, e) => { if (e.Data is not null) Capture(e.Data); };
+
+        try
+        {
+            proc.Start();
+        }
+        catch (Exception ex)
+        {
+            Capture($"runner: failed to start npx — {ex.Message}");
+            return new RunnerCompletion(RunnerExitKind.Errored, -1, fullLog.ToString());
+        }
+
+        proc.BeginOutputReadLine();
+        proc.BeginErrorReadLine();
+
+        try
+        {
+            await proc.WaitForExitAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
+            Capture("runner: cancelled by user");
+            return new RunnerCompletion(RunnerExitKind.Cancelled, -1, fullLog.ToString());
+        }
+
+        var kind = proc.ExitCode switch
+        {
+            0 => RunnerExitKind.Passed,
+            1 => RunnerExitKind.FailedTest,
+            _ => RunnerExitKind.Errored,
+        };
+        Capture($"runner: exit {proc.ExitCode} ({kind.ToString().ToLowerInvariant()})");
+        return new RunnerCompletion(kind, proc.ExitCode, fullLog.ToString());
+    }
+
     // Injected helper. Solves the CDP-via-host.docker.internal triple-bind:
     //   1. Chrome v111+ rejects /json/version requests whose Host header isn't
     //      localhost/127.0.0.1. We send Host: localhost:<port> on the probe.

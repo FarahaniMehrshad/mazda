@@ -21,6 +21,12 @@ export const generationApi = {
     api.put<GenerationDto>(`/api/generations/${id}/final-script`, { script }),
   execute: (id: string) =>
     api.post<GenerationDto>(`/api/generations/${id}/execute`, {}),
+  generateAnalyzeScript: (id: string) =>
+    api.post<GenerationDto>(`/api/generations/${id}/analyze-state/generate`, {}),
+  saveAnalyzeScript: (id: string, script: string) =>
+    api.put<GenerationDto>(`/api/generations/${id}/analyze-state-script`, { script }),
+  runAnalyze: (id: string) =>
+    api.post<GenerationDto>(`/api/generations/${id}/analyze-state/run`, {}),
 };
 
 export function useRecentGenerations(take = 20) {
@@ -110,6 +116,31 @@ export function useExecuteGeneration() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => generationApi.execute(id),
+    onSuccess: invalidateOnSuccess(qc),
+  });
+}
+
+export function useGenerateAnalyzeScript() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => generationApi.generateAnalyzeScript(id),
+    onSuccess: invalidateOnSuccess(qc),
+  });
+}
+
+export function useSaveAnalyzeScript() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, script }: { id: string; script: string }) =>
+      generationApi.saveAnalyzeScript(id, script),
+    onSuccess: invalidateOnSuccess(qc),
+  });
+}
+
+export function useRunAnalyze() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => generationApi.runAnalyze(id),
     onSuccess: invalidateOnSuccess(qc),
   });
 }

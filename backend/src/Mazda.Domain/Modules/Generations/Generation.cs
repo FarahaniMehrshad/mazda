@@ -21,6 +21,13 @@ public class Generation : Entity
     public string SetupPrompt { get; private set; } = string.Empty;
     public string? SetupScript { get; private set; }
 
+    // Analyze-state phase: a deterministic Playwright script that reads informational
+    // elements off the live UI, captured raw output from running it, and an
+    // LLM-built semantic JSON describing the current component state.
+    public string? AnalyzeStateScript { get; private set; }
+    public string? AnalyzeStateRawOutput { get; private set; }
+    public string? AnalyzeStateJson { get; private set; }
+
     public string TestPrompt { get; private set; } = string.Empty;
     public string? TestScript { get; private set; }
 
@@ -50,6 +57,9 @@ public class Generation : Entity
 
     public void SetSetupPrompt(string prompt) { SetupPrompt = (prompt ?? string.Empty).Trim(); Touch(); }
     public void SetSetupScript(string script) { SetupScript = script ?? string.Empty; Touch(); }
+
+    public void SetAnalyzeStateScript(string script) { AnalyzeStateScript = script ?? string.Empty; Touch(); }
+    public void SetAnalyzeStateOutput(string raw, string json) { AnalyzeStateRawOutput = raw ?? string.Empty; AnalyzeStateJson = json ?? string.Empty; Touch(); }
 
     public void SetTestPrompt(string prompt) { TestPrompt = (prompt ?? string.Empty).Trim(); Touch(); }
     public void SetTestScript(string script) { TestScript = script ?? string.Empty; Touch(); }

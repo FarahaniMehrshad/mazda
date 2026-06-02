@@ -12,6 +12,7 @@ import { InformationalReviewPage } from "@/features/signatures/InformationalRevi
 import { UserFlowsPage } from "@/features/signatures/UserFlowsPage";
 import { NewRunPage } from "@/features/generation/NewRunPage";
 import { SetupPage } from "@/features/generation/SetupPage";
+import { AnalyzeStatePage } from "@/features/generation/AnalyzeStatePage";
 import { TestPromptPage } from "@/features/generation/TestPromptPage";
 import { MergePage } from "@/features/generation/MergePage";
 import { ExecutionPage } from "@/features/generation/ExecutionPage";
@@ -103,6 +104,14 @@ export function App() {
             element={
               <RequireAuth>
                 <SetupPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/runs/:id/analyze-state"
+            element={
+              <RequireAuth>
+                <AnalyzeStatePage />
               </RequireAuth>
             }
           />

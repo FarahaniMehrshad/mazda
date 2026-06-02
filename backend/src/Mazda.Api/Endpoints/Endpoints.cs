@@ -82,7 +82,17 @@ public static class Endpoints
         gens.MapPut("/{id:guid}/setup-script", async (Guid id, [FromBody] ScriptBody body, ISender s) =>
             (await s.Send(new UpdateScriptCommand(id, ScriptSlot.Setup, body.Script))).ToHttp());
 
-        // Wizard step 4 — test.
+        // Wizard step 6 — analyze state.
+        gens.MapPost("/{id:guid}/analyze-state/generate", async (Guid id, ISender s) =>
+            (await s.Send(new GenerateAnalyzeScriptCommand(id))).ToHttp());
+
+        gens.MapPut("/{id:guid}/analyze-state-script", async (Guid id, [FromBody] ScriptBody body, ISender s) =>
+            (await s.Send(new UpdateAnalyzeScriptCommand(id, body.Script))).ToHttp());
+
+        gens.MapPost("/{id:guid}/analyze-state/run", async (Guid id, ISender s) =>
+            (await s.Send(new RunAnalyzeCommand(id))).ToHttp());
+
+        // Wizard step 7 — test.
         gens.MapPost("/{id:guid}/test", async (Guid id, [FromBody] GenerateTestBody body, ISender s) =>
             (await s.Send(new GenerateTestCommand(id, body.TestPrompt))).ToHttp());
 

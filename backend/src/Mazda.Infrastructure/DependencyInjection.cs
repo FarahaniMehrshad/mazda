@@ -33,6 +33,7 @@ public static class DependencyInjection
         services.AddSingleton<IInformationalAnalyzer, LlmInformationalAnalyzer>();
         services.AddSingleton<IFlowAnalyzer, LlmFlowAnalyzer>();
         services.AddSingleton<IScriptGenerator, LlmScriptGenerator>();
+        services.AddSingleton<IStateBuilder, LlmStateBuilder>();
 
         // Script execution (Playwright via Node inside the API container).
         services.AddSingleton<IExecutionRegistry, Runner.InMemoryExecutionRegistry>();

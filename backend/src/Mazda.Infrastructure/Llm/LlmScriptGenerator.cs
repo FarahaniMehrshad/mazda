@@ -169,6 +169,14 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         - (Optional) A "Setup script" block showing the surrounding fixture/hook code,
           so you know what `page` / `context` / `browser` looks like and which imports
           already exist.
+        - (Optional) A "Current component state" block: a semantic JSON captured live
+          from the running component RIGHT BEFORE this generation. It is the ground
+          truth for what's on screen — current rows, statuses, displayed values, list
+          contents. When the prompt references "the existing X", "the current Y", or
+          a concrete count/name/status, USE this JSON to derive concrete values rather
+          than guessing. For example, if the prompt says "delete the third mapping
+          card", and state.mappingCards.items[2].name = "Col 3", your test can assert
+          on "Col 3" specifically. Do NOT echo this JSON back in comments.
         - A "Test prompt" in plain English describing what the test should do.
 
         Output a SINGLE TypeScript snippet — no markdown fences, no commentary.
@@ -723,7 +731,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         return Call(opts => opts.GeneratorModel, SetupSystemPrompt, userMsg, ct);
     }
 
-    public Task<ScriptGenerationResult> GenerateTestAsync(Signature signature, string testPrompt, string? setupScript, CancellationToken ct = default)
+    public Task<ScriptGenerationResult> GenerateTestAsync(Signature signature, string testPrompt, string? setupScript, string? stateJson = null, CancellationToken ct = default)
     {
         var flowsBlock = string.IsNullOrWhiteSpace(signature.UserFlowsJson)
             ? string.Empty
@@ -731,7 +739,10 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         var setupBlock = string.IsNullOrWhiteSpace(setupScript)
             ? string.Empty
             : $"\n\nSetup script (for context — do not re-emit imports or fixtures):\n```ts\n{setupScript}\n```";
-        var userMsg = BuildSignatureContext(signature) + flowsBlock + setupBlock +
+        var stateBlock = string.IsNullOrWhiteSpace(stateJson)
+            ? string.Empty
+            : $"\n\nCurrent component state (captured live before this run; semantic JSON built from the informational signature elements):\n```json\n{stateJson}\n```";
+        var userMsg = BuildSignatureContext(signature) + flowsBlock + setupBlock + stateBlock +
             $"\n\nTest prompt:\n{testPrompt}";
         return Call(opts => opts.GeneratorModel, TestSystemPrompt, userMsg, ct);
     }

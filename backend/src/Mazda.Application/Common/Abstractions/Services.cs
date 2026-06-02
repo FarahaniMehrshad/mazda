@@ -44,6 +44,7 @@ public interface IScriptGenerator
         Signature signature,
         string testPrompt,
         string? setupScript,
+        string? stateJson = null,
         CancellationToken ct = default);
 
     /// <summary>
@@ -88,6 +89,22 @@ public interface IInformationalAnalyzer
 }
 
 public record InformationalAnalysisResult(IReadOnlyList<AnalyzedElement> Elements, int TokensUsed);
+
+/// <summary>
+/// Outbound port: given the raw extraction JSON produced by the analyze-state
+/// Playwright script (an opaque per-selector key→value blob) and the signature
+/// (descriptions / logic for each selector), produce a clean semantic JSON
+/// representing the component's current state.
+/// </summary>
+public interface IStateBuilder
+{
+    Task<StateBuildResult> BuildStateAsync(
+        Signature signature,
+        string rawExtractionJson,
+        CancellationToken ct = default);
+}
+
+public record StateBuildResult(string StateJson, int TokensUsed);
 
 /// <summary>
 /// Outbound port for inferring a UI user-flow graph from a Signature
@@ -147,4 +164,12 @@ public interface IExecutionRegistry
 public interface IScriptRunner
 {
     Task<RunnerCompletion> RunAsync(Guid generationId, string script, CancellationToken ct = default);
+
+    /// <summary>
+    /// One-shot run that bypasses the SSE registry. For analytical scripts whose
+    /// output is parsed programmatically rather than tailed live (analyze-state
+    /// extraction, etc.). Captures stdout+stderr into FullLog and returns when
+    /// the process exits.
+    /// </summary>
+    Task<RunnerCompletion> RunOnceAsync(string script, CancellationToken ct = default);
 }

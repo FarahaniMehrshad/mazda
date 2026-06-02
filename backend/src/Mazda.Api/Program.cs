@@ -101,6 +101,19 @@ using (var scope = app.Services.CreateScope())
             ADD COLUMN IF NOT EXISTS category      varchar(20) NOT NULL DEFAULT 'Interactive',
             ADD COLUMN IF NOT EXISTS element_logic text        NOT NULL DEFAULT '';
         """);
+
+    // Analyze-state phase: a deterministic Playwright script that reads the UI's
+    // informational elements, the raw stdout from running it, and an LLM-built
+    // semantic state JSON. All start NULL/empty; populated only after the user
+    // runs the new step. Plus a per-signature memoized script for reuse.
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE generations
+            ADD COLUMN IF NOT EXISTS analyze_state_script      text,
+            ADD COLUMN IF NOT EXISTS analyze_state_raw_output  text,
+            ADD COLUMN IF NOT EXISTS analyze_state_json        text;
+        ALTER TABLE signatures
+            ADD COLUMN IF NOT EXISTS last_analyze_state_script text NOT NULL DEFAULT '';
+        """);
 }
 
 app.UseExceptionHandler();

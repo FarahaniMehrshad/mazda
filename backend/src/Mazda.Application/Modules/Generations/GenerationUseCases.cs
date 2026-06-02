@@ -13,6 +13,9 @@ public record GenerationDto(
     Guid SignatureId,
     string SetupPrompt,
     string? SetupScript,
+    string? AnalyzeStateScript,
+    string? AnalyzeStateRawOutput,
+    string? AnalyzeStateJson,
     string TestPrompt,
     string? TestScript,
     string? FinalScript,
@@ -32,6 +35,7 @@ internal static class GenerationMapper
     public static GenerationDto ToDto(this Generation g) => new(
         g.Id, g.SignatureId,
         g.SetupPrompt, g.SetupScript,
+        g.AnalyzeStateScript, g.AnalyzeStateRawOutput, g.AnalyzeStateJson,
         g.TestPrompt, g.TestScript,
         g.FinalScript,
         g.Status, g.FailureReason, g.TokensUsed,
@@ -73,6 +77,7 @@ public class CreateGenerationHandler(
         if (!string.IsNullOrWhiteSpace(sig.LastSetupScript)) gen.SetSetupScript(sig.LastSetupScript);
         if (!string.IsNullOrWhiteSpace(sig.LastTestScript))  gen.SetTestScript(sig.LastTestScript);
         if (!string.IsNullOrWhiteSpace(sig.LastFinalScript)) gen.SetFinalScript(sig.LastFinalScript);
+        if (!string.IsNullOrWhiteSpace(sig.LastAnalyzeStateScript)) gen.SetAnalyzeStateScript(sig.LastAnalyzeStateScript);
         await generations.AddAsync(gen, ct);
         await uow.SaveChangesAsync(ct);
         return Result.Success(gen.ToDto());
@@ -168,7 +173,7 @@ public class GenerateTestHandler(
 
         try
         {
-            var result = await generator.GenerateTestAsync(sig, cmd.TestPrompt, gen.SetupScript, ct);
+            var result = await generator.GenerateTestAsync(sig, cmd.TestPrompt, gen.SetupScript, gen.AnalyzeStateJson, ct);
             gen.SetTestScript(result.Script);
             sig.SetLastTestScript(result.Script);
             gen.MarkReady(result.TokensUsed);
@@ -388,5 +393,114 @@ public class ListRecentGenerationsHandler(IGenerationRepository repo, ICurrentUs
         if (me.UserId is null) return Result.Failure<IReadOnlyList<GenerationDto>>(Error.Validation("Not authenticated."));
         var list = await repo.ListRecentAsync(me.UserId.Value, q.Take, ct);
         return Result.Success<IReadOnlyList<GenerationDto>>(list.Select(g => g.ToDto()).ToList());
+    }
+}
+
+// ── Analyze-state phase (step 6) ──────────────────────────────────
+
+// Generate the analyze script deterministically from the signature's
+// informational elements + setup script. No LLM call.
+public record GenerateAnalyzeScriptCommand(Guid GenerationId) : IRequest<Result<GenerationDto>>;
+
+public class GenerateAnalyzeScriptHandler(
+    ISignatureRepository signatures,
+    IGenerationRepository generations,
+    ICurrentUser me,
+    IUnitOfWork uow) : IRequestHandler<GenerateAnalyzeScriptCommand, Result<GenerationDto>>
+{
+    public async Task<Result<GenerationDto>> Handle(GenerateAnalyzeScriptCommand cmd, CancellationToken ct)
+    {
+        if (me.UserId is null) return Result.Failure<GenerationDto>(Error.Validation("Not authenticated."));
+        var gen = await generations.FindByIdAsync(cmd.GenerationId, me.UserId.Value, ct);
+        if (gen is null) return Result.Failure<GenerationDto>(Error.NotFound("Generation"));
+        var sig = await signatures.FindByIdAsync(gen.SignatureId, me.UserId.Value, ct);
+        if (sig is null) return Result.Failure<GenerationDto>(Error.NotFound("Signature"));
+
+        var script = AnalyzeScriptBuilder.Build(sig, gen);
+        gen.SetAnalyzeStateScript(script);
+        sig.SetLastAnalyzeStateScript(script);
+        await uow.SaveChangesAsync(ct);
+        return Result.Success(gen.ToDto());
+    }
+}
+
+// Save user edits to the analyze script.
+public record UpdateAnalyzeScriptCommand(Guid GenerationId, string Script) : IRequest<Result<GenerationDto>>;
+
+public class UpdateAnalyzeScriptValidator : AbstractValidator<UpdateAnalyzeScriptCommand>
+{
+    public UpdateAnalyzeScriptValidator()
+    {
+        RuleFor(x => x.GenerationId).NotEmpty();
+        RuleFor(x => x.Script).NotNull();
+    }
+}
+
+public class UpdateAnalyzeScriptHandler(
+    ISignatureRepository signatures,
+    IGenerationRepository generations,
+    ICurrentUser me,
+    IUnitOfWork uow) : IRequestHandler<UpdateAnalyzeScriptCommand, Result<GenerationDto>>
+{
+    public async Task<Result<GenerationDto>> Handle(UpdateAnalyzeScriptCommand cmd, CancellationToken ct)
+    {
+        if (me.UserId is null) return Result.Failure<GenerationDto>(Error.Validation("Not authenticated."));
+        var gen = await generations.FindByIdAsync(cmd.GenerationId, me.UserId.Value, ct);
+        if (gen is null) return Result.Failure<GenerationDto>(Error.NotFound("Generation"));
+        var sig = await signatures.FindByIdAsync(gen.SignatureId, me.UserId.Value, ct);
+        gen.SetAnalyzeStateScript(cmd.Script);
+        sig?.SetLastAnalyzeStateScript(cmd.Script);
+        await uow.SaveChangesAsync(ct);
+        return Result.Success(gen.ToDto());
+    }
+}
+
+// Run the analyze script (one-shot, no SSE) and build the semantic state JSON.
+public record RunAnalyzeCommand(Guid GenerationId) : IRequest<Result<GenerationDto>>;
+
+public class RunAnalyzeHandler(
+    ISignatureRepository signatures,
+    IGenerationRepository generations,
+    IScriptRunner runner,
+    IStateBuilder builder,
+    ICurrentUser me,
+    IUnitOfWork uow) : IRequestHandler<RunAnalyzeCommand, Result<GenerationDto>>
+{
+    public async Task<Result<GenerationDto>> Handle(RunAnalyzeCommand cmd, CancellationToken ct)
+    {
+        if (me.UserId is null) return Result.Failure<GenerationDto>(Error.Validation("Not authenticated."));
+        var gen = await generations.FindByIdAsync(cmd.GenerationId, me.UserId.Value, ct);
+        if (gen is null) return Result.Failure<GenerationDto>(Error.NotFound("Generation"));
+        var sig = await signatures.FindByIdAsync(gen.SignatureId, me.UserId.Value, ct);
+        if (sig is null) return Result.Failure<GenerationDto>(Error.NotFound("Signature"));
+        if (string.IsNullOrWhiteSpace(gen.AnalyzeStateScript))
+            return Result.Failure<GenerationDto>(Error.Validation("Analyze script missing — generate it first."));
+
+        // 1. Execute the script one-shot, capturing all stdout/stderr.
+        var run = await runner.RunOnceAsync(gen.AnalyzeStateScript!, ct);
+
+        // 2. Pull the extraction JSON out of the captured log via the sentinel
+        //    markers the deterministic builder put around it.
+        var rawJson = AnalyzeScriptBuilder.ExtractStateJson(run.FullLog) ?? "{}";
+
+        string stateJson;
+        try
+        {
+            // 3. Hand the raw JSON + signature to the LLM state builder.
+            var built = await builder.BuildStateAsync(sig, rawJson, ct);
+            stateJson = built.StateJson;
+        }
+        catch (Exception ex)
+        {
+            // State build failure shouldn't lose the raw data — persist what we
+            // have and surface the error to the caller.
+            gen.SetAnalyzeStateOutput(run.FullLog, $"{{\"error\":\"state builder failed: {ex.Message.Replace("\"","\\\"")}\",\"rawExtraction\":{rawJson}}}");
+            await uow.SaveChangesAsync(ct);
+            return Result.Failure<GenerationDto>(Error.External($"State builder failed: {ex.Message}"));
+        }
+
+        gen.SetAnalyzeStateOutput(run.FullLog, stateJson);
+        await uow.SaveChangesAsync(ct);
+        return Result.Success(gen.ToDto());
     }
 }

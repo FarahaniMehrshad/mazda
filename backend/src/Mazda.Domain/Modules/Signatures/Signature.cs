@@ -26,6 +26,7 @@ public class Signature : Entity
     public string LastSetupScript { get; private set; } = string.Empty;
     public string LastTestScript { get; private set; } = string.Empty;
     public string LastFinalScript { get; private set; } = string.Empty;
+    public string LastAnalyzeStateScript { get; private set; } = string.Empty;
 
     private readonly List<SignatureElement> _elements = new();
     public IReadOnlyList<SignatureElement> Elements => _elements;
@@ -55,6 +56,7 @@ public class Signature : Entity
     public void SetLastSetupScript(string? script) { LastSetupScript = script ?? string.Empty; Touch(); }
     public void SetLastTestScript(string? script) { LastTestScript = script ?? string.Empty; Touch(); }
     public void SetLastFinalScript(string? script) { LastFinalScript = script ?? string.Empty; Touch(); }
+    public void SetLastAnalyzeStateScript(string? script) { LastAnalyzeStateScript = script ?? string.Empty; Touch(); }
 
     public void ReplaceElements(IEnumerable<SignatureElement> elements)
     {

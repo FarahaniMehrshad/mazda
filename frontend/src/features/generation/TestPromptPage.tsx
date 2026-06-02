@@ -72,7 +72,7 @@ export function TestPromptPage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={6} />
+        <StepIndicator step={7} />
         <div
           style={{
             display: "grid",
@@ -95,7 +95,7 @@ export function TestPromptPage() {
               minHeight: 0,
             }}
           >
-            <div className="mz-eyebrow">Step 6 · Test prompt</div>
+            <div className="mz-eyebrow">Step 7 · Test prompt</div>
             <div style={{ color: "var(--text-3)", fontSize: 12.5, lineHeight: 1.5 }}>
               Tell Mazda what the test should actually <em>do</em>. The setup you wrote in
               the previous step provides the <code style={{ fontFamily: "var(--f-mono)" }}>page</code>.
@@ -158,7 +158,7 @@ export function TestPromptPage() {
           </div>
 
           <div style={{ display: "flex", gap: 10 }}>
-            <BtnGhost onClick={() => navigate(`/runs/${id}/setup`)}>Back to setup</BtnGhost>
+            <BtnGhost onClick={() => navigate(`/runs/${id}/analyze-state`)}>Back to analyze state</BtnGhost>
             <BtnPrimary
               full
               icon={Icon.arrow()}

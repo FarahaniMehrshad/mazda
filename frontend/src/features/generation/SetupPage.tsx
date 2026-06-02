@@ -164,10 +164,10 @@ export function SetupPage() {
             <BtnPrimary
               full
               icon={Icon.arrow()}
-              onClick={() => navigate(`/runs/${id}/test`)}
+              onClick={() => navigate(`/runs/${id}/analyze-state`)}
               disabled={!canContinue}
             >
-              Continue to test prompt
+              Continue to analyze state
             </BtnPrimary>
           </div>
         </div>

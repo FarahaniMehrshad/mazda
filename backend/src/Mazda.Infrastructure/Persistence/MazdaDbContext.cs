@@ -57,6 +57,7 @@ internal class SignatureConfig : IEntityTypeConfiguration<Signature>
         b.Property(x => x.LastSetupScript).HasColumnName("last_setup_script");
         b.Property(x => x.LastTestScript).HasColumnName("last_test_script");
         b.Property(x => x.LastFinalScript).HasColumnName("last_final_script");
+        b.Property(x => x.LastAnalyzeStateScript).HasColumnName("last_analyze_state_script");
         b.HasIndex(x => new { x.OwnerId, x.Name });
         b.HasMany(x => x.Elements).WithOne()
          .HasForeignKey(e => e.SignatureId).OnDelete(DeleteBehavior.Cascade);
@@ -88,6 +89,9 @@ internal class GenerationConfig : IEntityTypeConfiguration<Generation>
         b.HasKey(x => x.Id);
         b.Property(x => x.SetupPrompt).HasColumnName("setup_prompt");
         b.Property(x => x.SetupScript).HasColumnName("setup_script");
+        b.Property(x => x.AnalyzeStateScript).HasColumnName("analyze_state_script");
+        b.Property(x => x.AnalyzeStateRawOutput).HasColumnName("analyze_state_raw_output");
+        b.Property(x => x.AnalyzeStateJson).HasColumnName("analyze_state_json");
         b.Property(x => x.TestPrompt).HasColumnName("test_prompt");
         b.Property(x => x.TestScript).HasColumnName("test_script");
         b.Property(x => x.FinalScript).HasColumnName("final_script");

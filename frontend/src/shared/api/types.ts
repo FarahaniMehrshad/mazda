@@ -49,6 +49,9 @@ export interface GenerationDto {
   signatureId: string;
   setupPrompt: string;
   setupScript: string | null;
+  analyzeStateScript: string | null;
+  analyzeStateRawOutput: string | null;
+  analyzeStateJson: string | null;
   testPrompt: string;
   testScript: string | null;
   finalScript: string | null;
