@@ -69,12 +69,30 @@ export function AnalyzeStatePage() {
     }
   }
 
-  function onContinue() {
-    if (id) navigate(`/runs/${id}/test`);
+  // Auto-persist any unsaved edits to the analyze script before navigating
+  // away. Otherwise the dirty draft is lost the moment the user leaves the
+  // page — which is the "analyze didn't persist" complaint.
+  async function persistIfDirty() {
+    if (!id || !draftDirty) return;
+    try {
+      await save.mutateAsync({ id, script: draft });
+      setDraftDirty(false);
+    } catch {
+      // Surface but don't block navigation — the user has already chosen to leave.
+      // (No alert here: avoid stacking modals while transitioning.)
+    }
   }
 
-  function onBack() {
-    if (id) navigate(`/runs/${id}/setup`);
+  async function onContinue() {
+    if (!id) return;
+    await persistIfDirty();
+    navigate(`/runs/${id}/test`);
+  }
+
+  async function onBack() {
+    if (!id) return;
+    await persistIfDirty();
+    navigate(`/runs/${id}/setup`);
   }
 
   const prettyState = useMemo(() => {

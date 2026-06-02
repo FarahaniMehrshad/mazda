@@ -112,7 +112,9 @@ using (var scope = app.Services.CreateScope())
             ADD COLUMN IF NOT EXISTS analyze_state_raw_output  text,
             ADD COLUMN IF NOT EXISTS analyze_state_json        text;
         ALTER TABLE signatures
-            ADD COLUMN IF NOT EXISTS last_analyze_state_script text NOT NULL DEFAULT '';
+            ADD COLUMN IF NOT EXISTS last_analyze_state_script      text NOT NULL DEFAULT '',
+            ADD COLUMN IF NOT EXISTS last_analyze_state_raw_output  text NOT NULL DEFAULT '',
+            ADD COLUMN IF NOT EXISTS last_analyze_state_json        text NOT NULL DEFAULT '';
         """);
 }
 

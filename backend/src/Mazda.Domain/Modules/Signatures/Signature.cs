@@ -27,6 +27,13 @@ public class Signature : Entity
     public string LastTestScript { get; private set; } = string.Empty;
     public string LastFinalScript { get; private set; } = string.Empty;
     public string LastAnalyzeStateScript { get; private set; } = string.Empty;
+    // Most-recent analyze-state RUN OUTPUT for this signature. The script alone
+    // isn't useful on a fresh generation — the captured raw output + the LLM-built
+    // semantic JSON are the actual ground-truth payload the test-generation step
+    // consumes. Persisting them across generations means a user can keep coming
+    // back without having to re-Run after every minor edit elsewhere.
+    public string LastAnalyzeStateRawOutput { get; private set; } = string.Empty;
+    public string LastAnalyzeStateJson { get; private set; } = string.Empty;
 
     private readonly List<SignatureElement> _elements = new();
     public IReadOnlyList<SignatureElement> Elements => _elements;
@@ -57,6 +64,12 @@ public class Signature : Entity
     public void SetLastTestScript(string? script) { LastTestScript = script ?? string.Empty; Touch(); }
     public void SetLastFinalScript(string? script) { LastFinalScript = script ?? string.Empty; Touch(); }
     public void SetLastAnalyzeStateScript(string? script) { LastAnalyzeStateScript = script ?? string.Empty; Touch(); }
+    public void SetLastAnalyzeStateOutput(string? raw, string? json)
+    {
+        LastAnalyzeStateRawOutput = raw ?? string.Empty;
+        LastAnalyzeStateJson = json ?? string.Empty;
+        Touch();
+    }
 
     public void ReplaceElements(IEnumerable<SignatureElement> elements)
     {

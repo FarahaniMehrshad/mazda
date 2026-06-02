@@ -78,6 +78,11 @@ public class CreateGenerationHandler(
         if (!string.IsNullOrWhiteSpace(sig.LastTestScript))  gen.SetTestScript(sig.LastTestScript);
         if (!string.IsNullOrWhiteSpace(sig.LastFinalScript)) gen.SetFinalScript(sig.LastFinalScript);
         if (!string.IsNullOrWhiteSpace(sig.LastAnalyzeStateScript)) gen.SetAnalyzeStateScript(sig.LastAnalyzeStateScript);
+        // Analyze-state RUN OUTPUT (raw + semantic JSON) is what the test-generation
+        // step actually consumes — restore it too so the user doesn't have to re-Run
+        // every time they create a fresh generation against the same signature.
+        if (!string.IsNullOrWhiteSpace(sig.LastAnalyzeStateJson) || !string.IsNullOrWhiteSpace(sig.LastAnalyzeStateRawOutput))
+            gen.SetAnalyzeStateOutput(sig.LastAnalyzeStateRawOutput, sig.LastAnalyzeStateJson);
         await generations.AddAsync(gen, ct);
         await uow.SaveChangesAsync(ct);
         return Result.Success(gen.ToDto());
@@ -494,12 +499,17 @@ public class RunAnalyzeHandler(
         {
             // State build failure shouldn't lose the raw data — persist what we
             // have and surface the error to the caller.
-            gen.SetAnalyzeStateOutput(run.FullLog, $"{{\"error\":\"state builder failed: {ex.Message.Replace("\"","\\\"")}\",\"rawExtraction\":{rawJson}}}");
+            var errJson = $"{{\"error\":\"state builder failed: {ex.Message.Replace("\"","\\\"")}\",\"rawExtraction\":{rawJson}}}";
+            gen.SetAnalyzeStateOutput(run.FullLog, errJson);
+            sig.SetLastAnalyzeStateOutput(run.FullLog, errJson);
             await uow.SaveChangesAsync(ct);
             return Result.Failure<GenerationDto>(Error.External($"State builder failed: {ex.Message}"));
         }
 
         gen.SetAnalyzeStateOutput(run.FullLog, stateJson);
+        // Mirror onto the signature so a fresh generation off the same signature
+        // gets the captured state restored automatically.
+        sig.SetLastAnalyzeStateOutput(run.FullLog, stateJson);
         await uow.SaveChangesAsync(ct);
         return Result.Success(gen.ToDto());
     }

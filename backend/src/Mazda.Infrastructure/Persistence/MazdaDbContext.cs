@@ -58,6 +58,8 @@ internal class SignatureConfig : IEntityTypeConfiguration<Signature>
         b.Property(x => x.LastTestScript).HasColumnName("last_test_script");
         b.Property(x => x.LastFinalScript).HasColumnName("last_final_script");
         b.Property(x => x.LastAnalyzeStateScript).HasColumnName("last_analyze_state_script");
+        b.Property(x => x.LastAnalyzeStateRawOutput).HasColumnName("last_analyze_state_raw_output");
+        b.Property(x => x.LastAnalyzeStateJson).HasColumnName("last_analyze_state_json");
         b.HasIndex(x => new { x.OwnerId, x.Name });
         b.HasMany(x => x.Elements).WithOne()
          .HasForeignKey(e => e.SignatureId).OnDelete(DeleteBehavior.Cascade);
