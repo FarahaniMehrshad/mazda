@@ -10,8 +10,9 @@ import {
   StepIndicator,
 } from "@/shared/components/Primitives";
 import { Icon } from "@/shared/icons/Icon";
-import { useSignature, useSaveSignature } from "./api";
+import { useSignature, useSaveSignature, useReanalyzeInteractive } from "./api";
 import type { SignatureElementDto } from "@/shared/api/types";
+import { ApiError } from "@/shared/api/client";
 
 interface DraftShape {
   name: string;
@@ -28,6 +29,7 @@ export function EditorPage() {
   const navigate = useNavigate();
   const { data: signature, isLoading } = useSignature(id);
   const save = useSaveSignature();
+  const reanalyze = useReanalyzeInteractive();
 
   const [draft, setDraft] = useState<string>("");
   const [parseError, setParseError] = useState<string | null>(null);
@@ -76,6 +78,25 @@ export function EditorPage() {
 
   function onContinue() {
     if (signature) navigate(`/signatures/${signature.id}/informational`);
+  }
+
+  async function onReanalyze() {
+    if (!signature) return;
+    if (
+      !confirm(
+        "Re-run the LLM on the original source? This will REPLACE the interactive elements below. Your informational elements (step 3) are preserved.",
+      )
+    )
+      return;
+    try {
+      await reanalyze.mutateAsync(signature.id);
+      // Force the draft to re-seed from the fresh signature on next render.
+      // (The mount-time effect only seeds when `draft` is empty.)
+      setDraft("");
+      setParseError(null);
+    } catch (err) {
+      alert(err instanceof ApiError ? err.message : "Re-analysis failed.");
+    }
   }
 
   if (isLoading || !signature) {
@@ -190,11 +211,18 @@ export function EditorPage() {
               />
             </div>
 
-            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-              <BtnGhost onClick={onSave} disabled={save.isPending}>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+              <BtnGhost
+                icon={Icon.spark()}
+                onClick={onReanalyze}
+                disabled={reanalyze.isPending || save.isPending}
+              >
+                {reanalyze.isPending ? "Re-analyzing…" : "Re-analyze interactive"}
+              </BtnGhost>
+              <BtnGhost onClick={onSave} disabled={save.isPending || reanalyze.isPending}>
                 {save.isPending ? "Saving…" : "Save changes"}
               </BtnGhost>
-              <BtnPrimary icon={Icon.arrow()} onClick={onContinue}>
+              <BtnPrimary icon={Icon.arrow()} onClick={onContinue} disabled={reanalyze.isPending}>
                 Continue to informational
               </BtnPrimary>
             </div>

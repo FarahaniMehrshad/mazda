@@ -134,17 +134,30 @@ export function UploadPage() {
       <div
         style={{
           padding: 28,
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: 24,
+          display: "flex",
+          flexDirection: "column",
+          gap: 20,
           flex: 1,
           overflow: "hidden",
         }}
       >
-        {/* ── LEFT — dropzone ── */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 20, minHeight: 0 }}>
-          <StepIndicator step={1} />
+        {/* Steps go ABOVE the grid as a full-width row so the indicator's
+            intrinsic width never has to fit inside a 1fr column. Otherwise
+            with minWidth: 0 on the columns it would visibly overflow into
+            the right column and land on top of the "Source preview" eyebrow. */}
+        <StepIndicator step={1} />
 
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 24,
+            flex: 1,
+            minHeight: 0,
+          }}
+        >
+        {/* ── LEFT — dropzone ── */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 20, minHeight: 0, minWidth: 0 }}>
           <div
             className="mz-glass-2"
             onDragOver={(e) => {
@@ -270,7 +283,13 @@ export function UploadPage() {
         </div>
 
         {/* ── RIGHT — preview + analyze ── */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
+        {/* minWidth: 0 is critical — grid items default to min-content sizing, so a
+            single very-long line in the source preview would otherwise blow the
+            column past `1fr` and shove the action row (with `justify-content:
+            flex-end`) off the right edge of the viewport. With min-width: 0 the
+            column stays at 1fr and the `overflow: auto` on the preview pane
+            below is what actually handles horizontal scrolling. */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0, minWidth: 0 }}>
           <div className="mz-eyebrow">Source preview</div>
           <div
             className="mz-glass"
@@ -302,6 +321,7 @@ export function UploadPage() {
               {analyze.isPending ? "Analyzing…" : "Analyze component"}
             </BtnPrimary>
           </div>
+        </div>
         </div>
       </div>
     </ScreenShell>

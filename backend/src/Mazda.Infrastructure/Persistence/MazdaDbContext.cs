@@ -47,6 +47,7 @@ internal class SignatureConfig : IEntityTypeConfiguration<Signature>
         b.Property(x => x.Name).HasMaxLength(120).IsRequired();
         b.Property(x => x.Version).HasMaxLength(20);
         b.Property(x => x.Source).HasMaxLength(500);
+        b.Property(x => x.SourceCode).HasColumnName("source_code");
         b.Property(x => x.Type).HasMaxLength(40);
         b.Property(x => x.HumanDescription).HasColumnName("human_description").HasMaxLength(50_000);
         b.Property(x => x.UserFlowsJson).HasColumnName("user_flows").HasMaxLength(200_000);

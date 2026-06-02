@@ -183,6 +183,9 @@ public class AnalyzeComponentHandler(
         catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Analyzer failed: {ex.Message}")); }
 
         var sig = Signature.Create(me.UserId.Value, analysis.SuggestedName, cmd.FileName, analysis.SuggestedType, cmd.Description);
+        // Persist the actual bundled source code so deep re-analysis (interactive
+        // OR informational) can re-call the LLM later without re-upload.
+        sig.SetSourceCode(cmd.Source);
         var elements = analysis.Elements
             .Select((e, i) => SignatureElement.Create(e.Selector, SignatureMapper.ParseCategory(e.Category), e.ElementType, e.Description, i, e.Logic))
             .ToList();
@@ -261,6 +264,80 @@ public class UpdateUserFlowsHandler(
     }
 }
 
+// === Re-analyze INTERACTIVE elements (signature step 2) ===
+// Reruns the same LLM extraction the original upload performed, but on the
+// already-persisted source code. Replaces the interactive slice; keeps the
+// existing informational slice untouched so the user doesn't lose their step-3
+// work.
+
+public record ReanalyzeInteractiveCommand(Guid SignatureId) : IRequest<Result<SignatureDto>>;
+
+public class ReanalyzeInteractiveValidator : AbstractValidator<ReanalyzeInteractiveCommand>
+{
+    public ReanalyzeInteractiveValidator()
+    {
+        RuleFor(x => x.SignatureId).NotEmpty();
+    }
+}
+
+public class ReanalyzeInteractiveHandler(
+    ISignatureRepository repo,
+    IComponentAnalyzer analyzer,
+    ICurrentUser me,
+    IUnitOfWork uow) : IRequestHandler<ReanalyzeInteractiveCommand, Result<SignatureDto>>
+{
+    public async Task<Result<SignatureDto>> Handle(ReanalyzeInteractiveCommand cmd, CancellationToken ct)
+    {
+        if (me.UserId is null) return Result.Failure<SignatureDto>(Error.Validation("Not authenticated."));
+        var sig = await repo.FindByIdAsync(cmd.SignatureId, me.UserId.Value, ct);
+        if (sig is null) return Result.Failure<SignatureDto>(Error.NotFound("Signature"));
+
+        if (string.IsNullOrWhiteSpace(sig.SourceCode))
+            return Result.Failure<SignatureDto>(Error.Validation("Original component source not available; re-upload the component."));
+
+        ComponentAnalysisResult analysis;
+        try { analysis = await analyzer.AnalyzeAsync(sig.SourceCode, sig.Source, sig.HumanDescription, ct); }
+        catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Analyzer failed: {ex.Message}")); }
+
+        // Replace ONLY the interactive elements; preserve everything informational.
+        var informational = sig.Elements
+            .Where(e => e.Category == ElementCategory.Informational)
+            .OrderBy(e => e.Order)
+            .ToList();
+
+        // New interactive elements come from the re-analysis. Force the category
+        // to Interactive — even if the analyzer mislabels one, this step is
+        // semantically the interactive slice.
+        var nextOrder = 0;
+        var newInteractive = analysis.Elements
+            .Where(e => SignatureMapper.ParseCategory(e.Category) == ElementCategory.Interactive)
+            .Select(e => SignatureElement.Create(
+                e.Selector,
+                ElementCategory.Interactive,
+                e.ElementType,
+                e.Description,
+                nextOrder++,
+                e.Logic))
+            .ToList();
+
+        var preservedInformational = informational
+            .Select(e => SignatureElement.Create(
+                e.ElementSelector,
+                ElementCategory.Informational,
+                e.ElementType,
+                e.ElementDescription,
+                nextOrder++,
+                e.ElementLogic))
+            .ToList();
+
+        var merged = newInteractive.Concat(preservedInformational).ToList();
+
+        await repo.ReplaceElementsAsync(sig, merged, ct);
+        await uow.SaveChangesAsync(ct);
+        return Result.Success(sig.ToDto());
+    }
+}
+
 // === Deep informational re-analysis (signature step 3) ===
 
 public record AnalyzeInformationalCommand(Guid SignatureId) : IRequest<Result<SignatureDto>>;
@@ -285,14 +362,14 @@ public class AnalyzeInformationalHandler(
         var sig = await repo.FindByIdAsync(cmd.SignatureId, me.UserId.Value, ct);
         if (sig is null) return Result.Failure<SignatureDto>(Error.NotFound("Signature"));
 
-        // The Source is the bundled component text the original analyze pass
-        // ran against. We need it again here so the dedicated informational
-        // pass can do its deep scan.
-        if (string.IsNullOrWhiteSpace(sig.Source))
+        // SourceCode is the actual bundled component text the original analyze pass
+        // ran against (Source is just the short display label). We need the real
+        // code again so the dedicated informational pass can do its deep scan.
+        if (string.IsNullOrWhiteSpace(sig.SourceCode))
             return Result.Failure<SignatureDto>(Error.Validation("Original component source not available; re-upload the component."));
 
         InformationalAnalysisResult result;
-        try { result = await analyzer.AnalyzeInformationalAsync(sig, sig.Source, ct); }
+        try { result = await analyzer.AnalyzeInformationalAsync(sig, sig.SourceCode, ct); }
         catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Informational analyzer failed: {ex.Message}")); }
 
         // Preserve all existing INTERACTIVE elements. Replace the INFORMATIONAL

@@ -116,6 +116,14 @@ using (var scope = app.Services.CreateScope())
             ADD COLUMN IF NOT EXISTS last_analyze_state_raw_output  text NOT NULL DEFAULT '',
             ADD COLUMN IF NOT EXISTS last_analyze_state_json        text NOT NULL DEFAULT '';
         """);
+
+    // The actual bundled component source (separate from `source` which is the
+    // short label like "Component.tsx" / "manage-data-structure/ (33 files)").
+    // Re-analyze steps need this to call the LLM again without a fresh upload.
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE signatures
+            ADD COLUMN IF NOT EXISTS source_code text NOT NULL DEFAULT '';
+        """);
 }
 
 app.UseExceptionHandler();

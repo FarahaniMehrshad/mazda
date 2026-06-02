@@ -13,6 +13,12 @@ public class Signature : Entity
     public string Name { get; private set; } = null!;
     public string Version { get; private set; } = "0.1.0";
     public string Source { get; private set; } = string.Empty;
+    // The actual bundled component source code that was originally fed to the
+    // analyzer. Stored so deep-rescan steps (re-analyze interactable, re-analyze
+    // informational) can re-invoke the LLM without making the user re-upload.
+    // `Source` above is a short display label (filename / "folder/ (N files)");
+    // this is the raw text. Empty on signatures created before the field existed.
+    public string SourceCode { get; private set; } = string.Empty;
     public string Type { get; private set; } = "component"; // form | wizard | grid | modal | uploader | tabs | page
     public string HumanDescription { get; private set; } = string.Empty;
     public string UserFlowsJson { get; private set; } = string.Empty;
@@ -54,6 +60,7 @@ public class Signature : Entity
     }
 
     public void Rename(string name) { Name = name.Trim(); Touch(); }
+    public void SetSourceCode(string? code) { SourceCode = code ?? string.Empty; Touch(); }
     public void SetType(string type) { Type = type.Trim(); Touch(); }
     public void BumpVersion(string version) { Version = version.Trim(); Touch(); }
     public void SetHumanDescription(string? description) { HumanDescription = description?.Trim() ?? string.Empty; Touch(); }

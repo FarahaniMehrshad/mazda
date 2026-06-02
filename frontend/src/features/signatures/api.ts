@@ -24,6 +24,8 @@ export const signatureApi = {
     api.put<SignatureDto>(`/api/signatures/${id}/flows`, { flowsJson }),
   analyzeInformational: (id: string) =>
     api.post<SignatureDto>(`/api/signatures/${id}/analyze-informational`, {}),
+  reanalyzeInteractive: (id: string) =>
+    api.post<SignatureDto>(`/api/signatures/${id}/reanalyze-interactive`, {}),
 };
 
 export function useSignatures() {
@@ -98,6 +100,17 @@ export function useAnalyzeInformational() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => signatureApi.analyzeInformational(id),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["signatures"] });
+      qc.setQueryData(["signature", data.id], data);
+    },
+  });
+}
+
+export function useReanalyzeInteractive() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => signatureApi.reanalyzeInteractive(id),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["signatures"] });
       qc.setQueryData(["signature", data.id], data);

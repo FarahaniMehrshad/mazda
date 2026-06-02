@@ -51,6 +51,11 @@ public static class Endpoints
         sigs.MapPost("/analyze", async ([FromBody] AnalyzeComponentCommand cmd, ISender s) =>
             (await s.Send(cmd)).ToHttp());
 
+        // Wizard step 2 — re-run the LLM extraction on the persisted source code
+        // and replace the interactive slice (informational is preserved).
+        sigs.MapPost("/{id:guid}/reanalyze-interactive", async (Guid id, ISender s) =>
+            (await s.Send(new ReanalyzeInteractiveCommand(id))).ToHttp());
+
         // Wizard step 3 — deep informational re-analysis.
         sigs.MapPost("/{id:guid}/analyze-informational", async (Guid id, ISender s) =>
             (await s.Send(new AnalyzeInformationalCommand(id))).ToHttp());
