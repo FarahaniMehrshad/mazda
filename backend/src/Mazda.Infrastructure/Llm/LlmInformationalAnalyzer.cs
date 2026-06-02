@@ -51,8 +51,9 @@ public class LlmInformationalAnalyzer(IOptions<LlmOptions> options) : IInformati
                        sort order.
           listitem   — a per-row / per-item read target inside a "list" container
                        (the row's name cell, status cell, identifying column). Use
-                       a templated selector (e.g. ".rows > .row:nth-child({i})
-                       .name") and elementLogic referencing the parent list.
+                       a templated selector (e.g. ".rows .row:nth-child({i})
+                       .name") — descendant combinators, NOT `>` (see SELECTOR
+                       RULES below) — and elementLogic referencing the parent list.
 
         ── WHY YOU EXIST AS A SEPARATE PASS ──
         The first-pass analyzer already extracted interactive elements (buttons,
@@ -101,16 +102,33 @@ public class LlmInformationalAnalyzer(IOptions<LlmOptions> options) : IInformati
             then a purpose-named class.
           • For elements inside a .map(...) / *ngFor / v-for, produce a
             TEMPLATED selector with a placeholder index, e.g.
-            ".rows > .row:nth-child({i}) .name". Document this in
+            ".rows .row:nth-child({i}) .name" (descendant combinators,
+            NOT `>` — see COMBINATOR SEMANTICS below). Document this in
             elementLogic.
-          • COMBINATOR SEMANTICS — `A B` (descendant) matches at ANY depth.
-            When the parent contains the same tag in multiple branches
-            (real content + drag-preview clone + hidden alternate branch),
-            DO NOT use the bare descendant form. Use the CHILD combinator
-            `A > B`, or anchor with a class/data-testid that distinguishes
-            the real target from its lookalikes. When you do use a
-            descendant combinator AND another match could exist at another
-            depth, elementLogic MUST say so.
+          • COMBINATOR SEMANTICS — you are reading SOURCE (templates), not
+            the rendered DOM. Frameworks (Angular, React, Vue, Web
+            Components) routinely insert host elements, `<ng-container>`,
+            `<ng-content>` projections, styled wrappers, and conditional
+            `<div>` shells, so a parent → child pair in source is almost
+            NEVER a literal parent → child in the live DOM.
+              − DEFAULT to the descendant combinator `A B` (a SPACE). It
+                tolerates wrapper nodes the source doesn't show.
+              − NEVER place `>` between a CLASS ANCHOR and a
+                `:nth-child()` / tag / templated index. `:nth-child(N)`
+                already pins position at its own sibling level; `>` adds
+                zero disambiguation and one new failure mode.
+                Bad : ".columns-list > li:nth-child({i}) p"
+                Good: ".columns-list li:nth-child({i}) p"
+              − If the same tag (e.g. `<p>`, `<span>`) appears in
+                multiple branches (real content + drag-preview clone +
+                hidden alternate template), DO NOT switch to `>`. Anchor
+                the target with a class / data-testid / role that
+                distinguishes it. Call out the disambiguation strategy
+                (or any residual ambiguity) in elementLogic.
+              − `>` is reserved for plain-HTML cases (no framework hosts,
+                no projection slots, no conditional wrappers) where you
+                cannot use a target-anchor AND you must exclude same-tag
+                matches at deeper levels. In practice this is rare.
           • Never invent class names that don't appear in the source.
 
         ── LOGIC RULES (informational pass — MORE STRICT) ──

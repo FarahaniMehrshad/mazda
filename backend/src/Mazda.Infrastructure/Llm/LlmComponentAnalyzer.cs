@@ -343,55 +343,73 @@ public class LlmComponentAnalyzer(IOptions<LlmOptions> options) : IComponentAnal
             (.flex, .px-4, .text-sm). Skip utility-only classes.
           • For elements rendered in a .map(...), produce a templated selector with
             a placeholder index, e.g. [data-testid="row-{i}-editBtn"] or
-            tbody > tr:nth-of-type({i}) > .edit. Document this in the description.
+            ".rows .row:nth-child({i}) .edit" (descendant combinators, NOT `>`,
+            see COMBINATOR SEMANTICS below). Document this in the description.
           • Never invent class names that don't appear in the source.
           • Each selector should be UNIQUE within this signature. If two elements
             would collide, add a disambiguating ancestor (e.g.
             ".confirm-modal .close-btn" vs ".header .close-btn").
 
         ── COMBINATOR SEMANTICS — DESCENDANT vs CHILD ──
-        CSS combinators behave very differently and pick the WRONG one is a
-        common source of "flaky locator hits the wrong node":
-
-          • DESCENDANT (`A B`, with a SPACE) — matches every `B` that is
-            anywhere inside `A`, at ANY depth. If `A` has nested wrappers,
-            decorative containers, drag-preview clones, hidden sibling
-            templates, etc., that also contain matching `B` nodes, they
-            ALL match. `nth(i)` then indexes across an unpredictable set
-            that varies with UI state.
-
-          • CHILD (`A > B`) — matches only `B` that is a DIRECT child of `A`.
-            No grandchildren, no nephews. Stable count, stable index.
+        You are reading SOURCE (templates), not the rendered DOM. Frameworks
+        (Angular, React, Vue, Web Components) routinely insert host elements,
+        content-projection slots (`<ng-container>`, `<ng-content>`,
+        `*ngTemplateOutlet>`, React fragments behaving as wrappers, styled
+        wrappers, conditional `<div>` shells), so what looks like a direct
+        parent → child relationship in source is almost NEVER a direct
+        parent → child relationship in the live DOM. The child combinator
+        `A > B` requires `B` to be the LITERAL immediate child of `A` and
+        breaks the moment any of those framework-inserted wrappers sneak in.
 
         Hard rules:
 
-          1. PREFER `A > B` when the target is a DIRECT child of the parent
-             container and you only want that one. The descendant combinator
-             is only correct when the target genuinely can sit at any depth
-             AND there is no other matching node at a deeper level.
+          1. DEFAULT to the descendant combinator `A B` (a SPACE) for any
+             ancestor → descendant relationship. This is the safe choice
+             because it tolerates wrapper nodes the source doesn't show.
 
-          2. RED FLAG — when the SAME tag (e.g. `<p>`, `<span>`, `<div>`,
+          2. NEVER use `>` between a CLASS ANCHOR (`.columns-list`, `.rows`,
+             `.card`, …) and a TAG / `:nth-child()` / templated index. The
+             whole point of `:nth-child(N)` is positional pinning at its
+             OWN sibling level — `>` adds zero disambiguation and one new
+             failure mode (wrapper between anchor and indexed level).
+             Bad : ".columns-list > li:nth-child({i}) p"
+             Good: ".columns-list li:nth-child({i}) p"
+             (The Angular ng-content / styled wrapper between `<ul>` and
+             `<li>` makes the `>` form return zero matches.)
+
+          3. `>` is allowed ONLY when ALL of the following are true:
+               (a) the source proves the relationship is literally direct
+                   (plain HTML, no framework hosts, no `<ng-container>`,
+                   no slot, no projection, no conditional wrapper), AND
+               (b) anchoring via class / data-testid / role on the target
+                   is not feasible, AND
+               (c) you NEED to exclude same-tag matches at deeper levels.
+             In practice this means `>` is rare — usually a class or
+             data-testid anchor on the target is both stabler and clearer.
+
+          4. RED FLAG — when the SAME tag (e.g. `<p>`, `<span>`, `<div>`,
              `<img>`) appears multiple times inside the parent (real content
              + drag preview, real content + hidden alternate branch, etc.),
-             NEVER use the bare descendant form `parent tag`. Either:
-               (a) anchor the target with a class / data-testid / role that
-                   distinguishes it from its lookalikes, or
-               (b) use the direct-child combinator `>` so the alternates at
-                   deeper levels do not collide.
+             the FIX IS NOT `>`. The fix is to anchor the target with a
+             class / data-testid / role that distinguishes it from its
+             lookalikes. If the target genuinely has no distinguishing
+             attribute and the wrapper layout is plain HTML, only then
+             consider `>` — and call this out in elementLogic.
 
-          3. When the selector you settled on is a descendant combinator
+          5. When the selector you settled on is a descendant combinator
              AND there is even a possibility of a matching node at another
              depth (conditional branch, drag-preview clone, slot template,
              portal, etc.), elementLogic MUST say so explicitly. Example:
                "Selector `.card p` uses the descendant combinator and will
                also match the `<p>` inside the `.drag-preview` clone child
-               when a drag is active. Use `:visible` filtering or the
-               direct-child form `.card > p` to disambiguate during a drag."
+               when a drag is active. Use `:visible` filtering to
+               disambiguate during a drag."
 
-          4. The same red-flag applies to attributes that may collide:
+          6. The same logic applies to attributes that may collide:
              `.card [draggable="true"]` matches every draggable descendant,
-             including children of children. Constrain with `>` or a
-             class anchor when there can be more than one.
+             including children of children. Prefer a class anchor or
+             data-testid on the target itself; resort to `>` only when
+             the wrapper layout is provably plain HTML.
 
         ── COVERAGE EXPECTATIONS ──
         Walk EVERY file in the bundle. Do not stop at the first file. Do not deduplicate
