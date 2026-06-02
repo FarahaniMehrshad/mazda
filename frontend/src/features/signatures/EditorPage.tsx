@@ -16,8 +16,12 @@ import type { SignatureElementDto } from "@/shared/api/types";
 interface DraftShape {
   name: string;
   type: string;
+  // Only the interactive subset of elements is edited here.
   elements: SignatureElementDto[];
 }
+
+const isInteractive = (e: SignatureElementDto) =>
+  (e.category || "Interactive").toLowerCase() !== "informational";
 
 export function EditorPage() {
   const { id } = useParams<{ id: string }>();
@@ -33,7 +37,8 @@ export function EditorPage() {
       const shape: DraftShape = {
         name: signature.name,
         type: signature.type,
-        elements: signature.elements,
+        // Edit only the interactive slice; informational lives on step 3.
+        elements: signature.elements.filter(isInteractive),
       };
       setDraft(JSON.stringify(shape, null, 2));
     }
@@ -54,17 +59,23 @@ export function EditorPage() {
     if (!signature) return;
     const parsed = tryParse();
     if (!parsed) return;
+    // Merge edited interactive elements with untouched informational ones.
+    const informational = signature.elements.filter((e) => !isInteractive(e));
+    const editedInteractive = (parsed.elements ?? []).map((e) => ({
+      ...e,
+      category: e.category || "Interactive",
+    }));
     await save.mutateAsync({
       id: signature.id,
       name: parsed.name,
       type: parsed.type,
       source: signature.source,
-      elements: parsed.elements ?? [],
+      elements: [...editedInteractive, ...informational],
     });
   }
 
   function onContinue() {
-    if (signature) navigate(`/signatures/${signature.id}/flows`);
+    if (signature) navigate(`/signatures/${signature.id}/informational`);
   }
 
   if (isLoading || !signature) {
@@ -76,122 +87,117 @@ export function EditorPage() {
     );
   }
 
+  const interactive = signature.elements.filter(isInteractive);
+
   return (
     <ScreenShell>
-      <TopBar crumb={signature.name} />
+      <TopBar crumb={`${signature.name} · interactable`} />
       <div
         style={{
           padding: 28,
-          display: "grid",
-          gridTemplateColumns: "1.2fr 1fr",
-          gap: 24,
+          display: "flex",
+          flexDirection: "column",
+          gap: 20,
           flex: 1,
           overflow: "hidden",
         }}
       >
-        {/* ── LEFT — JSON editor ── */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
-          <StepIndicator step={2} />
-          <div
-            className="mz-glass-2"
-            style={{
-              flex: 1,
-              minHeight: 0,
-              padding: 0,
-              overflow: "hidden",
-              display: "flex",
-              flexDirection: "column",
-            }}
-          >
+        <StepIndicator step={2} />
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1.2fr 1fr",
+            gap: 24,
+            flex: 1,
+            minHeight: 0,
+          }}
+        >
+          {/* ── LEFT — JSON editor (interactive only) ── */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
             <div
+              className="mz-glass-2"
               style={{
-                padding: "10px 16px",
-                borderBottom: "1px solid var(--glass-stroke)",
-                fontFamily: "var(--f-mono)",
-                fontSize: 11.5,
-                color: "var(--text-3)",
+                flex: 1,
+                minHeight: 0,
+                padding: 0,
+                overflow: "hidden",
                 display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
+                flexDirection: "column",
               }}
             >
-              <span>{signature.source || "signature.json"}</span>
-              <Pill tone="orange">v{signature.version}</Pill>
-            </div>
-            <div style={{ flex: 1, minHeight: 0 }}>
-              <Editor
-                height="100%"
-                defaultLanguage="json"
-                theme="vs-dark"
-                value={draft}
-                onChange={(v) => setDraft(v ?? "")}
-                options={{
-                  fontSize: 12.5,
-                  fontFamily: "JetBrains Mono, monospace",
-                  minimap: { enabled: false },
-                  scrollBeyondLastLine: false,
-                  tabSize: 2,
+              <div
+                style={{
+                  padding: "10px 16px",
+                  borderBottom: "1px solid var(--glass-stroke)",
+                  fontFamily: "var(--f-mono)",
+                  fontSize: 11.5,
+                  color: "var(--text-3)",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
                 }}
+              >
+                <span>{signature.source || "signature.json"} · interactive</span>
+                <Pill tone="orange">v{signature.version}</Pill>
+              </div>
+              <div style={{ flex: 1, minHeight: 0 }}>
+                <Editor
+                  height="100%"
+                  defaultLanguage="json"
+                  theme="vs-dark"
+                  value={draft}
+                  onChange={(v) => setDraft(v ?? "")}
+                  options={{
+                    fontSize: 12.5,
+                    fontFamily: "JetBrains Mono, monospace",
+                    minimap: { enabled: false },
+                    scrollBeyondLastLine: false,
+                    tabSize: 2,
+                  }}
+                />
+              </div>
+            </div>
+            {parseError && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "var(--err)",
+                  fontFamily: "var(--f-mono)",
+                }}
+              >
+                JSON parse error: {parseError}
+              </div>
+            )}
+          </div>
+
+          {/* ── RIGHT — interactive elements preview only ── */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
+            <div
+              className="mz-scroll"
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflow: "auto",
+                display: "flex",
+                flexDirection: "column",
+                gap: 16,
+              }}
+            >
+              <ElementSection
+                title={`Interactive · ${interactive.length}`}
+                elements={interactive}
+                empty="No interactive elements detected."
               />
             </div>
-          </div>
-          {parseError && (
-            <div
-              style={{
-                fontSize: 12,
-                color: "var(--err)",
-                fontFamily: "var(--f-mono)",
-              }}
-            >
-              JSON parse error: {parseError}
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <BtnGhost onClick={onSave} disabled={save.isPending}>
+                {save.isPending ? "Saving…" : "Save changes"}
+              </BtnGhost>
+              <BtnPrimary icon={Icon.arrow()} onClick={onContinue}>
+                Continue to informational
+              </BtnPrimary>
             </div>
-          )}
-        </div>
-
-        {/* ── RIGHT — element list preview, split by category ── */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
-          <div
-            className="mz-scroll"
-            style={{
-              flex: 1,
-              minHeight: 0,
-              overflow: "auto",
-              display: "flex",
-              flexDirection: "column",
-              gap: 16,
-            }}
-          >
-            {(() => {
-              const interactive = signature.elements.filter(
-                (e) => (e.category || "Interactive").toLowerCase() !== "informational"
-              );
-              const informational = signature.elements.filter(
-                (e) => (e.category || "").toLowerCase() === "informational"
-              );
-              return (
-                <>
-                  <ElementSection
-                    title={`Interactive · ${interactive.length}`}
-                    elements={interactive}
-                    empty="No interactive elements detected."
-                  />
-                  <ElementSection
-                    title={`Informational · ${informational.length}`}
-                    elements={informational}
-                    empty="No informational elements detected — the analyzer did not surface any read targets (status, value, count, …)."
-                  />
-                </>
-              );
-            })()}
-          </div>
-
-          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-            <BtnGhost onClick={onSave} disabled={save.isPending}>
-              {save.isPending ? "Saving…" : "Save changes"}
-            </BtnGhost>
-            <BtnPrimary icon={Icon.arrow()} onClick={onContinue}>
-              Continue to flows
-            </BtnPrimary>
           </div>
         </div>
       </div>

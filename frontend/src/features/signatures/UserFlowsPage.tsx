@@ -230,7 +230,7 @@ export function UserFlowsPage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={3} />
+        <StepIndicator step={4} />
         <div
           style={{
             display: "grid",
@@ -254,7 +254,7 @@ export function UserFlowsPage() {
                 overflow: "auto",
               }}
             >
-              <div className="mz-eyebrow">Step 3 · User flows</div>
+              <div className="mz-eyebrow">Step 4 · User flows</div>
               <div style={{ color: "var(--text-3)", fontSize: 12.5, lineHeight: 1.55 }}>
                 Mazda walks the signature and infers a graph of all plausible UI flows —
                 states the user can be in, and the element-anchored actions that
@@ -324,8 +324,8 @@ export function UserFlowsPage() {
             </div>
 
             <div style={{ display: "flex", gap: 10 }}>
-              <BtnGhost onClick={() => navigate(`/signatures/${id}`)}>
-                Back to signature
+              <BtnGhost onClick={() => navigate(`/signatures/${id}/informational`)}>
+                Back to informational
               </BtnGhost>
               <BtnPrimary
                 full

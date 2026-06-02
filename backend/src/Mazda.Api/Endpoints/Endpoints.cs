@@ -51,7 +51,11 @@ public static class Endpoints
         sigs.MapPost("/analyze", async ([FromBody] AnalyzeComponentCommand cmd, ISender s) =>
             (await s.Send(cmd)).ToHttp());
 
-        // Wizard step 3 — user flows.
+        // Wizard step 3 — deep informational re-analysis.
+        sigs.MapPost("/{id:guid}/analyze-informational", async (Guid id, ISender s) =>
+            (await s.Send(new AnalyzeInformationalCommand(id))).ToHttp());
+
+        // Wizard step 4 — user flows.
         sigs.MapPost("/{id:guid}/flows/generate", async (Guid id, [FromBody] GenerateFlowsBody body, ISender s) =>
             (await s.Send(new GenerateUserFlowsCommand(id, body.CypressSource))).ToHttp());
 

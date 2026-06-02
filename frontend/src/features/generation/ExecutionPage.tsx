@@ -134,7 +134,7 @@ export function ExecutionPage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={7} />
+        <StepIndicator step={8} />
         <div
           style={{
             display: "grid",
@@ -158,7 +158,7 @@ export function ExecutionPage() {
                 overflow: "auto",
               }}
             >
-              <div className="mz-eyebrow">Step 7 · Execution</div>
+              <div className="mz-eyebrow">Step 8 · Execution</div>
               <div style={{ color: "var(--text-3)", fontSize: 12.5, lineHeight: 1.5 }}>
                 Mazda runs the merged spec via <code style={{ fontFamily: "var(--f-mono)" }}>
                 npx playwright test</code> inside the API container and streams the terminal

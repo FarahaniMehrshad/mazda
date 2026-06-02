@@ -74,6 +74,22 @@ public record AnalyzedElement(string Selector, string Category, string ElementTy
 public record ComponentAnalysisResult(string SuggestedName, string SuggestedType, IReadOnlyList<AnalyzedElement> Elements, int TokensUsed);
 
 /// <summary>
+/// Dedicated deep-analysis pass for informational elements only. Receives the
+/// existing signature (so it knows what's already covered) PLUS the source,
+/// and returns a richer set of read-target elements — text content, list /
+/// table / grid containers with their per-row anchors, status displays, etc.
+/// </summary>
+public interface IInformationalAnalyzer
+{
+    Task<InformationalAnalysisResult> AnalyzeInformationalAsync(
+        Signature signature,
+        string componentSource,
+        CancellationToken ct = default);
+}
+
+public record InformationalAnalysisResult(IReadOnlyList<AnalyzedElement> Elements, int TokensUsed);
+
+/// <summary>
 /// Outbound port for inferring a UI user-flow graph from a Signature
 /// (and optional Cypress integration test source as grounding context).
 /// </summary>

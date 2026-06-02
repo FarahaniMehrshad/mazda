@@ -72,7 +72,7 @@ export function SetupPage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={4} />
+        <StepIndicator step={5} />
         <div
           style={{
             display: "grid",
@@ -95,7 +95,7 @@ export function SetupPage() {
               minHeight: 0,
             }}
           >
-            <div className="mz-eyebrow">Step 4 · Setup</div>
+            <div className="mz-eyebrow">Step 5 · Setup</div>
             <div style={{ color: "var(--text-3)", fontSize: 12.5, lineHeight: 1.5 }}>
               Describe what should happen <em>before</em> the test runs. Mazda turns this
               into Playwright setup code — hooks, fixtures, or a CDP attach.

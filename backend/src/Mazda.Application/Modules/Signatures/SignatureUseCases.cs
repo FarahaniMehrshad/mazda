@@ -260,3 +260,79 @@ public class UpdateUserFlowsHandler(
         return Result.Success(sig.ToDto());
     }
 }
+
+// === Deep informational re-analysis (signature step 3) ===
+
+public record AnalyzeInformationalCommand(Guid SignatureId) : IRequest<Result<SignatureDto>>;
+
+public class AnalyzeInformationalValidator : AbstractValidator<AnalyzeInformationalCommand>
+{
+    public AnalyzeInformationalValidator()
+    {
+        RuleFor(x => x.SignatureId).NotEmpty();
+    }
+}
+
+public class AnalyzeInformationalHandler(
+    ISignatureRepository repo,
+    IInformationalAnalyzer analyzer,
+    ICurrentUser me,
+    IUnitOfWork uow) : IRequestHandler<AnalyzeInformationalCommand, Result<SignatureDto>>
+{
+    public async Task<Result<SignatureDto>> Handle(AnalyzeInformationalCommand cmd, CancellationToken ct)
+    {
+        if (me.UserId is null) return Result.Failure<SignatureDto>(Error.Validation("Not authenticated."));
+        var sig = await repo.FindByIdAsync(cmd.SignatureId, me.UserId.Value, ct);
+        if (sig is null) return Result.Failure<SignatureDto>(Error.NotFound("Signature"));
+
+        // The Source is the bundled component text the original analyze pass
+        // ran against. We need it again here so the dedicated informational
+        // pass can do its deep scan.
+        if (string.IsNullOrWhiteSpace(sig.Source))
+            return Result.Failure<SignatureDto>(Error.Validation("Original component source not available; re-upload the component."));
+
+        InformationalAnalysisResult result;
+        try { result = await analyzer.AnalyzeInformationalAsync(sig, sig.Source, ct); }
+        catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Informational analyzer failed: {ex.Message}")); }
+
+        // Preserve all existing INTERACTIVE elements. Replace the INFORMATIONAL
+        // subset entirely with the deeper analysis. Reorder so interactive
+        // comes first, then informational; preserves stable navigation in the
+        // editor pages.
+        var interactive = sig.Elements
+            .Where(e => e.Category == ElementCategory.Interactive)
+            .OrderBy(e => e.Order)
+            .ToList();
+        var newInformational = result.Elements
+            .Select((e, i) => SignatureElement.Create(
+                e.Selector,
+                ElementCategory.Informational,
+                e.ElementType,
+                e.Description,
+                interactive.Count + i,
+                e.Logic))
+            .ToList();
+
+        var nextOrder = 0;
+        var merged = interactive
+            .Select(e => SignatureElement.Create(
+                e.ElementSelector,
+                ElementCategory.Interactive,
+                e.ElementType,
+                e.ElementDescription,
+                nextOrder++,
+                e.ElementLogic))
+            .Concat(newInformational.Select(e => SignatureElement.Create(
+                e.ElementSelector,
+                ElementCategory.Informational,
+                e.ElementType,
+                e.ElementDescription,
+                nextOrder++,
+                e.ElementLogic)))
+            .ToList();
+
+        await repo.ReplaceElementsAsync(sig, merged, ct);
+        await uow.SaveChangesAsync(ct);
+        return Result.Success(sig.ToDto());
+    }
+}
