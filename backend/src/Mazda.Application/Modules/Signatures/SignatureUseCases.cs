@@ -156,7 +156,9 @@ public class DeleteSignatureHandler(ISignatureRepository repo, ICurrentUser me, 
 }
 
 // ── Analyze a component file (LLM extraction) ─────────────────────
-public record AnalyzeComponentCommand(string FileName, string Source, string? Description = null) : IRequest<Result<SignatureDto>>;
+// `Name` and `Description` are user overrides — when present they take
+// precedence over the LLM's SuggestedName / over an empty description.
+public record AnalyzeComponentCommand(string FileName, string Source, string? Description = null, string? Name = null) : IRequest<Result<SignatureDto>>;
 
 public class AnalyzeComponentValidator : AbstractValidator<AnalyzeComponentCommand>
 {
@@ -165,6 +167,9 @@ public class AnalyzeComponentValidator : AbstractValidator<AnalyzeComponentComma
         RuleFor(x => x.FileName).NotEmpty().MaximumLength(200);
         RuleFor(x => x.Source).NotEmpty().MaximumLength(300_000);
         RuleFor(x => x.Description).MaximumLength(50_000).When(x => x.Description is not null);
+        // Mirrors the SaveSignatureCommand cap so a user-typed name and an
+        // LLM-suggested one round-trip through the same validation surface.
+        RuleFor(x => x.Name).MaximumLength(80).When(x => !string.IsNullOrWhiteSpace(x.Name));
     }
 }
 
@@ -182,7 +187,11 @@ public class AnalyzeComponentHandler(
         try { analysis = await analyzer.AnalyzeAsync(cmd.Source, cmd.FileName, cmd.Description, ct); }
         catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Analyzer failed: {ex.Message}")); }
 
-        var sig = Signature.Create(me.UserId.Value, analysis.SuggestedName, cmd.FileName, analysis.SuggestedType, cmd.Description);
+        // User-supplied name wins. Falls back to the LLM's SuggestedName, which
+        // itself falls back to "Component" inside the analyzer when the model
+        // returned nothing usable.
+        var effectiveName = string.IsNullOrWhiteSpace(cmd.Name) ? analysis.SuggestedName : cmd.Name!.Trim();
+        var sig = Signature.Create(me.UserId.Value, effectiveName, cmd.FileName, analysis.SuggestedType, cmd.Description);
         // Persist the actual bundled source code so deep re-analysis (interactive
         // OR informational) can re-call the LLM later without re-upload.
         sig.SetSourceCode(cmd.Source);

@@ -63,7 +63,11 @@ export function UploadPage() {
   const [source, setSource] = useState("");
   const [descriptionFile, setDescriptionFile] = useState("");
   const [description, setDescription] = useState("");
+  const [name, setName] = useState("");
   const [dragging, setDragging] = useState(false);
+
+  // Soft caps mirror the backend validators so we fail in the UI before a round-trip.
+  const MAX_NAME_CHARS = 80;
 
   async function onFile(file: File) {
     if (file.size > MAX_SINGLE_FILE_BYTES) {
@@ -116,11 +120,22 @@ export function UploadPage() {
 
   async function runAnalysis() {
     if (!source.trim()) return;
+    if (description.length > MAX_DESCRIPTION_CHARS) {
+      alert(`Description too long (${description.length.toLocaleString()} chars, limit ${MAX_DESCRIPTION_CHARS.toLocaleString()}).`);
+      return;
+    }
+    if (name.length > MAX_NAME_CHARS) {
+      alert(`Name too long (${name.length} chars, limit ${MAX_NAME_CHARS}).`);
+      return;
+    }
     try {
       const sig = await analyze.mutateAsync({
         fileName: fileName || "Component.tsx",
         source,
         description: description.trim() || undefined,
+        // Send only when the user actually typed something — empty means
+        // "let the analyzer suggest a name".
+        name: name.trim() || undefined,
       });
       navigate(`/signatures/${sig.id}`);
     } catch (err) {
@@ -156,8 +171,11 @@ export function UploadPage() {
             minHeight: 0,
           }}
         >
-        {/* ── LEFT — dropzone ── */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 20, minHeight: 0, minWidth: 0 }}>
+        {/* ── LEFT — dropzone + details ── */}
+        {/* The whole column can scroll if the viewport is short — the dropzone
+            shrinks to a sane min, and the Details panel stays at its natural
+            size so the inputs never get clipped. */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0, minWidth: 0, overflow: "auto" }}>
           <div
             className="mz-glass-2"
             onDragOver={(e) => {
@@ -167,19 +185,19 @@ export function UploadPage() {
             onDragLeave={() => setDragging(false)}
             onDrop={onDrop}
             style={{
-              flex: 1,
-              padding: 32,
+              flex: "1 1 auto",
+              padding: 28,
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
               justifyContent: "center",
-              gap: 18,
+              gap: 16,
               border: dragging
                 ? "1px dashed rgba(234,112,40,0.6)"
                 : "1px dashed var(--glass-stroke-2)",
               transition: "border-color 160ms ease, background 160ms ease",
               background: dragging ? "rgba(194,65,12,0.06)" : "var(--glass-2)",
-              minHeight: 320,
+              minHeight: 240,
             }}
           >
             <div
@@ -246,9 +264,6 @@ export function UploadPage() {
               <BtnGhost icon={Icon.folder()} onClick={() => folderInputRef.current?.click()}>
                 Choose folder
               </BtnGhost>
-              <BtnGhost icon={Icon.file()} onClick={() => descInputRef.current?.click()}>
-                {descriptionFile ? "Replace description" : "Add description (.md)"}
-              </BtnGhost>
             </div>
             <div
               style={{
@@ -263,21 +278,123 @@ export function UploadPage() {
                   {fileName}
                 </Pill>
               )}
-              {descriptionFile && (
-                <Pill tone="info" icon={Icon.file(10)}>
-                  {descriptionFile}
-                </Pill>
-              )}
             </div>
-            <div
-              style={{
-                fontSize: 11,
-                color: "var(--text-4)",
-                textAlign: "center",
-                maxWidth: 380,
-              }}
-            >
-              Optional .md file describing how the component works — it'll be passed to the analyzer as extra context.
+          </div>
+
+          {/* ── Details — optional custom name + description ── */}
+          {/* Both fields are optional. When the user leaves Name empty, the
+              backend falls back to the LLM-suggested name. Description seeds
+              the signature's HumanDescription (and is passed as extra context
+              to the analyzer); it can be typed directly or loaded from a .md /
+              .markdown / .txt file via the small "Load from file" button. */}
+          <div
+            className="mz-glass"
+            style={{
+              flex: "0 0 auto",
+              padding: 18,
+              display: "flex",
+              flexDirection: "column",
+              gap: 14,
+            }}
+          >
+            <div className="mz-eyebrow">Details (optional)</div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <label
+                style={{
+                  fontFamily: "var(--f-mono)",
+                  fontSize: 10.5,
+                  letterSpacing: "0.06em",
+                  color: "var(--text-3)",
+                  textTransform: "uppercase",
+                }}
+              >
+                Signature name
+              </label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                maxLength={MAX_NAME_CHARS}
+                placeholder="Leave blank — Mazda will suggest one from the source"
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  background: "var(--glass-1)",
+                  border: "1px solid var(--glass-stroke-2)",
+                  borderRadius: 8,
+                  color: "var(--text-1)",
+                  fontFamily: "var(--f-sans)",
+                  fontSize: 13,
+                  outline: "none",
+                }}
+              />
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+                <label
+                  style={{
+                    fontFamily: "var(--f-mono)",
+                    fontSize: 10.5,
+                    letterSpacing: "0.06em",
+                    color: "var(--text-3)",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  Description
+                </label>
+                <button
+                  onClick={() => descInputRef.current?.click()}
+                  style={{
+                    fontSize: 10.5,
+                    fontFamily: "var(--f-mono)",
+                    padding: "3px 8px",
+                    borderRadius: 999,
+                    background: "var(--glass-1)",
+                    border: "1px solid var(--glass-stroke)",
+                    color: "var(--text-3)",
+                    cursor: "pointer",
+                  }}
+                >
+                  {descriptionFile ? `↻ ${descriptionFile}` : "Load from .md"}
+                </button>
+              </div>
+              <textarea
+                value={description}
+                onChange={(e) => {
+                  setDescription(e.target.value);
+                  // User is editing manually — drop the "loaded from file" badge
+                  // so the small chip doesn't lie about the current contents.
+                  if (descriptionFile) setDescriptionFile("");
+                }}
+                placeholder="How this component works — purpose, important states, anything the analyzer should know about. Passed to the LLM as extra context."
+                rows={5}
+                style={{
+                  width: "100%",
+                  resize: "vertical",
+                  minHeight: 96,
+                  padding: "10px 12px",
+                  background: "var(--glass-1)",
+                  border: "1px solid var(--glass-stroke-2)",
+                  borderRadius: 8,
+                  color: "var(--text-1)",
+                  fontFamily: "var(--f-sans)",
+                  fontSize: 13,
+                  lineHeight: 1.5,
+                  outline: "none",
+                }}
+              />
+              <div
+                style={{
+                  fontFamily: "var(--f-mono)",
+                  fontSize: 10.5,
+                  color: description.length > MAX_DESCRIPTION_CHARS ? "var(--err, #e07a5f)" : "var(--text-4)",
+                  textAlign: "right",
+                }}
+              >
+                {description.length.toLocaleString()} / {MAX_DESCRIPTION_CHARS.toLocaleString()} chars
+              </div>
             </div>
           </div>
         </div>

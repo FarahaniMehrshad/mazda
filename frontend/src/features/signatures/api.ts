@@ -16,8 +16,8 @@ export const signatureApi = {
   create: (body: SaveSignatureInput) => api.post<SignatureDto>("/api/signatures/", body),
   update: (id: string, body: SaveSignatureInput) => api.put<SignatureDto>(`/api/signatures/${id}`, body),
   remove: (id: string) => api.del<void>(`/api/signatures/${id}`),
-  analyze: (fileName: string, source: string, description?: string) =>
-    api.post<SignatureDto>("/api/signatures/analyze", { fileName, source, description }),
+  analyze: (fileName: string, source: string, description?: string, name?: string) =>
+    api.post<SignatureDto>("/api/signatures/analyze", { fileName, source, description, name }),
   generateFlows: (id: string, cypressSource?: string) =>
     api.post<SignatureDto>(`/api/signatures/${id}/flows/generate`, { cypressSource }),
   saveFlows: (id: string, flowsJson: string) =>
@@ -66,8 +66,8 @@ export function useDeleteSignature() {
 export function useAnalyzeComponent() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ fileName, source, description }: { fileName: string; source: string; description?: string }) =>
-      signatureApi.analyze(fileName, source, description),
+    mutationFn: ({ fileName, source, description, name }: { fileName: string; source: string; description?: string; name?: string }) =>
+      signatureApi.analyze(fileName, source, description, name),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["signatures"] }),
   });
 }
