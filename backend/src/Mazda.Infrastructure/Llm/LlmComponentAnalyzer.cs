@@ -157,11 +157,43 @@ public class LlmComponentAnalyzer(IOptions<LlmOptions> options) : IComponentAnal
              relative to the rest of the UI? (e.g. ".new-card-placement"
              at index `i` represents the slot BEFORE card `i`; the last
              one — at index `cardCount` — is the slot AFTER the final card.)
-          3. LIFECYCLE: when does this element exist in the DOM?
+          3. LIFECYCLE / CONDITIONAL EXISTENCE: when does this element exist
+             in the DOM?
              • Always present from initial render? → no logic needed.
              • Only present on hover / focus / drag / a parent's open state?
              • Created/destroyed by a user action (`*ngIf`, conditional render)?
              • Disappears after a timeout or animation?
+
+             SPECIAL RULE — CONDITIONAL RENDERING IS MANDATORY LOGIC.
+             If the source wraps the element in ANY conditional directive that
+             controls existence:
+               • Angular:        `*ngIf="…"`, `@if (…) { … }`, `@switch`,
+                                 `[hidden]="…"` (technically still in DOM but
+                                  not visible — note it),
+                                 `ngTemplateOutlet` with conditional context.
+               • React / JSX:    `{cond && <…/>}`, `cond ? <A/> : <B/>`,
+                                 early-return null patterns.
+               • Vue:            `v-if`, `v-else-if`, `v-else`, `v-show`.
+               • Svelte:         `{#if}…{:else}…{/if}`.
+               • Plain template: any other gate that can produce null vs node.
+
+             …then elementLogic MUST state, in concrete terms:
+               (a) The CONDITIONS under which the element exists. Reference
+                   the prop / state / model variable name when visible.
+                   e.g. "Rendered when `row.status !== 'archived'` AND the
+                   row is not currently being dragged."
+               (b) What HAPPENS IN THE ALTERNATE BRANCH — does another
+                   element take its place (an `else` template, a sibling
+                   in `cond ? <A/> : <B/>`), or does the slot stay empty?
+                   e.g. "When the row is in edit mode, this text node is
+                   replaced by the input from row `n`'s `*ngIf` else."
+               (c) Sibling elements gated by the SAME condition or its
+                   inverse, so the test author can reason about visible
+                   state. e.g. "The error icon and the normal icon are
+                   mutually exclusive — exactly one appears, gated by
+                   `isColumnValid()`."
+
+             Skip these notes only when the element is unconditional.
           4. RELATIONSHIPS: depends on, mutually exclusive with, or affects
              the existence of another element? (e.g. "Submit button is
              disabled until at least one row is added"; "Edit button is
@@ -316,6 +348,50 @@ public class LlmComponentAnalyzer(IOptions<LlmOptions> options) : IComponentAnal
           • Each selector should be UNIQUE within this signature. If two elements
             would collide, add a disambiguating ancestor (e.g.
             ".confirm-modal .close-btn" vs ".header .close-btn").
+
+        ── COMBINATOR SEMANTICS — DESCENDANT vs CHILD ──
+        CSS combinators behave very differently and pick the WRONG one is a
+        common source of "flaky locator hits the wrong node":
+
+          • DESCENDANT (`A B`, with a SPACE) — matches every `B` that is
+            anywhere inside `A`, at ANY depth. If `A` has nested wrappers,
+            decorative containers, drag-preview clones, hidden sibling
+            templates, etc., that also contain matching `B` nodes, they
+            ALL match. `nth(i)` then indexes across an unpredictable set
+            that varies with UI state.
+
+          • CHILD (`A > B`) — matches only `B` that is a DIRECT child of `A`.
+            No grandchildren, no nephews. Stable count, stable index.
+
+        Hard rules:
+
+          1. PREFER `A > B` when the target is a DIRECT child of the parent
+             container and you only want that one. The descendant combinator
+             is only correct when the target genuinely can sit at any depth
+             AND there is no other matching node at a deeper level.
+
+          2. RED FLAG — when the SAME tag (e.g. `<p>`, `<span>`, `<div>`,
+             `<img>`) appears multiple times inside the parent (real content
+             + drag preview, real content + hidden alternate branch, etc.),
+             NEVER use the bare descendant form `parent tag`. Either:
+               (a) anchor the target with a class / data-testid / role that
+                   distinguishes it from its lookalikes, or
+               (b) use the direct-child combinator `>` so the alternates at
+                   deeper levels do not collide.
+
+          3. When the selector you settled on is a descendant combinator
+             AND there is even a possibility of a matching node at another
+             depth (conditional branch, drag-preview clone, slot template,
+             portal, etc.), elementLogic MUST say so explicitly. Example:
+               "Selector `.card p` uses the descendant combinator and will
+               also match the `<p>` inside the `.drag-preview` clone child
+               when a drag is active. Use `:visible` filtering or the
+               direct-child form `.card > p` to disambiguate during a drag."
+
+          4. The same red-flag applies to attributes that may collide:
+             `.card [draggable="true"]` matches every draggable descendant,
+             including children of children. Constrain with `>` or a
+             class anchor when there can be more than one.
 
         ── COVERAGE EXPECTATIONS ──
         Walk EVERY file in the bundle. Do not stop at the first file. Do not deduplicate
