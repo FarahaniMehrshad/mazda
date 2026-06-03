@@ -46,6 +46,16 @@ public class SignatureRepository(MazdaDbContext db) : ISignatureRepository
     {
         var sigId = signature.Id;
 
+        // Compute a content hash of the element collection BEFORE and AFTER so
+        // we know whether anything meaningful actually changed. We don't want
+        // to wipe derived caches when the user just renames the signature and
+        // re-saves the same element list — but we DO want to wipe them when a
+        // selector / description / category actually shifts.
+        var newElementsList = newElements.ToList();
+        var beforeHash = HashElements(signature.Elements);
+        var afterHash = HashElements(newElementsList);
+        var elementsChanged = beforeHash != afterHash;
+
         // 1. Wipe the change tracker. Every previous attempt failed because the
         //    parent's navigation snapshot kept old element references around, and
         //    SaveChanges then computed a diff against rows we'd already deleted
@@ -65,9 +75,18 @@ public class SignatureRepository(MazdaDbContext db) : ISignatureRepository
 
         // 3. Reset the in-memory navigation collection on the (detached) signature
         //    to the new elements.
-        signature.ReplaceElements(newElements);
+        signature.ReplaceElements(newElementsList);
 
-        // 4. Re-attach with explicit states. Don't rely on EF inference: each
+        // 4. When the element set actually shifted, every signature-level cache
+        //    derived from those elements (LastTestScript, LastFinalScript,
+        //    LastAnalyzeState*, UserFlowsJson) is now stale. Wipe them BEFORE
+        //    re-attaching so the parent's Modified state captures the cleared
+        //    columns in the same SaveChanges round-trip. Without this, fresh
+        //    generations pre-fill from stale Last-* buffers and the user sees /
+        //    runs scripts written against selectors that no longer exist.
+        if (elementsChanged) signature.InvalidateDerivedCaches();
+
+        // 5. Re-attach with explicit states. Don't rely on EF inference: each
         //    SignatureElement has a non-default Guid Id (Entity base ctor sets
         //    Guid.NewGuid()), so Attach would default them to Unchanged and EF
         //    would skip inserting them. We force Added.
@@ -75,6 +94,29 @@ public class SignatureRepository(MazdaDbContext db) : ISignatureRepository
         db.Entry(signature).State = EntityState.Modified;
         foreach (var child in signature.Elements)
             db.Entry(child).State = EntityState.Added;
+    }
+
+    // Stable content hash of an element collection. Sorting first means
+    // equivalent collections with different in-memory ordering compare equal
+    // (we don't want to invalidate caches just because the editor renumbered
+    // a row). The Order field IS included so genuine reordering counts as a
+    // change — display order affects test generation (the LLM treats earlier
+    // entries as more salient).
+    private static string HashElements(IEnumerable<SignatureElement> elements)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var e in elements.OrderBy(e => e.Order).ThenBy(e => e.ElementSelector, StringComparer.Ordinal))
+        {
+            sb.Append(e.Order).Append('|')
+              .Append(e.ElementSelector).Append('|')
+              .Append(e.Category).Append('|')
+              .Append(e.ElementType).Append('|')
+              .Append(e.ElementDescription).Append('|')
+              .Append(e.ElementLogic).Append('\n');
+        }
+        using var sha = System.Security.Cryptography.SHA256.Create();
+        var bytes = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(sb.ToString()));
+        return Convert.ToHexString(bytes);
     }
 }
 

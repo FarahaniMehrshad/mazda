@@ -71,6 +71,29 @@ public class Signature : Entity
     public void SetLastTestScript(string? script) { LastTestScript = script ?? string.Empty; Touch(); }
     public void SetLastFinalScript(string? script) { LastFinalScript = script ?? string.Empty; Touch(); }
     public void SetLastAnalyzeStateScript(string? script) { LastAnalyzeStateScript = script ?? string.Empty; Touch(); }
+
+    /// <summary>
+    /// Wipe every signature-level cache that was derived from the element set.
+    /// Called when the elements meaningfully change (selector renames, adds,
+    /// removes, description rewrites). Without this, future generations
+    /// pre-fill from these "Last used" buffers and the user sees scripts /
+    /// state JSON / user flows that reference selectors that no longer exist
+    /// — or worse, runs them.
+    ///
+    /// Kept narrow: prompts (LastSetupPrompt, LastTestPrompt) are user-authored
+    /// and stay; LastSetupScript is usually just "navigate to URL" and is left
+    /// alone for the same reason. Everything else that mentions selectors goes.
+    /// </summary>
+    public void InvalidateDerivedCaches()
+    {
+        LastTestScript = string.Empty;
+        LastFinalScript = string.Empty;
+        LastAnalyzeStateScript = string.Empty;
+        LastAnalyzeStateRawOutput = string.Empty;
+        LastAnalyzeStateJson = string.Empty;
+        UserFlowsJson = string.Empty;
+        Touch();
+    }
     public void SetLastAnalyzeStateOutput(string? raw, string? json)
     {
         LastAnalyzeStateRawOutput = raw ?? string.Empty;

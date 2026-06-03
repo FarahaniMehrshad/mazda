@@ -246,8 +246,8 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         `"interactive"` or `"informational"`:
 
           • INTERACTIVE — the user acts ON this. Use these as the target of
-            actions: click / fill / check / dragTo / etc. Examples in the
-            allowed-type list: button, input, select, link, slider, …
+            actions: click / pressSequentially (NEVER fill) / check / dragTo / etc.
+            Examples in the allowed-type list: button, input, select, link, slider, …
 
           • INFORMATIONAL — the user (or the test) READS this. Use these as
             the source of values to assert on, to sort/filter rows by, or to
@@ -258,7 +258,12 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
 
             // INTERACTIVE — action target
             await page.locator('<interactive selector>').click();
-            await page.locator('<input selector>').fill('something');
+            // For text inputs, ALWAYS use the click → select → type flow
+            // (see TYPING INTO INPUTS below). NEVER use .fill().
+            const input = page.locator('<input selector>');
+            await input.click();
+            await input.press('ControlOrMeta+a');
+            await input.pressSequentially('something');
 
             // INFORMATIONAL — read & assert
             const status = await page.locator('<status selector>').innerText();
@@ -275,7 +280,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
               }
             }
 
-        DO NOT try to click or fill an informational element — it is read-only
+        DO NOT try to click or type into an informational element — it is read-only
         and has no event handler. DO NOT try to read an interactive element's
         text as if it were a data value (button labels are static copy, not
         data).
@@ -403,10 +408,101 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
           • Never write a chain longer than two levels.
 
         ── ACTIONS ──
-        Translate the prompt into a sequence of: fill / click / check / uncheck /
-        selectOption / setInputFiles / focus / press / hover / waitFor / expect.
-        Use `await` consistently. Use `expect(locator).toBeVisible()`,
+        Translate the prompt into a sequence of: click / check / uncheck /
+        selectOption / setInputFiles / focus / press / pressSequentially / hover /
+        waitFor / expect. Use `await` consistently. Use `expect(locator).toBeVisible()`,
         `.toHaveText(...)`, `.toHaveValue(...)`, `.toBeChecked()`, etc. as appropriate.
+
+        For setting the value of any typed input, see the TYPING INTO INPUTS
+        HARD RULE below — `fill` is forbidden and the click → select → type
+        sequence is mandatory.
+
+        ── TYPING INTO INPUTS — HARD RULE ──
+        NEVER use `locator.fill(value)`. NEVER use `locator.clear()`. NEVER
+        use the deprecated `locator.type(value)`. This applies to EVERY typed
+        input the test touches — text inputs, textareas, contenteditables,
+        custom inputs that look like inputs, search boxes, masked inputs,
+        numeric inputs, autocompletes, combobox text fields, monaco / codemirror
+        editors. No exceptions, even when the Signature description says "use
+        fill" or when the Signature element type is plain `input`.
+
+        WHY: `fill` writes the value into the DOM and dispatches a single
+        synthetic `input` event. Many UI frameworks (Angular form-control
+        adapters, React controlled components with custom onChange handlers,
+        Vue v-model on custom components, masked-input libraries, debounced
+        validators, third-party form kits, NG-ZORRO / PrimeNG / Vuetify
+        wrappers) treat the synthetic event differently from real keystrokes —
+        sometimes they skip validation, sometimes they reset the value on
+        focus, sometimes they don't propagate to downstream computed fields
+        at all. The test then asserts against state that was never computed
+        and fails in confusing ways, or silently passes a UI that's broken
+        for real users.
+
+        ALWAYS use this exact sequence to SET the value of a typed input:
+
+            const field = page.locator('<selector>');
+            await field.click();                          // 1. focus
+            await field.press('ControlOrMeta+a');          // 2. select existing content
+            await field.pressSequentially('new value');    // 3. type real keystrokes
+
+        Notes on each step:
+          • Step 1 (click) — focuses the field; required even on inputs that
+            look focused already, because pressSequentially without focus
+            sends keystrokes to nothing.
+          • Step 2 (press ControlOrMeta+a) — selects all existing content so
+            the upcoming pressSequentially overwrites instead of appending.
+            `ControlOrMeta+a` is cross-platform: Ctrl on Windows/Linux,
+            Cmd on macOS. Always use this exact key string; do not branch on
+            `process.platform`.
+          • Step 3 (pressSequentially) — dispatches keydown / keypress /
+            keyup per character, so framework handlers see the same event
+            stream a real user produces. This is the SUCCESSOR API to the
+            old `.type()`; use this name explicitly.
+
+        VARIANTS — when the surrounding context calls for a shorter path:
+
+        (a) Field is provably empty AND the test doesn't care about
+            replacing existing content (e.g. you just opened a fresh form):
+
+                await field.click();
+                await field.pressSequentially('value');
+
+        (b) You need to CLEAR the field without typing a replacement:
+
+                await field.click();
+                await field.press('ControlOrMeta+a');
+                await field.press('Delete');
+
+        (c) Native HTML `<select>` element (not a custom dropdown):
+
+                await page.locator('select[name="role"]').selectOption('admin');
+
+            Custom dropdowns / comboboxes — click to open, then click the
+            option. Do NOT type into a combobox text field unless the prompt
+            specifically requires keyboard search.
+
+        (d) Checkboxes / radios — use `.check()` / `.uncheck()` /
+            `.setChecked(bool)` as normal; these are click-equivalents, not
+            value-setters, so the synthetic-event problem doesn't apply.
+
+        Forbidden — these MUST NOT appear in the generated test:
+
+            ✗ await page.locator('input').fill('x');
+            ✗ await page.locator('input').clear();
+            ✗ await page.locator('input').type('x');          // deprecated alias
+            ✗ await page.locator('input').inputValue('x');    // read API, not a setter
+
+        Allowed:
+
+            ✓ const email = page.locator('input[name="email"]');
+              await email.click();
+              await email.press('ControlOrMeta+a');
+              await email.pressSequentially('alice@example.com');
+
+        If the Signature description or a sample prompt suggests `fill`,
+        translate it to the click → select → type flow above. Do NOT add a
+        comment explaining the substitution; the test must read like a human
+        chose this approach on purpose.
 
         ── DRAG-AND-DROP — HARD RULE ──
         For ANY drag-and-drop interaction (reordering rows, moving items between
