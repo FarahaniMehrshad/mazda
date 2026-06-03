@@ -7,6 +7,14 @@ public enum GenerationStatus { Pending, Generating, Ready, Failed }
 public enum ExecutionStatus { Idle, Running, Passed, FailedTest, Errored, Cancelled }
 
 /// <summary>
+/// How a generation was created. Wizard = the user drove the UI wizard step by
+/// step. Mcp = the entire pipeline was kicked off in one shot by an MCP tool
+/// invocation. The Runs page surfaces both; the badge/source is useful for
+/// audit ("which of my runs were driven by an MCP client?").
+/// </summary>
+public enum GenerationSource { Wizard, Mcp }
+
+/// <summary>
 /// A multi-step request to turn (Signature + setup instructions + test prompt) into
 /// a single Playwright .spec.ts file. The user drives the wizard:
 ///   1. SetupPrompt  → LLM → SetupScript  (user can edit)
@@ -17,6 +25,12 @@ public class Generation : Entity
 {
     public Guid OwnerId { get; private set; }
     public Guid SignatureId { get; private set; }
+
+    /// <summary>How this generation was created. Wizard by default.</summary>
+    public GenerationSource Source { get; private set; } = GenerationSource.Wizard;
+
+    /// <summary>When Source == Mcp, the tool that triggered the run.</summary>
+    public Guid? McpToolId { get; private set; }
 
     public string SetupPrompt { get; private set; } = string.Empty;
     public string? SetupScript { get; private set; }
@@ -53,6 +67,15 @@ public class Generation : Entity
             OwnerId = ownerId,
             SignatureId = signatureId,
         };
+    }
+
+    /// <summary>Mark this generation as MCP-driven for audit/UI display. Idempotent.</summary>
+    public void AttributeToMcp(Guid toolId)
+    {
+        if (toolId == Guid.Empty) throw new ArgumentException("Tool id required.", nameof(toolId));
+        Source = GenerationSource.Mcp;
+        McpToolId = toolId;
+        Touch();
     }
 
     public void SetSetupPrompt(string prompt) { SetupPrompt = (prompt ?? string.Empty).Trim(); Touch(); }

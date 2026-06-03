@@ -1,6 +1,7 @@
 using Mazda.Domain.Modules.Identity;
 using Mazda.Domain.Modules.Signatures;
 using Mazda.Domain.Modules.Generations;
+using Mazda.Domain.Modules.Mcp;
 
 namespace Mazda.Application.Common.Abstractions;
 
@@ -37,4 +38,14 @@ public interface IGenerationRepository
     Task<Generation?> FindByIdAsync(Guid id, Guid ownerId, CancellationToken ct = default);
     Task<IReadOnlyList<Generation>> ListRecentAsync(Guid ownerId, int take, CancellationToken ct = default);
     Task AddAsync(Generation generation, CancellationToken ct = default);
+}
+
+public interface IMcpToolRepository
+{
+    Task<McpTool?> FindByIdAsync(Guid id, Guid ownerId, CancellationToken ct = default);
+    Task<McpTool?> FindByNameAsync(string name, Guid ownerId, CancellationToken ct = default);
+    Task<IReadOnlyList<McpTool>> ListAsync(Guid ownerId, CancellationToken ct = default);
+    Task<IReadOnlyList<McpTool>> ListEnabledAsync(Guid ownerId, CancellationToken ct = default);
+    Task AddAsync(McpTool tool, CancellationToken ct = default);
+    Task RemoveAsync(McpTool tool, CancellationToken ct = default);
 }

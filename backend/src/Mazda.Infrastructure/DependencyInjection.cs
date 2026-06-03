@@ -21,6 +21,7 @@ public static class DependencyInjection
         services.AddScoped<IUserRepository, UserRepository>();
         services.AddScoped<ISignatureRepository, SignatureRepository>();
         services.AddScoped<IGenerationRepository, GenerationRepository>();
+        services.AddScoped<IMcpToolRepository, McpToolRepository>();
 
         // Security
         services.Configure<JwtOptions>(cfg.GetSection("Jwt"));

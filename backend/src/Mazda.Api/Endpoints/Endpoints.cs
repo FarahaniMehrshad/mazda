@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using Mazda.Application.Common.Abstractions;
 using Mazda.Application.Modules.Generations;
 using Mazda.Application.Modules.Identity;
+using Mazda.Application.Modules.Mcp;
 using Mazda.Application.Modules.Signatures;
 using Mazda.Infrastructure.Llm;
 
@@ -114,6 +115,24 @@ public static class Endpoints
         // Wizard step 6 — execution.
         gens.MapPost("/{id:guid}/execute", async (Guid id, ISender s) =>
             (await s.Send(new StartExecutionCommand(id))).ToHttp());
+
+        // ── MCP tools (auth) — REST CRUD ──────────────────────────
+        var mcp = app.MapGroup("/api/mcp-tools").RequireAuthorization().WithTags("McpTools");
+
+        mcp.MapGet("/", async (ISender s) =>
+            (await s.Send(new ListMcpToolsQuery())).ToHttp());
+
+        mcp.MapGet("/{id:guid}", async (Guid id, ISender s) =>
+            (await s.Send(new GetMcpToolQuery(id))).ToHttp());
+
+        mcp.MapPost("/", async (CreateMcpToolCommand cmd, ISender s) =>
+            (await s.Send(cmd)).ToHttp());
+
+        mcp.MapPut("/{id:guid}", async (Guid id, UpdateMcpToolCommand cmd, ISender s) =>
+            (await s.Send(cmd with { Id = id })).ToHttp());
+
+        mcp.MapDelete("/{id:guid}", async (Guid id, ISender s) =>
+            (await s.Send(new DeleteMcpToolCommand(id))).ToHttp());
 
         // SSE log stream. Anonymous — the generation id is an unguessable GUID and the
         // stream is read-only. EventSource cannot send Authorization headers anyway.

@@ -26,6 +26,7 @@ const NAV = [
   { label: "Studio", path: "/" },
   { label: "Signatures", path: "/signatures" },
   { label: "Runs", path: "/runs" },
+  { label: "MCP", path: "/mcp" },
 ];
 
 export function TopBar({ crumb }: TopBarProps) {

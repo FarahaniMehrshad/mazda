@@ -44,6 +44,20 @@ export interface UserFlowsGraph {
 export type GenerationStatus = "Pending" | "Generating" | "Ready" | "Failed";
 export type ExecutionStatus = "Idle" | "Running" | "Passed" | "FailedTest" | "Errored" | "Cancelled";
 
+export interface McpToolDto {
+  id: string;
+  signatureId: string;
+  signatureName: string;
+  name: string;
+  displayName: string;
+  description: string;
+  defaultSetupPrompt: string;
+  defaultTestPrompt: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface GenerationDto {
   id: string;
   signatureId: string;

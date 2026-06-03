@@ -17,6 +17,7 @@ import { TestPromptPage } from "@/features/generation/TestPromptPage";
 import { MergePage } from "@/features/generation/MergePage";
 import { ExecutionPage } from "@/features/generation/ExecutionPage";
 import { RunsPage } from "@/features/generation/RunsPage";
+import { McpServerPage } from "@/features/mcp/McpServerPage";
 
 const qc = new QueryClient({
   defaultOptions: {
@@ -88,6 +89,14 @@ export function App() {
             element={
               <RequireAuth>
                 <RunsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/mcp"
+            element={
+              <RequireAuth>
+                <McpServerPage />
               </RequireAuth>
             }
           />

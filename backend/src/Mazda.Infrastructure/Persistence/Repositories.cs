@@ -3,6 +3,7 @@ using Mazda.Application.Common.Abstractions;
 using Mazda.Domain.Modules.Identity;
 using Mazda.Domain.Modules.Signatures;
 using Mazda.Domain.Modules.Generations;
+using Mazda.Domain.Modules.Mcp;
 
 namespace Mazda.Infrastructure.Persistence.Repositories;
 
@@ -91,4 +92,37 @@ public class GenerationRepository(MazdaDbContext db) : IGenerationRepository
 
     public async Task AddAsync(Generation generation, CancellationToken ct = default)
         => await db.Generations.AddAsync(generation, ct);
+}
+
+public class McpToolRepository(MazdaDbContext db) : IMcpToolRepository
+{
+    public Task<McpTool?> FindByIdAsync(Guid id, Guid ownerId, CancellationToken ct = default)
+        => db.McpTools.FirstOrDefaultAsync(t => t.Id == id && t.OwnerId == ownerId, ct);
+
+    public Task<McpTool?> FindByNameAsync(string name, Guid ownerId, CancellationToken ct = default)
+    {
+        var canonical = name.Trim().ToLowerInvariant();
+        return db.McpTools.FirstOrDefaultAsync(t => t.Name == canonical && t.OwnerId == ownerId, ct);
+    }
+
+    public async Task<IReadOnlyList<McpTool>> ListAsync(Guid ownerId, CancellationToken ct = default)
+        => await db.McpTools
+            .Where(t => t.OwnerId == ownerId)
+            .OrderByDescending(t => t.UpdatedAt)
+            .ToListAsync(ct);
+
+    public async Task<IReadOnlyList<McpTool>> ListEnabledAsync(Guid ownerId, CancellationToken ct = default)
+        => await db.McpTools
+            .Where(t => t.OwnerId == ownerId && t.Enabled)
+            .OrderBy(t => t.Name)
+            .ToListAsync(ct);
+
+    public async Task AddAsync(McpTool tool, CancellationToken ct = default)
+        => await db.McpTools.AddAsync(tool, ct);
+
+    public Task RemoveAsync(McpTool tool, CancellationToken ct = default)
+    {
+        db.McpTools.Remove(tool);
+        return Task.CompletedTask;
+    }
 }
