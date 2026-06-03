@@ -11,6 +11,7 @@ import { Icon } from "@/shared/icons/Icon";
 import { useGeneration, useGenerateSetup, useSaveSetupScript } from "./api";
 import { ScriptEditor } from "./ScriptEditor";
 import { ApiError } from "@/shared/api/client";
+import { useStepNavigator } from "@/shared/components/useStepNavigator";
 
 const SAMPLE_PROMPTS = [
   "Open https://app.example.com/checkout and wait for the cart icon to appear.",
@@ -24,6 +25,11 @@ export function SetupPage() {
   const { data: gen, isLoading } = useGeneration(id);
   const generate = useGenerateSetup();
   const save = useSaveSetupScript();
+  // Must be called before any early-return so the hook count stays stable
+  // across the loading → loaded transition (React error #310 otherwise).
+  const onStepClick = useStepNavigator(
+    id && gen ? { mode: "run", runId: id, signatureId: gen.signatureId } : null,
+  );
   const [prompt, setPrompt] = useState("");
 
   useEffect(() => {
@@ -72,7 +78,7 @@ export function SetupPage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={5} />
+        <StepIndicator step={5} onStepClick={onStepClick} />
         <div
           style={{
             display: "grid",

@@ -13,6 +13,7 @@ import { Icon } from "@/shared/icons/Icon";
 import { useSignature, useSaveSignature, useAnalyzeInformational } from "./api";
 import { ApiError } from "@/shared/api/client";
 import type { SignatureElementDto } from "@/shared/api/types";
+import { useStepNavigator } from "@/shared/components/useStepNavigator";
 
 interface DraftShape {
   name: string;
@@ -30,6 +31,11 @@ export function InformationalReviewPage() {
   const { data: signature, isLoading } = useSignature(id);
   const save = useSaveSignature();
   const analyze = useAnalyzeInformational();
+  // Must be called before any early-return so the hook count stays stable
+  // across the loading → loaded transition (React error #310 otherwise).
+  const onStepClick = useStepNavigator(
+    signature ? { mode: "signature", signatureId: signature.id } : null,
+  );
 
   // The draft is reset whenever the signature's informational element set
   // changes (e.g. after a deep-analyze pass).
@@ -127,7 +133,7 @@ export function InformationalReviewPage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={3} />
+        <StepIndicator step={3} onStepClick={onStepClick} />
         <div
           style={{
             display: "grid",

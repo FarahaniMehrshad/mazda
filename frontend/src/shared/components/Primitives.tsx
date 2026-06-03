@@ -134,6 +134,14 @@ export function ScreenShell({ children }: ScreenShellProps) {
 
 interface StepIndicatorProps {
   step: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+  /**
+   * Optional click handler. When provided, each step becomes a button-like
+   * clickable target — cursor pointer, hover affordance, keyboard-focusable.
+   * The handler receives the 1-based step number; it's up to the caller
+   * (typically via `useStepNavigator`) to decide which steps actually
+   * navigate vs. no-op.
+   */
+  onStepClick?: (step: number) => void;
 }
 
 const STEPS = [
@@ -148,42 +156,78 @@ const STEPS = [
   { n: "09", t: "Execution" },
 ];
 
-export function StepIndicator({ step }: StepIndicatorProps) {
+export function StepIndicator({ step, onStepClick }: StepIndicatorProps) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
       {STEPS.map((s, i) => {
         const idx = i + 1;
         const on = idx === step;
         const done = idx < step;
+        // Render the step body once, then conditionally wrap it in a button
+        // when navigation is wired up. Keeps the visual mapping a one-source-
+        // of-truth — clickable steps look identical to passive ones except
+        // for the cursor, focus ring, and hover background.
+        const body = (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, opacity: on || done ? 1 : 0.45 }}>
+            <div
+              style={{
+                width: 22,
+                height: 22,
+                borderRadius: 999,
+                border: `1px solid ${on ? "rgba(234,112,40,0.5)" : "var(--glass-stroke-2)"}`,
+                background: on ? "rgba(194,65,12,0.18)" : done ? "rgba(106,209,154,0.10)" : "transparent",
+                display: "grid",
+                placeItems: "center",
+                fontFamily: "var(--f-mono)",
+                fontSize: 10,
+                color: on ? "#f7c69a" : done ? "#a8e6c4" : "var(--text-3)",
+              }}
+            >
+              {s.n}
+            </div>
+            <div
+              style={{
+                fontSize: 12.5,
+                color: on ? "var(--text-1)" : "var(--text-3)",
+                fontWeight: on ? 500 : 400,
+              }}
+            >
+              {s.t}
+            </div>
+          </div>
+        );
+
         return (
           <div key={s.n} style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, opacity: on || done ? 1 : 0.45 }}>
-              <div
+            {onStepClick ? (
+              <button
+                type="button"
+                onClick={() => onStepClick(idx)}
+                aria-label={`Go to step ${idx}: ${s.t}`}
+                aria-current={on ? "step" : undefined}
                 style={{
-                  width: 22,
-                  height: 22,
-                  borderRadius: 999,
-                  border: `1px solid ${on ? "rgba(234,112,40,0.5)" : "var(--glass-stroke-2)"}`,
-                  background: on ? "rgba(194,65,12,0.18)" : done ? "rgba(106,209,154,0.10)" : "transparent",
-                  display: "grid",
-                  placeItems: "center",
-                  fontFamily: "var(--f-mono)",
-                  fontSize: 10,
-                  color: on ? "#f7c69a" : done ? "#a8e6c4" : "var(--text-3)",
+                  background: "transparent",
+                  border: "none",
+                  padding: "4px 6px",
+                  margin: "-4px -6px",
+                  borderRadius: 8,
+                  cursor: "pointer",
+                  font: "inherit",
+                  color: "inherit",
+                  transition: "background 120ms ease",
+                }}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLButtonElement).style.background = "var(--glass-2)";
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLButtonElement).style.background = "transparent";
                 }}
               >
-                {s.n}
-              </div>
-              <div
-                style={{
-                  fontSize: 12.5,
-                  color: on ? "var(--text-1)" : "var(--text-3)",
-                  fontWeight: on ? 500 : 400,
-                }}
-              >
-                {s.t}
-              </div>
-            </div>
+                {body}
+              </button>
+            ) : (
+              body
+            )}
             {idx < STEPS.length && (
               <div style={{ width: 18, height: 1, background: "var(--glass-stroke-2)" }} />
             )}

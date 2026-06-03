@@ -13,6 +13,7 @@ import { Icon } from "@/shared/icons/Icon";
 import { useSignature, useSaveSignature, useReanalyzeInteractive } from "./api";
 import type { SignatureElementDto } from "@/shared/api/types";
 import { ApiError } from "@/shared/api/client";
+import { useStepNavigator } from "@/shared/components/useStepNavigator";
 
 interface DraftShape {
   name: string;
@@ -30,6 +31,11 @@ export function EditorPage() {
   const { data: signature, isLoading } = useSignature(id);
   const save = useSaveSignature();
   const reanalyze = useReanalyzeInteractive();
+  // Must be called before any early-return so the hook count stays stable
+  // across the loading → loaded transition (React error #310 otherwise).
+  const onStepClick = useStepNavigator(
+    signature ? { mode: "signature", signatureId: signature.id } : null,
+  );
 
   const [draft, setDraft] = useState<string>("");
   const [parseError, setParseError] = useState<string | null>(null);
@@ -123,7 +129,7 @@ export function EditorPage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={2} />
+        <StepIndicator step={2} onStepClick={onStepClick} />
         <div
           style={{
             display: "grid",

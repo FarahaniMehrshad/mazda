@@ -25,6 +25,7 @@ import { Icon } from "@/shared/icons/Icon";
 import { useSignature, useGenerateFlows, useSaveFlows } from "./api";
 import { ApiError } from "@/shared/api/client";
 import type { UserFlowsGraph } from "@/shared/api/types";
+import { useStepNavigator } from "@/shared/components/useStepNavigator";
 
 const NODE_W = 220;
 const NODE_H = 64;
@@ -143,6 +144,11 @@ export function UserFlowsPage() {
   const { data: signature, isLoading } = useSignature(id);
   const generate = useGenerateFlows();
   const save = useSaveFlows();
+  // Must be called before any early-return so the hook count stays stable
+  // across the loading → loaded transition (React error #310 otherwise).
+  const onStepClick = useStepNavigator(
+    signature ? { mode: "signature", signatureId: signature.id } : null,
+  );
 
   const cypressInputRef = useRef<HTMLInputElement>(null);
   const [cypressName, setCypressName] = useState("");
@@ -230,7 +236,7 @@ export function UserFlowsPage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={4} />
+        <StepIndicator step={4} onStepClick={onStepClick} />
         <div
           style={{
             display: "grid",

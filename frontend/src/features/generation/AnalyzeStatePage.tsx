@@ -17,6 +17,7 @@ import {
   useRunAnalyze,
 } from "./api";
 import { ApiError } from "@/shared/api/client";
+import { useStepNavigator } from "@/shared/components/useStepNavigator";
 
 export function AnalyzeStatePage() {
   const { id } = useParams<{ id: string }>();
@@ -25,6 +26,11 @@ export function AnalyzeStatePage() {
   const generate = useGenerateAnalyzeScript();
   const save = useSaveAnalyzeScript();
   const run = useRunAnalyze();
+  // Must be called before any early-return so the hook count stays stable
+  // across the loading → loaded transition (React error #310 otherwise).
+  const onStepClick = useStepNavigator(
+    id && gen ? { mode: "run", runId: id, signatureId: gen.signatureId } : null,
+  );
 
   // Local edit buffer for the analyze script. We seed it from the persisted
   // value the first time we get it, and re-sync whenever the persisted value
@@ -130,7 +136,7 @@ export function AnalyzeStatePage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={6} />
+        <StepIndicator step={6} onStepClick={onStepClick} />
         <div
           style={{
             display: "grid",

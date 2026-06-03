@@ -11,6 +11,7 @@ import { Icon } from "@/shared/icons/Icon";
 import { useGeneration, useGenerateTest, useSaveTestScript } from "./api";
 import { ScriptEditor } from "./ScriptEditor";
 import { ApiError } from "@/shared/api/client";
+import { useStepNavigator } from "@/shared/components/useStepNavigator";
 
 const SAMPLE_PROMPTS = [
   "Fill the form with realistic test data and submit it.",
@@ -24,6 +25,11 @@ export function TestPromptPage() {
   const { data: gen, isLoading } = useGeneration(id);
   const generate = useGenerateTest();
   const save = useSaveTestScript();
+  // Must be called before any early-return so the hook count stays stable
+  // across the loading → loaded transition (React error #310 otherwise).
+  const onStepClick = useStepNavigator(
+    id && gen ? { mode: "run", runId: id, signatureId: gen.signatureId } : null,
+  );
   const [prompt, setPrompt] = useState("");
 
   useEffect(() => {
@@ -72,7 +78,7 @@ export function TestPromptPage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={7} />
+        <StepIndicator step={7} onStepClick={onStepClick} />
         <div
           style={{
             display: "grid",

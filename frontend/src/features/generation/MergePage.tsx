@@ -12,6 +12,7 @@ import { Icon } from "@/shared/icons/Icon";
 import { useGeneration, useMergeGeneration, useSaveFinalScript } from "./api";
 import { ScriptEditor } from "./ScriptEditor";
 import { ApiError } from "@/shared/api/client";
+import { useStepNavigator } from "@/shared/components/useStepNavigator";
 
 export function MergePage() {
   const { id } = useParams<{ id: string }>();
@@ -19,6 +20,11 @@ export function MergePage() {
   const { data: gen, isLoading } = useGeneration(id);
   const merge = useMergeGeneration();
   const save = useSaveFinalScript();
+  // Must be called before any early-return so the hook count stays stable
+  // across the loading → loaded transition (React error #310 otherwise).
+  const onStepClick = useStepNavigator(
+    id && gen ? { mode: "run", runId: id, signatureId: gen.signatureId } : null,
+  );
 
   const fileName = useMemo(() => {
     if (!gen) return "mazda-run.spec.ts";
@@ -87,7 +93,7 @@ export function MergePage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={8} />
+        <StepIndicator step={8} onStepClick={onStepClick} />
         <div
           style={{
             display: "grid",

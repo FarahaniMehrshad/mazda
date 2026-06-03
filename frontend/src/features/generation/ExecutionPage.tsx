@@ -12,6 +12,7 @@ import { Icon } from "@/shared/icons/Icon";
 import { useGeneration, useExecuteGeneration } from "./api";
 import type { ExecutionStatus } from "@/shared/api/types";
 import { ApiError } from "@/shared/api/client";
+import { useStepNavigator } from "@/shared/components/useStepNavigator";
 
 function statusTone(s: ExecutionStatus): "ok" | "err" | "warn" | "neutral" {
   switch (s) {
@@ -29,6 +30,11 @@ export function ExecutionPage() {
   const navigate = useNavigate();
   const { data: gen, isLoading, refetch } = useGeneration(id);
   const execute = useExecuteGeneration();
+  // Must be called before any early-return so the hook count stays stable
+  // across the loading → loaded transition (React error #310 otherwise).
+  const onStepClick = useStepNavigator(
+    id && gen ? { mode: "run", runId: id, signatureId: gen.signatureId } : null,
+  );
 
   const [lines, setLines] = useState<string[]>([]);
   const [streaming, setStreaming] = useState(false);
@@ -134,7 +140,7 @@ export function ExecutionPage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={9} />
+        <StepIndicator step={9} onStepClick={onStepClick} />
         <div
           style={{
             display: "grid",
