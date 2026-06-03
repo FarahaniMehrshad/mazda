@@ -205,8 +205,9 @@ if (app.Environment.IsDevelopment())
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "mazda-api" }));
 app.MapMazdaEndpoints();
-// Mount the MCP Streamable-HTTP transport at /mcp. Auth is JWT-bearer just
-// like the REST API — MCP clients send the user's Mazda token.
-app.MapMcp("/mcp");
+// Mount the MCP Streamable-HTTP transport under /api/mcp so the management
+// SPA can keep /mcp for the in-browser UI. Auth is JWT-bearer just like the
+// REST API — MCP clients send the user's Mazda token.
+app.MapMcp("/api/mcp");
 
 app.Run();

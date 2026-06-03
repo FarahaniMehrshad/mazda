@@ -37,11 +37,12 @@ export function McpServerPage() {
   const [editing, setEditing] = useState<McpToolDto | null>(null);
   const [creating, setCreating] = useState(false);
 
-  // MCP endpoint URL — same origin as the SPA, path /mcp. The same JWT used
-  // for the web UI authenticates MCP clients.
+  // MCP endpoint URL — same origin as the SPA, mounted at /api/mcp (the SPA
+  // owns /mcp for this management page). The same JWT used for the web UI
+  // authenticates MCP clients.
   const mcpUrl = useMemo(() => {
-    if (typeof window === "undefined") return "/mcp";
-    return `${window.location.origin}/mcp`;
+    if (typeof window === "undefined") return "/api/mcp";
+    return `${window.location.origin}/api/mcp`;
   }, []);
 
   return (
