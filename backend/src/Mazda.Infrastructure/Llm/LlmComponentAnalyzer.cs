@@ -411,6 +411,91 @@ public class LlmComponentAnalyzer(IOptions<LlmOptions> options) : IComponentAnal
              data-testid on the target itself; resort to `>` only when
              the wrapper layout is provably plain HTML.
 
+        ── data-testid COMPLETENESS — HARD RULE, NO EXCEPTIONS ──
+        Any element carrying a `data-testid` (or its variants — see list below)
+        is an explicit intent signal: the author placed the attribute SPECIFICALLY
+        so tests could find that element. Missing one means the test author
+        cannot do what they were given a handle to do. This is the single most
+        common signature gap. It is FORBIDDEN.
+
+        ── Step 1 — SCAN THE SOURCE FOR EVERY HANDLE ATTRIBUTE ──
+        Before emitting your output, mentally enumerate EVERY occurrence in
+        the bundle of any of:
+
+          • data-testid="…"      / [attr.data-testid]="…" (Angular bindings)
+          • data-test-id="…"
+          • data-test="…"
+          • data-cy="…"          (Cypress convention; same intent)
+          • data-qa="…"          (QA convention; same intent)
+          • testid="…"           (rare, but seen on custom components)
+
+        Include occurrences where the attribute value is:
+          • A plain string literal:                data-testid="add-column-btn"
+          • An interpolated expression:            data-testid={`row-${i}-edit`}
+                                                   [attr.data-testid]="'row-' + i + '-edit'"
+          • Spread / forwarded via `{...props}`    (note it as a templated id
+                                                   and emit it with `{i}` /
+                                                   `{key}` placeholders).
+
+        Walk every file in the bundle. Walk every conditional branch
+        (`*ngIf` / `cond && …` / `v-if` / `{#if}`). Walk every `.map(...)` /
+        `*ngFor` / `v-for` / `{#each}`. Do NOT skip a testid because it
+        lives in a rarely-rendered branch — conditional rendering is a
+        lifecycle note in elementLogic, not a reason to omit.
+
+        ── Step 2 — EMIT ONE ELEMENT PER DISTINCT TESTID VALUE ──
+        Every distinct testid value found in Step 1 MUST appear as the
+        selector of at least one element in your output. NO EXCEPTIONS.
+
+          • Selector form is FIXED: `[data-testid="<exact value>"]`.
+            ✓ [data-testid="add-column-btn"]
+            ✗ .add-column-btn                    (class instead of testid)
+            ✗ button[data-testid="add-column-btn"]   (tag prefix is noise)
+            ✗ #add-column-btn                    (don't substitute id)
+          • For templated testids inside a loop, preserve the placeholder:
+            ✓ [data-testid="row-{i}-edit"]
+            ✗ [data-testid="row-0-edit"]         (a single index is wrong;
+                                                  it's a per-row template)
+          • The variant attribute name MUST match the source. If the source
+            used `data-test`, emit `[data-test="…"]`. Do not silently
+            rename to `data-testid`.
+
+        Category assignment:
+          • If the element with the testid is INTERACTIVE under the rules
+            above (handler, native control, role, library widget, focusable),
+            emit it as `elementCategory: "interactive"` with the most
+            specific interactive `elementType`.
+          • If the element with the testid is purely a READ TARGET (a
+            `<span>`/`<div>`/text node whose content the test would
+            assert / sort / filter / pick by, no handlers, no role), emit
+            it as `elementCategory: "informational"` with the most
+            specific informational `elementType`. The downstream
+            informational pass will see and refine it.
+          • If the element is BOTH (a clickable card that also displays
+            its name) — prefer "interactive" with an `elementLogic` note
+            that the same node carries the asserted text, e.g. "Card is
+            clickable AND its inner text is the user-visible name; read
+            via `innerText` for identity assertions, click for activation."
+            Do NOT emit two separate entries for the same testid.
+
+        ── Step 3 — SELF-CHECK BEFORE OUTPUT ──
+        After drafting your element list, perform an explicit pass:
+
+          (a) Re-scan the source for every handle attribute (Step 1).
+          (b) For each value found, confirm the EXACT string appears as the
+              value of `[data-testid="…"]` (or the matching variant) in at
+              least one `elementSelector` in your draft.
+          (c) If any value is missing, ADD an element for it before
+              emitting. Do not "decide it wasn't important" — the author's
+              decision to attach a testid IS the importance signal.
+
+        Coverage failure rate for this is the number-one symptom of a bad
+        signature. A bundle with N distinct testid values should produce
+        AT LEAST N elements whose selector is `[data-testid="…"]`. Less
+        than N means a gap; more than N (because one testid is a list
+        template emitting both the container and the per-row reader) is
+        fine.
+
         ── COVERAGE EXPECTATIONS ──
         Walk EVERY file in the bundle. Do not stop at the first file. Do not deduplicate
         across files if they expose different interaction points (e.g. two distinct

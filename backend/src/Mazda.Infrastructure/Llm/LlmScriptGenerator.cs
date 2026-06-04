@@ -407,6 +407,191 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
             on imagined DOM hierarchy.
           • Never write a chain longer than two levels.
 
+        ── TEXT LOCATORS MATCH OFF-SCREEN ELEMENTS — HARD RULE ──
+        `page.getByText(...)`, `page.getByRole('...', { name })`,
+        `page.getByLabel(...)`, and `locator(':has-text(...)')` all match by
+        the DOM / accessibility tree, NOT by what is currently visible in the
+        viewport. Playwright filters out only elements with `display: none`,
+        `visibility: hidden`, `aria-hidden="true"`, or zero size. Everything
+        else is fair game — INCLUDING:
+
+          • rows scrolled out of view inside an `overflow: auto` /
+            `overflow: hidden` scrollable container,
+          • items in a virtualized list that happen to be rendered but
+            visually clipped,
+          • content inside a collapsed `<details>`, accordion panel, or
+            slide-out drawer that is still in the DOM,
+          • cards inside an inactive tab panel that the framework left
+            mounted instead of unmounting,
+          • elements covered by a modal / overlay / popper,
+          • text inside a tooltip or popover that's CSS-opacity-0 but
+            still hit-testable.
+
+        Two failure modes follow:
+          1. STRICT-MODE VIOLATION — the on-screen copy AND a hidden duplicate
+             both match, the locator resolves to >1 element, the call throws.
+          2. WRONG-ELEMENT CLICK — `.click()` auto-scrolls the FIRST match into
+             view. If the first match is the hidden one inside another scroll
+             container or behind a modal, you scroll the wrong region, an
+             overlay intercepts the click, and the test flakes or asserts
+             against state that never changed.
+
+        ── DEFENSIVE RULES ──
+
+        (a) BEFORE asserting on / clicking text inside a region that can be
+            collapsed, tab-hidden, or scrolled, OPEN / ACTIVATE / SCROLL TO
+            that region with an explicit action FIRST. Do not rely on the
+            framework rendering only what the user can see.
+
+                ✗ // "Assert the Settings panel shows 'Daily backups: on'."
+                  await expect(page.getByText('Daily backups: on')).toBeVisible();
+                  // If a hidden Settings tab is still in the DOM, this passes
+                  // even when the user is looking at Billing.
+
+                ✓ await page.getByRole('tab', { name: 'Settings' }).click();
+                  const panel = page.getByRole('tabpanel', { name: 'Settings' });
+                  await expect(panel.getByText('Daily backups: on')).toBeVisible();
+
+        (b) When multiple regions on the page render the same text, SCOPE the
+            locator to the specific container BEFORE matching the text. Use
+            the Signature's container selector when one exists; otherwise use
+            the role/heading of the visible panel.
+
+                ✗ await page.getByText('Total').click();      // 3 matches: header, sidebar, modal
+                ✓ await page.getByRole('dialog').getByText('Total').click();
+                ✓ await page.locator('<panel-from-signature>').getByText('Total').click();
+
+        (c) For assertions where the prompt clearly means "what the user sees
+            right now", filter out invisible matches explicitly. Playwright
+            ships a `:visible` engine and locators expose `.filter({ visible: true })`
+            (Playwright ≥ 1.42); use whichever fits:
+
+                ✓ await expect(
+                    page.getByText('Saved', { exact: true }).filter({ visible: true })
+                  ).toHaveCount(1);
+
+                ✓ // For a one-shot read
+                  const banner = page.locator('.toast:visible', { hasText: 'Saved' });
+                  await expect(banner).toBeVisible();
+
+            Use `:visible` / `.filter({ visible: true })` ONLY when the prompt
+            is about user-visible state. Do NOT slap it onto every locator —
+            for interactive targets, the preceding "open the region first"
+            rule is the correct fix, not visibility filtering after the fact.
+
+        (d) Inside a SCROLLABLE list, text-locator-then-click does NOT always
+            work, and the failure mode depends on whether the list is
+            VIRTUALIZED or just OVERFLOWING:
+
+            • OVERFLOWING (every row is in the DOM, only some are visible):
+              `.click()` already calls `scrollIntoViewIfNeeded()` internally
+              and the line works. If for any reason it doesn't, call
+              `scrollIntoViewIfNeeded()` explicitly first:
+
+                  const row = list.getByText('Order #1042', { exact: true });
+                  await row.scrollIntoViewIfNeeded();
+                  await row.click();
+
+            • VIRTUALIZED (only the rows in the visible window exist in the
+              DOM — Angular CDK `cdk-virtual-scroll-viewport`, ng-zorro
+              `nz-select` virtual scroll, react-window, react-virtual, MUI
+              Autocomplete with `ListboxComponent`, TanStack Virtual, …):
+              `getByText('off-screen-row')` matches NOTHING because the row
+              has not been materialised. `scrollIntoViewIfNeeded()` cannot
+              help — there is no element to scroll to. Pick ONE of:
+
+              (i) PREFER — type-to-filter. Searchable comboboxes narrow the
+                  list as you type, which forces the target into the
+                  rendered window almost immediately. Most custom dropdowns
+                  auto-focus their internal search input as soon as the
+                  trigger is clicked, so the keystrokes can be dispatched
+                  via `page.keyboard.*`:
+
+                      await page.locator('<combobox selector>').click();
+                      await page.keyboard.press('ControlOrMeta+a');
+                      // ↑ harmless when the search input is empty; clears
+                      //   any pre-filled query so the upcoming search wins.
+                      await page.keyboard.type('QA mssql');
+                      await page.getByText('QA mssql', { exact: true })
+                        .first()
+                        .click();
+
+                  API NOTE — `Keyboard` vs `Locator` have DIFFERENT type-input
+                  APIs and you MUST NOT mix them:
+
+                    • `Locator.pressSequentially(text)` — Locator-only.
+                      Auto-focuses the locator before typing. Use this when
+                      you have a Locator handle (e.g. a text input you
+                      located explicitly).
+                    • `page.keyboard.type(text)` — Keyboard-only. Dispatches
+                      keystrokes to whatever currently has focus.
+                      `page.keyboard.pressSequentially` DOES NOT EXIST —
+                      writing it produces `TypeError: page.keyboard.
+                      pressSequentially is not a function`.
+                    • `Keyboard.type` is NOT deprecated — only `Locator.type`
+                      is. The `fill`/`clear`/`type` ban in the TYPING INTO
+                      INPUTS rule below targets the `Locator.*` methods; the
+                      `Keyboard.*` methods are fine.
+
+                  Equivalently, if you can locate the dropdown's internal
+                  search input via the Signature, type into it directly with
+                  the canonical Locator flow:
+
+                      const search = page.locator('<search-input selector>');
+                      await search.click();
+                      await search.press('ControlOrMeta+a');
+                      await search.pressSequentially('QA mssql');
+                      await page.getByText('QA mssql', { exact: true })
+                        .first()
+                        .click();
+
+              (ii) FALLBACK — scroll the panel until the option mounts. Use
+                   when the combobox has no search / the prompt forbids
+                   typing. Scroll the inner scroll container, not the
+                   document. Cap the iterations so a missing option fails
+                   fast instead of hanging the test:
+
+                      await page.locator('<combobox selector>').click();
+                      // Common virtual-scroll containers, in order of likelihood:
+                      //   cdk-virtual-scroll-viewport (Angular CDK)
+                      //   .rc-virtual-list-holder    (rc-select / ng-zorro)
+                      //   [role="listbox"]           (generic ARIA listbox)
+                      const panel = page
+                        .locator('cdk-virtual-scroll-viewport, .rc-virtual-list-holder, [role="listbox"]')
+                        .first();
+                      const option = page.getByText('QA mssql', { exact: true });
+                      for (let i = 0; i < 30; i++) {
+                        if ((await option.count()) > 0) break;
+                        await panel.evaluate(el => {
+                          el.scrollBy({ top: el.clientHeight * 0.8 });
+                        });
+                        // One frame for the virtualizer to render the
+                        // newly-visible window.
+                        await page.waitForTimeout(50);
+                      }
+                      await option.first().click();
+
+            How to tell which kind you're dealing with: if the Signature, human
+            description, or library hint mentions `cdk-virtual-scroll`,
+            `nzVirtualHeight`, `react-window`, `react-virtual`, `useVirtualizer`,
+            `Virtuoso`, `ListboxComponent`, or describes the dropdown as
+            "supports thousands of items" / "virtualized", treat it as
+            VIRTUALIZED and use (i) or (ii). When in doubt and the combobox
+            is searchable, (i) is the safer default — it works for both
+            virtualized and non-virtualized lists.
+
+        (e) For dropdowns / comboboxes / popovers, follow the existing
+            two-step pattern (open then click the option). NEVER assert on
+            an option's text before opening the dropdown — the option list
+            may already be mounted off-screen and the assertion would
+            silently pass against unmounted-looking-but-mounted DOM.
+
+        Rule of thumb: if your selector contains a TEXT match (`getByText`,
+        `getByRole({ name })`, `getByLabel`, `:has-text`), ask yourself "could
+        this same text exist anywhere ELSE in the DOM right now — in another
+        tab, a closed accordion, a popover I didn't open, a row scrolled out
+        of view?". If yes, apply one of (a)–(d) above before writing the line.
+
         ── ACTIONS ──
         Translate the prompt into a sequence of: click / check / uncheck /
         selectOption / setInputFiles / focus / press / pressSequentially / hover /
@@ -491,6 +676,17 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
             ✗ await page.locator('input').clear();
             ✗ await page.locator('input').type('x');          // deprecated alias
             ✗ await page.locator('input').inputValue('x');    // read API, not a setter
+            ✗ await page.keyboard.pressSequentially('x');     // does NOT exist on Keyboard
+
+        ── Locator vs Keyboard — DO NOT CROSS THE STREAMS ──
+        The two APIs have DIFFERENT method names:
+          • Locator:  pressSequentially(text)   ← use on a `page.locator(...)` handle
+          • Keyboard: type(text)                ← use on `page.keyboard`
+        The ban above on `Locator.type` does NOT extend to `Keyboard.type` —
+        the latter is the supported way to send keystrokes to the
+        currently-focused element. And `Keyboard.pressSequentially` does NOT
+        exist — calling it throws `TypeError: page.keyboard.pressSequentially
+        is not a function`. Pick the method that matches the receiver.
 
         Allowed:
 
@@ -789,6 +985,29 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         `elementType` is "select", "combobox", or "multiselect", regardless of
         whether the prompt phrased it as "select X" or "choose X" or "pick X".
         Do NOT add a comment explaining the substitution.
+
+        ── VIRTUALIZED OPTION LISTS — WHEN THE CANONICAL PATTERN FAILS ──
+        The two-step click pattern above ASSUMES every option is in the DOM
+        once the dropdown opens. That assumption breaks for VIRTUALIZED
+        dropdowns (Angular CDK `cdk-virtual-scroll-viewport`, ng-zorro
+        `nz-select` with virtual scroll, MUI Autocomplete with
+        `ListboxComponent`, rc-virtual-list, react-window, react-virtual,
+        TanStack Virtual, Virtuoso). Those panels render ONLY the rows in the
+        currently-visible window and recycle DOM nodes as the user scrolls,
+        so `page.getByText('<option text>')` matches NOTHING when the target
+        option is below the fold — there is literally no `<div>option text
+        </div>` in the DOM until you scroll to it. The locator times out
+        even though the option exists in the underlying data.
+
+        Symptom that points at this: clicking options that are already in
+        view works; clicking an option that requires scrolling fails with a
+        "locator not found" / strict-mode-violation-on-zero-matches timeout.
+
+        Resolution: see sub-rule (d) under TEXT LOCATORS MATCH OFF-SCREEN
+        ELEMENTS above — use type-to-filter when the combobox is searchable
+        (preferred), otherwise scroll the inner panel in a capped loop until
+        the option mounts. Do NOT call `getByText(...).scrollIntoViewIfNeeded()`
+        for this case; there is no element to scroll to.
         """;
 
     // ── MERGE ────────────────────────────────────────────────────────

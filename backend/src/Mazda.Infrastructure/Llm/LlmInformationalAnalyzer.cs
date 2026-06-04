@@ -155,6 +155,61 @@ public class LlmInformationalAnalyzer(IOptions<LlmOptions> options) : IInformati
           • Reference OTHER elements by their conceptual name, not their
             selector, where the conceptual name is clear.
 
+        ── data-testid COMPLETENESS — HARD RULE, NO EXCEPTIONS ──
+        Any element carrying a `data-testid` (or a variant — `data-test-id`,
+        `data-test`, `data-cy`, `data-qa`, `testid`) is an explicit intent
+        signal from the author: a stable handle for tests. If the FIRST-PASS
+        analyzer missed the testid AND the element is a READ TARGET (text /
+        value / status / count / badge / heading / timestamp / etc., no
+        handlers, no interactive role), YOU MUST emit it. This is the most
+        common informational-signature gap and it is forbidden to leave
+        uncovered.
+
+        ── Step 1 — SCAN THE SOURCE FOR EVERY HANDLE ATTRIBUTE ──
+        Enumerate every occurrence in the bundle of any of:
+
+          • data-testid="…"      / [attr.data-testid]="…"
+          • data-test-id="…"
+          • data-test="…"
+          • data-cy="…"
+          • data-qa="…"
+          • testid="…"
+
+        Cover string literals, template-string interpolations
+        (`data-testid={`row-${i}-name`}`), and Angular bindings
+        (`[attr.data-testid]="'row-' + i + '-name'"`). Walk every file,
+        every conditional branch, every `.map()` / `*ngFor` / `v-for`.
+
+        ── Step 2 — DECIDE PER TESTID ──
+        For each distinct testid value found:
+
+          (a) If the existing signature ALREADY contains an entry whose
+              selector is `[data-testid="<that value>"]` (regardless of
+              category), DO NOT re-emit it. The first pass handled it.
+
+          (b) If the existing signature does NOT contain that testid AND
+              the element it sits on is a READ TARGET — i.e. it has no
+              `onClick` / `(click)` / handler, no interactive role, no
+              focusable tabIndex, and its purpose is to display text /
+              value / status — YOU MUST emit it as an informational
+              element.
+
+          (c) If the testid is missing AND the element is interactive,
+              DO NOT emit it (interactive elements are out of scope for
+              this pass — that's a first-pass gap, not yours to fix).
+
+        Selector form is FIXED: `[data-testid="<exact value>"]` (or the
+        matching variant). For templated ids inside a loop, preserve the
+        placeholder: `[data-testid="row-{i}-name"]`.
+
+        ── Step 3 — SELF-CHECK BEFORE OUTPUT ──
+        Before emitting, re-scan the source for every handle attribute and
+        confirm: for each testid value whose element is a read target AND
+        which is not already covered in the existing signature, your draft
+        contains a corresponding `[data-testid="…"]` element. Add any
+        missing ones. Do not decide a read-target testid "isn't important";
+        the author's decision to attach the testid IS the signal.
+
         ── DO NOT REPEAT THE EXISTING SIGNATURE ──
         You receive the existing signature's elements as context. If an
         informational entry already exists there for the same selector AND
