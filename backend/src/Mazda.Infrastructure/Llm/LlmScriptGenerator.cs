@@ -223,9 +223,10 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         nearest ACTION that would only succeed if the underlying state is
         correct. Examples:
           • "Verify the Save button is enabled." → just call
-            `await page.locator('<save>').click();` — Playwright's actionability
-            checks already fail the test if the button is not enabled / visible
-            at click time, so the click itself IS the verification.
+            `await __mzClick(page.locator('<save>'));` — Playwright's actionability
+            checks (run on the helper's fast path) already fail the test if the
+            button is not enabled / visible at click time, so the click itself
+            IS the verification.
           • "Confirm the modal closed." → perform the NEXT action in the flow.
             If a follow-up click on the underlying page would fail because the
             modal is still intercepting, the test fails there.
@@ -320,12 +321,13 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
 
         How to use each:
 
-            // INTERACTIVE — action target
-            await page.locator('<interactive selector>').click();
+            // INTERACTIVE — action target. Every click goes through __mzClick;
+            // see the __mzClick HARD RULE below.
+            await __mzClick(page.locator('<interactive selector>'));
             // For text inputs, ALWAYS use the click → select → type flow
             // (see TYPING INTO INPUTS below). NEVER use .fill().
             const input = page.locator('<input selector>');
-            await input.click();
+            await __mzClick(input);
             await input.press('ControlOrMeta+a');
             await input.pressSequentially('something');
 
@@ -336,7 +338,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
             for (let i = 0; i < count; i++) {
               const name = await rows.nth(i).locator('<name-cell selector>').innerText();
               if (name === 'Alice') {
-                await rows.nth(i).locator('<edit-button selector>').click();
+                await __mzClick(rows.nth(i).locator('<edit-button selector>'));
                 break;
               }
             }
@@ -492,13 +494,15 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         assume from element names — "the edit button lives inside the card",
         "the icon is inside the row" — are GUESSES and are frequently wrong.
 
-            ✗ page.locator('.column-placeholder').nth(i)
-                  .locator('[data-testid="editButton"]').click();
+            ✗ await __mzClick(
+                page.locator('.column-placeholder').nth(i)
+                    .locator('[data-testid="editButton"]')
+              );
               // Assumes editButton is a descendant of .column-placeholder.
               // Often false: action buttons are commonly rendered in an
               // overlay, modal, popper, or portal at the document root.
 
-            ✓ page.locator('[data-testid="editButton"]').nth(i).click();
+            ✓ await __mzClick(page.locator('[data-testid="editButton"]').nth(i));
               // Trusts the Signature selector. Indexes across the global list
               // of edit buttons — the natural correspondence the UI exposes.
 
@@ -553,22 +557,22 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
             framework rendering only what the user can see.
 
                 ✗ // "Click 'Daily backups: on' in the Settings panel."
-                  await page.getByText('Daily backups: on', { exact: true }).click();
+                  await __mzClick(page.getByText('Daily backups: on', { exact: true }));
                   // If a hidden Settings tab is still in the DOM, this may
                   // resolve to the wrong copy or hit a strict-mode violation.
 
-                ✓ await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+                ✓ await __mzClick(page.getByRole('tab', { name: 'Settings', exact: true }));
                   const panel = page.getByRole('tabpanel', { name: 'Settings', exact: true });
-                  await panel.getByText('Daily backups: on', { exact: true }).click();
+                  await __mzClick(panel.getByText('Daily backups: on', { exact: true }));
 
         (b) When multiple regions on the page render the same text, SCOPE the
             locator to the specific container BEFORE matching the text. Use
             the Signature's container selector when one exists; otherwise use
             the role/heading of the visible panel.
 
-                ✗ await page.getByText('Total').click();      // 3 matches: header, sidebar, modal
-                ✓ await page.getByRole('dialog').getByText('Total', { exact: true }).click();
-                ✓ await page.locator('<panel-from-signature>').getByText('Total', { exact: true }).click();
+                ✗ await __mzClick(page.getByText('Total'));      // 3 matches: header, sidebar, modal
+                ✓ await __mzClick(page.getByRole('dialog').getByText('Total', { exact: true }));
+                ✓ await __mzClick(page.locator('<panel-from-signature>').getByText('Total', { exact: true }));
 
         (c) When picking an interactive target by visible text and the same
             text exists in hidden / detached copies elsewhere in the DOM,
@@ -576,15 +580,14 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
             ≥ 1.42) or the `:visible` engine so the click resolves to the
             user-visible copy:
 
-                ✓ await page
-                    .getByText('Saved', { exact: true })
-                    .filter({ visible: true })
-                    .click();
+                ✓ await __mzClick(
+                    page.getByText('Saved', { exact: true }).filter({ visible: true })
+                  );
 
                 ✓ // Same idea via the :visible engine
-                  await page
-                    .locator('.toast:visible', { hasText: 'Saved' })
-                    .click();
+                  await __mzClick(
+                    page.locator('.toast:visible', { hasText: 'Saved' })
+                  );
 
             Use `:visible` / `.filter({ visible: true })` ONLY when the
             "open the region first" fix in (a) isn't possible — typically
@@ -604,7 +607,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
 
                   const row = list.getByText('Order #1042', { exact: true });
                   await row.scrollIntoViewIfNeeded();
-                  await row.click();
+                  await __mzClick(row);
 
             • VIRTUALIZED (only the rows in the visible window exist in the
               DOM — Angular CDK `cdk-virtual-scroll-viewport`, ng-zorro
@@ -621,14 +624,14 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
                   trigger is clicked, so the keystrokes can be dispatched
                   via `page.keyboard.*`:
 
-                      await page.locator('<combobox selector>').click();
+                      await __mzClick(page.locator('<combobox selector>'));
                       await page.keyboard.press('ControlOrMeta+a');
                       // ↑ harmless when the search input is empty; clears
                       //   any pre-filled query so the upcoming search wins.
                       await page.keyboard.type('QA mssql');
-                      await page.getByText('QA mssql', { exact: true })
-                        .first()
-                        .click();
+                      await __mzClick(
+                        page.getByText('QA mssql', { exact: true }).first()
+                      );
 
                   API NOTE — `Keyboard` vs `Locator` have DIFFERENT type-input
                   APIs and you MUST NOT mix them:
@@ -652,12 +655,12 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
                   the canonical Locator flow:
 
                       const search = page.locator('<search-input selector>');
-                      await search.click();
+                      await __mzClick(search);
                       await search.press('ControlOrMeta+a');
                       await search.pressSequentially('QA mssql');
-                      await page.getByText('QA mssql', { exact: true })
-                        .first()
-                        .click();
+                      await __mzClick(
+                        page.getByText('QA mssql', { exact: true }).first()
+                      );
 
               (ii) FALLBACK — scroll the panel until the option mounts. Use
                    when the combobox has no search / the prompt forbids
@@ -665,7 +668,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
                    document. Cap the iterations so a missing option fails
                    fast instead of hanging the test:
 
-                      await page.locator('<combobox selector>').click();
+                      await __mzClick(page.locator('<combobox selector>'));
                       // Common virtual-scroll containers, in order of likelihood:
                       //   cdk-virtual-scroll-viewport (Angular CDK)
                       //   .rc-virtual-list-holder    (rc-select / ng-zorro)
@@ -683,7 +686,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
                         // newly-visible window.
                         await page.waitForTimeout(50);
                       }
-                      await option.first().click();
+                      await __mzClick(option.first());
 
             How to tell which kind you're dealing with: if the Signature, human
             description, or library hint mentions `cdk-virtual-scroll`,
@@ -721,100 +724,86 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         action list either — toggle every checkbox / radio / switch with
         `.click()`. See the checkbox HARD RULE below.
 
-        ── HIDDEN-BUT-INTERACTIVE BUTTONS — HARD RULE ──
-        Some buttons live in the DOM permanently but are CSS-hidden until a
-        parent interaction reveals them — row-hover action buttons,
-        card-hover "delete" / "edit" icons, drag handles that fade in on
-        hover, kebab menu triggers, "show on focus" affordances. The
-        Signature surfaces them as ordinary interactive elements; the
-        failure mode is at click time, not at locator time.
+        ── USE `__mzClick(locator)` FOR EVERY UI CLICK — HARD RULE ──
+        The runner injects a helper called `__mzClick`. EVERY UI click in
+        the generated test MUST go through it instead of `locator.click()`.
+        The helper is automatically in scope — do NOT import or define it.
 
-        Symptoms:
-          • `visibility: hidden` → Playwright actionability classifies it
-            as NOT VISIBLE and the click times out with "element is not
-            visible" after 30s.
-          • `opacity: 0` alone → Playwright DOES consider it visible
-            (it has bounds, `visibility: visible`), but real clicks may
-            be intercepted by an overlay sibling that catches pointer
-            events, producing a flaky pass/fail.
-          • `pointer-events: none` set on the button itself or any
-            ancestor → click hits the element behind it.
+            ✓ await __mzClick(page.locator('[data-testid="save-btn"]'));
+            ✓ await __mzClick(page.getByRole('button', { name: 'Save', exact: true }));
+            ✓ await __mzClick(rows.nth(2).locator('[data-testid="edit"]'));
 
-        ── DEFENSIVE PATTERN — reveal via hover/focus FIRST ──
-        The first move is ALWAYS to mimic the user gesture that reveals
-        the button. Look at the Signature's `elementDescription` and
-        `elementLogic` for clues:
-          • description mentioning "on hover", "appears when row is
-            hovered", "shown on focus", "revealed when …" → hover the
-            named parent first.
-          • elementLogic naming a parent container ("inside each row",
-            "per mapping card") → that parent IS the hover target.
+            ✗ await page.locator('[data-testid="save-btn"]').click();
+            ✗ await page.getByRole('button', { name: 'Save', exact: true }).click();
+            ✗ await rows.nth(2).locator('[data-testid="edit"]').click({ force: true });
 
-        The reveal step uses `.hover()` on the PARENT, then the click
-        on the now-visible button:
+        Why this exists:
+        Real applications hide buttons in ways the LLM cannot predict from
+        the Signature — row-hover action icons, drag handles that fade in,
+        kebab triggers, focus-revealed affordances, custom widgets with a
+        visually-hidden native `<input>` behind a decorative host
+        (`mat-checkbox`, styled file inputs, ng-zorro radios, …),
+        animation-mid clicks, overlay siblings with `pointer-events: auto`
+        that catch the pointer. Playwright's `.click()` actionability
+        gauntlet HARD-FAILS those after a 30-second wait. `force: true`
+        works around the symptom but also disables the stability, attached,
+        and not-obscured checks that save flaky tests on the happy path.
 
-            // The Signature says the delete icon "appears on row hover".
-            const row = page.locator('<row selector>').nth(2);
-            await row.hover();                          // reveals the icon
-            await row.locator('<delete-icon selector>').click();
+        `__mzClick` does the right thing automatically:
+          1. Tries `locator.click({ timeout: 2000 })` first. If
+             actionability passes, the FULL Playwright safety net applies
+             (visible, attached, stable, enabled, not obscured, hit-tested
+             at the resolved coordinates). 95% of clicks resolve here in
+             milliseconds.
+          2. On failure — actionability timeout, intercepted-by-overlay,
+             pointer-events:none, mid-animation, etc. — falls back to
+             `locator.dispatchEvent('click')`. That fires a real synthetic
+             `click` event directly on the underlying element, bypassing
+             hit-testing AND CSS visibility. The framework's bound handler
+             (Angular `(click)`, React `onClick`, Vue `@click`, plain DOM
+             listener) runs the same as for a real click.
 
-        For "appears on focus" patterns, use `.focus()` on the parent
-        instead. For "appears when an input has value", make sure the
-        prior typing step ran.
+        Apply this UNCONDITIONALLY:
+          • For action buttons (save, submit, cancel, delete, edit, add,
+            close, expand, etc.).
+          • For checkbox / radio / switch / toggle clicks (see the
+            checkbox HARD RULE — `.click()` is the only allowed actuator,
+            so it goes through `__mzClick` too).
+          • For dropdown trigger clicks AND the subsequent option clicks
+            in the SELECT HARD RULE pattern.
+          • For tabs, accordion headers, menu items, link clicks that
+            navigate within the SPA.
+          • For drag-handle clicks that are NOT drags (a regular pointer
+            click on a handle is still a click).
 
-        ── FALLBACK — bypass actionability with dispatchEvent('click') ──
-        When the Signature doesn't surface a revealing parent, OR the
-        button is genuinely permanently CSS-hidden but functional (a
-        framework-managed click target backing a custom widget — e.g.
-        the native `<input type="file">` of a styled file uploader, or
-        the screen-reader-only `<input type="checkbox">` behind a
-        `mat-checkbox`), use `dispatchEvent('click')`:
+        ALSO use `__mzClick` for clicks on revealed targets even when you
+        DO precede the click with `.hover()` on a parent. Hover-to-reveal
+        and `__mzClick` compose without trouble — the hover lifts the
+        visibility constraint, the fast path of `__mzClick` resolves
+        immediately. Belt AND braces.
 
-            await page.locator('<hidden button selector>').dispatchEvent('click');
+            const row = rows.nth(2);
+            await row.hover();
+            await __mzClick(row.locator('[data-testid="delete"]'));
 
-        Why `dispatchEvent('click')`:
-          • It does NOT run Playwright's actionability checks (no
-            "element is not visible" timeout).
-          • It DOES dispatch a real synthetic `click` event that the
-            framework's handler observes — Angular `(click)`,
-            React `onClick`, Vue `@click`, plain DOM listeners all
-            run. The button's bound behaviour executes.
-          • It does NOT depend on hit-testing, so an overlay sibling
-            with `pointer-events: auto` can't intercept.
+        FORBIDDEN — these MUST NOT appear in the generated test:
 
-        ── FORBIDDEN — `.click({ force: true })` ──
-        `force: true` bypasses Playwright's actionability checks, which
-        is what you want for the visibility issue, BUT it ALSO bypasses:
-          • the "element is attached to the DOM" check (so a detached
-            node silently no-ops),
-          • the "element is stable" check (so a mid-animation hit hits
-            the wrong coordinates),
-          • the "element is not obscured by another element" check (so a
-            modal in front of the button receives the click instead).
+            ✗ await <locator>.click();                       // raw click is banned
+            ✗ await <locator>.click({ force: true });        // force is banned
+            ✗ await <locator>.click({ timeout: <anything> });
+            ✗ await <locator>.dispatchEvent('click');        // do not inline the fallback;
+                                                              //   __mzClick already does it
+            ✗ await __mzClick(<locator>, { force: true });   // helper takes ONLY a locator
 
-        Those other checks save flaky tests every day. Don't trade them
-        away for the narrow visibility fix:
+        Allowed exception: `.click({ trial: true })` from the NO ASSERTIONS
+        HARD RULE. `trial: true` runs actionability checks WITHOUT
+        dispatching events — it's a presence-and-interactability probe,
+        not a click. Use it directly, not through `__mzClick`:
 
-            ✗ await page.locator('<hidden button>').click({ force: true });
-            ✓ await page.locator('<hidden button>').dispatchEvent('click');
+            ✓ await page.locator('<root selector>').click({ trial: true });
 
-        Reach for `dispatchEvent` instead of `force: true` whenever the
-        hover-reveal pattern doesn't apply.
-
-        ── ORDER OF ATTEMPTS — pick the FIRST that matches ──
-        1. Signature / description / logic mentions hover-to-reveal /
-           focus-to-reveal / parent-state-to-reveal — do the reveal
-           gesture, then `.click()`.
-        2. No reveal hint, but the button is part of a known
-           visually-hidden framework input (file inputs, native
-           checkboxes inside custom components) — `dispatchEvent('click')`.
-        3. Otherwise just `.click()`. Don't pre-emptively switch to
-           `dispatchEvent` for every button "in case it's hidden" —
-           that loses Playwright's auto-wait + actionability guarantees
-           for the 95% case.
-
-        Do NOT add a comment explaining the chosen approach; the test
-        must read like a human picked it on purpose.
+        Do NOT add a comment explaining why you used `__mzClick`; the test
+        must read like a human chose it on purpose.
 
         For setting the value of any typed input, see the TYPING INTO INPUTS
         HARD RULE below — `fill` is forbidden and the click → select → type
@@ -844,7 +833,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         ALWAYS use this exact sequence to SET the value of a typed input:
 
             const field = page.locator('<selector>');
-            await field.click();                          // 1. focus
+            await __mzClick(field);                        // 1. focus (via __mzClick — see HARD RULE)
             await field.press('ControlOrMeta+a');          // 2. select existing content
             await field.pressSequentially('new value');    // 3. type real keystrokes
 
@@ -867,12 +856,12 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         (a) Field is provably empty AND the test doesn't care about
             replacing existing content (e.g. you just opened a fresh form):
 
-                await field.click();
+                await __mzClick(field);
                 await field.pressSequentially('value');
 
         (b) You need to CLEAR the field without typing a replacement:
 
-                await field.click();
+                await __mzClick(field);
                 await field.press('ControlOrMeta+a');
                 await field.press('Delete');
 
@@ -907,18 +896,20 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
               • or retries the click in a loop until the action timeout
                 burns down, then fails with a useless "Timed out 30000ms".
 
-            The reliable thing is just `.click()`. Frameworks bind their
-            handler to a real click on the labeled host, the framework
-            then flips its model state and re-renders. This works for
-            native AND custom controls.
+            The reliable thing is `__mzClick` — a real click on the labeled
+            host, routed through the runner's robust-click helper so the
+            visually-hidden native input inside Material/ng-zorro/etc. still
+            receives the dispatched event when actionability would otherwise
+            fail. Frameworks bind their handler to that click, flip their
+            model state, and re-render. Works for native AND custom controls.
 
             Required for every checkbox / radio / switch toggle —
             interactive elements whose Signature `elementType` is
             "checkbox", "radio", "switch", or "toggle":
 
-                ✓ await page.locator('<checkbox selector>').click();
-                ✓ await page.getByRole('checkbox', { name: 'Accept terms', exact: true }).click();
-                ✓ await page.getByRole('radio', { name: 'Standard plan', exact: true }).click();
+                ✓ await __mzClick(page.locator('<checkbox selector>'));
+                ✓ await __mzClick(page.getByRole('checkbox', { name: 'Accept terms', exact: true }));
+                ✓ await __mzClick(page.getByRole('radio', { name: 'Standard plan', exact: true }));
 
             To toggle to a SPECIFIC state (rather than just flipping it),
             first read the current state, then click only if it doesn't
@@ -927,7 +918,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
             checked role, not only native inputs:
 
                 ✓ const cb = page.locator('<checkbox selector>');
-                  if (!(await cb.isChecked())) await cb.click();
+                  if (!(await cb.isChecked())) await __mzClick(cb);
 
             Forbidden:
 
@@ -959,7 +950,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         Allowed:
 
             ✓ const email = page.locator('input[name="email"]');
-              await email.click();
+              await __mzClick(email);
               await email.press('ControlOrMeta+a');
               await email.pressSequentially('alice@example.com');
 
@@ -1130,8 +1121,8 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
 
         Canonical three-step pattern — use this UNCONDITIONALLY:
 
-            // Step 1: open the dropdown.
-            await page.locator('<select selector>').click();
+            // Step 1: open the dropdown. (__mzClick — see the click HARD RULE.)
+            await __mzClick(page.locator('<select selector>'));
 
             // Step 2: type the option text. Most custom combos auto-focus
             //         their internal search input on open, so keystrokes
@@ -1142,7 +1133,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
             //         the list filtered there should be ONE match; `.first()`
             //         is belt-and-braces for combobox UIs that keep the
             //         trigger label in the DOM under the same text.
-            await page.getByText('<option text>', { exact: true }).first().click();
+            await __mzClick(page.getByText('<option text>', { exact: true }).first());
 
         Per the getByText rule, the `{ exact: true }` argument is MANDATORY
         on Step 3. Bare substring matches catch the trigger label, recently-
@@ -1155,10 +1146,10 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         type into it directly with the canonical Locator flow instead:
 
             const search = page.locator('<search-input selector>');
-            await search.click();
+            await __mzClick(search);
             await search.press('ControlOrMeta+a');
             await search.pressSequentially('<option text>');
-            await page.getByText('<option text>', { exact: true }).first().click();
+            await __mzClick(page.getByText('<option text>', { exact: true }).first());
 
         ── FALLBACK PATTERN — open → click option (no typing) ──
         Skip the type step ONLY when there is concrete evidence the dropdown
@@ -1179,8 +1170,8 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
 
         Fallback pattern (rare):
 
-            await page.locator('<select selector>').click();
-            await page.getByText('<option text>', { exact: true }).first().click();
+            await __mzClick(page.locator('<select selector>'));
+            await __mzClick(page.getByText('<option text>', { exact: true }).first());
 
         ── FORBIDDEN ──
         - Calling `.selectOption(...)` on anything that isn't a native
@@ -1192,8 +1183,8 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
           options as plain `<div>` / `<li>` / `<span>` without ARIA
           roles, and `getByRole('option', …)` hangs on nodes that don't
           exist in the rendered DOM:
-            ✗ await page.getByRole('option', { name: '<option text>' }).click();
-            ✗ await page.locator('[role="option"]', { hasText: '<option text>' }).click();
+            ✗ await __mzClick(page.getByRole('option', { name: '<option text>' }));
+            ✗ await __mzClick(page.locator('[role="option"]', { hasText: '<option text>' }));
           You MAY use `getByRole('option', { name, exact: true })` if the
           Signature / description names an ARIA-compliant library
           (Headless UI, MUI Select, Radix Select, shadcn). Without that
@@ -1214,8 +1205,8 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         currently-selected label and the new option has the same text),
         narrow with a Signature-named option selector or `.nth(i)`:
 
-            await page.locator('[data-testid="<option-testid-from-signature>"]', { hasText: '<text>' }).click();
-            await page.getByText('<option text>', { exact: true }).nth(1).click();
+            await __mzClick(page.locator('[data-testid="<option-testid-from-signature>"]', { hasText: '<text>' }));
+            await __mzClick(page.getByText('<option text>', { exact: true }).nth(1));
         """;
 
     // ── MERGE ────────────────────────────────────────────────────────

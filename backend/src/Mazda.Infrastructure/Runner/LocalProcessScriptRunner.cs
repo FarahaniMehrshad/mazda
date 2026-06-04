@@ -371,6 +371,45 @@ async function __mzPointerDrag(page: any, source: any, target: any): Promise<voi
     //                                   originally-at-lo sits at lo+1.
     //   step 2: drag from lo+1 to hi → originally-at-lo sits at hi.
     // Adjacent (hi == lo+1): a single insert-at-position IS the swap.
+    // `locator.click()` runs Playwright's actionability gauntlet — visible,
+    // attached, stable, enabled, not obscured, hit-tested at the resolved
+    // coordinates. Those checks save countless flaky tests on the happy path
+    // but HARD-FAIL on elements modern UIs are full of:
+    //   • visibility:hidden / opacity:0 / display:none toggle-on-hover icons,
+    //   • pointer-events:none ancestors that route clicks elsewhere,
+    //   • absolute-positioned overlays that catch the click,
+    //   • the screen-reader-only <input type="file"> behind a styled uploader,
+    //   • the native <input type="checkbox"> behind a custom checkbox.
+    //
+    // The LLM that generated the test can't predict at gen time which buttons
+    // will be hidden at runtime — the Signature doesn't reliably indicate it.
+    // So every UI click in the generated test goes through __mzClick, which:
+    //   1. Tries `.click()` first (short 2s timeout). On success the normal
+    //      Playwright safety net applies and we return.
+    //   2. On any failure — actionability timeout, intercepted-by-overlay,
+    //      pointer-events:none, etc. — falls back to dispatchEvent('click').
+    //      That bypasses BOTH hit-testing AND CSS visibility, dispatching a
+    //      real synthetic click event directly on the element. Angular
+    //      (click), React onClick, Vue @click, plain DOM listeners all
+    //      observe and run the same as for a real click.
+    private const string ClickHelperBlock = """
+
+// === Mazda runner: robust-click helper (auto-injected) ===
+async function __mzClick(locator: any): Promise<void> {
+  try {
+    await locator.click({ timeout: 2000 });
+  } catch {
+    // Fall back to a synthetic click. dispatchEvent doesn't care about
+    // visibility, pointer-events, overlays, or animation stability — it
+    // fires the event directly on the underlying element. The framework's
+    // bound click handler runs the same as for a real click.
+    await locator.dispatchEvent('click');
+  }
+}
+// === end auto-injected ===
+
+""";
+
     private const string PointerSwapHelperBlock = """
 
 // === Mazda runner: sortable-list swap helper (auto-injected) ===
@@ -459,8 +498,10 @@ async function __mzPointerSwap(page: any, items: any, i: number, j: number): Pro
         var needsSwapHelper = Regex.IsMatch(rewritten, @"\b__mzPointerSwap\s*\(");
         var needsDragHelper = needsSwapHelper
             || Regex.IsMatch(rewritten, @"\b__mzPointerDrag\s*\(");
+        var needsClickHelper = Regex.IsMatch(rewritten, @"\b__mzClick\s*\(");
 
-        if (!needsCdpHelper && !needsDragHelper && !needsSwapHelper) return rewritten;
+        if (!needsCdpHelper && !needsDragHelper && !needsSwapHelper && !needsClickHelper)
+            return rewritten;
 
         // Inject after the last top-level import statement so type imports stay
         // valid and our helpers can reference imported types if they ever need to.
@@ -474,6 +515,7 @@ async function __mzPointerSwap(page: any, items: any, i: number, j: number): Pro
 
         var injection = string.Empty;
         if (needsCdpHelper) injection += CdpHelperBlock;
+        if (needsClickHelper) injection += ClickHelperBlock;
         if (needsDragHelper) injection += PointerDragHelperBlock;
         if (needsSwapHelper) injection += PointerSwapHelperBlock;
         return rewritten.Insert(insertPos, injection);
