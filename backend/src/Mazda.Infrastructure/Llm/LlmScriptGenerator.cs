@@ -164,10 +164,13 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         - A Signature: a structured list of CSS-selector-anchored elements.
         - (Optional) A "User flows" graph: pre-analyzed UI states (nodes) and the
           element-anchored actions (edges) that transition between them. When present,
-          treat it as the canonical map of what the UI can do — your job is to map the
-          user's test prompt onto a path through this graph, then translate each edge
-          on that path into Playwright actions. The graph already validates which
-          interactions are possible; do not invent new ones.
+          treat it as a REACHABILITY ORACLE — proof that the target state is reachable
+          and via which UI affordances — NOT as a script to copy verbatim. Find the
+          SHORTEST path from the current state to the prompt's target state and
+          translate ONLY that path. If the prompt's goal can be reached by a single
+          click that the graph also shows as a 5-edge path, the single click is the
+          correct test (see SHORTEST-PATH HARD RULE below). Do not invent transitions
+          the graph doesn't show, but do not walk transitions the prompt doesn't need.
         - (Optional) A "Setup script" block showing the surrounding fixture/hook code,
           so you know what `page` / `context` / `browser` looks like and which imports
           already exist.
@@ -193,6 +196,138 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         - NEVER skip a step that the prompt requested. If you are tempted to leave a
           gap, you must close it with a concrete locator and a concrete action instead.
         - NEVER write `throw new Error('not implemented')` or similar stubs.
+
+        ── SHORTEST-PATH HARD RULE — DEFAULT TO THE SIMPLEST EXECUTION ──
+        The correct test is the SHORTEST executable sequence that fulfills the
+        prompt. Pick the minimum number of actions, the minimum number of
+        locators, the minimum number of reads, and the most direct shape.
+        Every line you add that the prompt did not require is a bug — it
+        introduces a place for a real test to flake on something the prompt
+        didn't actually care about.
+
+        ── WHAT TO CUT ──
+
+        (1) "Setup gestures" the prompt didn't ask for.
+            ✗ // The prompt says "click Save and add a row".
+              await page.keyboard.press('Escape');         // close any open dialog
+              await page.locator('body').click();           // dismiss focus
+              await __mzClick(page.locator('<save>'));
+              await __mzClick(page.locator('<add row>'));
+            ✓ await __mzClick(page.locator('<save>'));
+              await __mzClick(page.locator('<add row>'));
+
+        (2) Defensive waits / visibility probes before actions.
+            Playwright's actionability auto-wait handles "wait until the
+            button exists / is visible / is enabled". Adding an explicit
+            `waitFor()` / `expect(...).toBeVisible()` (also banned by the
+            NO ASSERTIONS rule) / `isVisible()` poll loop in front of every
+            click is redundant AND slower (it stacks two waits).
+            ✗ await page.locator('<btn>').waitFor({ state: 'visible' });
+              await __mzClick(page.locator('<btn>'));
+            ✓ await __mzClick(page.locator('<btn>'));
+
+            Use `waitFor` only when the prompt explicitly references a
+            BACKGROUND state change that ISN'T followed by an action —
+            e.g. "wait until the spinner disappears, then click Save"
+            becomes one `waitFor({ state: 'hidden' })` and one click.
+
+        (3) User-flows graph "tourism".
+            The User flows graph maps every state and transition the UI
+            supports. Treat it as a REACHABILITY ORACLE — proof that the
+            target state is reachable — NOT a script. When the prompt says
+            "change the data type of column 1 to Number", DO NOT walk
+            every intermediate state the graph shows. Find the
+            shortest path from the current state to the target state and
+            translate ONLY that path into actions. If a single click
+            achieves the prompt's goal, that single click is the test —
+            even if the graph shows a 5-node flow that ALSO works.
+            ✗ // Walks: list → row hover → kebab → menu open → "Edit" →
+              //          modal → "Type" dropdown → option → "Save".
+              // Goal was just: set type to Number.
+              await __mzClick(rows.nth(0));                   // not asked
+              await rows.nth(0).hover();                       // not asked
+              await __mzClick(kebab);                         // not asked
+              ...
+            ✓ // Inline type dropdown exists per row — use it directly.
+              await __mzClick(page.locator('<inline-type-trigger>').nth(0));
+              await page.keyboard.type('Number');
+              await __mzClick(page.getByText('Number', { exact: true }).first());
+
+        (4) Multi-locator chains where a single Signature selector works.
+            See the LOCATOR SCOPING rule below — page-level locators with
+            `.nth(i)` beat parent-scoped chains. Don't reach for chaining
+            unless the Signature explicitly nests the child under the
+            parent in its selector string.
+
+        (5) Reading informational elements you don't use.
+            Reading is ONLY allowed to PICK A TARGET for a subsequent
+            action (see NO ASSERTIONS). A read that doesn't feed an
+            action is a deletable line.
+            ✗ const total = await page.locator('<total>').innerText();
+              await __mzClick(page.locator('<submit>'));
+            ✓ await __mzClick(page.locator('<submit>'));
+
+        (6) Loops when the prompt names a single item.
+            "Click the first row's edit button" is ONE action, not a
+            for-loop over rows with an `if (i === 0) break;`.
+            ✗ for (let i = 0; i < await rows.count(); i++) {
+                if (i === 0) { await __mzClick(rows.nth(i).locator('<edit>')); break; }
+              }
+            ✓ await __mzClick(rows.first().locator('<edit>'));
+
+            A loop IS the right shape when the prompt iterates ("for each
+            row, …") OR when the prompt selects by a runtime-discovered
+            property ("the row whose status is Ready"). The test is:
+            ✓ const count = await rows.count();
+              for (let i = 0; i < count; i++) {
+                if ((await rows.nth(i).locator('<status>').innerText()).trim() === 'Ready') {
+                  await __mzClick(rows.nth(i).locator('<edit>'));
+                  break;
+                }
+              }
+
+        (7) Multiple actions that achieve the same effect.
+            Pick ONE. If both clicking the row and pressing Enter open
+            the same modal, click the row — don't do both.
+
+        (8) Try/catch fallbacks.
+            Do NOT wrap actions in `try { … } catch { … }` to "handle
+            both cases". If the prompt is unambiguous, the action either
+            works or the test correctly fails. `__mzClick` already
+            handles the hidden-button case; you do not need additional
+            fallback code.
+
+        (9) Comments narrating each action.
+            The action IS the documentation. Skip "// click Save" before
+            an obvious `await __mzClick(page.locator('<save>'))`. Comment
+            ONLY when the reasoning isn't visible in the code (e.g.
+            "// Trigger is hidden until row hover — see signature
+            elementLogic"). The test must read like a human wrote it
+            on purpose, not like an LLM narrated its own steps.
+
+        ── HOW TO CHOOSE THE SHORTEST PATH ──
+
+        Before writing any action, ask in order:
+          (a) Does the Signature surface a DIRECT control for what the
+              prompt asks? (An inline edit input vs. a multi-step
+              modal flow; a per-row delete button vs. a select-then-
+              bulk-delete sequence.) If yes, use it. If two routes
+              both achieve the goal, take the one with fewer actions.
+          (b) Can the prompt's verb be ONE click instead of a
+              click→type→click sequence? (E.g. a toggle that flips
+              from one click vs. "open dropdown, type, pick".) If
+              the Signature shows a single-click control, use it.
+          (c) Is there a piece of state the prompt mentions
+              ("the current value is X") that you'd be tempted to
+              read and verify? Skip the read; the NO ASSERTIONS rule
+              forbids the verification anyway.
+          (d) Does the prompt name the target by attribute, not
+              position? Use that attribute directly — don't first
+              read all candidates then filter.
+
+        When in doubt between two paths that both implement the prompt:
+        pick the one with fewer awaited calls. Tie-break by fewer
+        locators. Tie-break by fewer characters of code.
 
         ── NO ASSERTIONS — HARD RULE ──
         The generated test is ACTION-ONLY. It MUST NOT contain ANY assertions.
