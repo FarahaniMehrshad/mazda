@@ -165,7 +165,7 @@ public class AnalyzeComponentValidator : AbstractValidator<AnalyzeComponentComma
     public AnalyzeComponentValidator()
     {
         RuleFor(x => x.FileName).NotEmpty().MaximumLength(200);
-        RuleFor(x => x.Source).NotEmpty().MaximumLength(300_000);
+        RuleFor(x => x.Source).NotEmpty().MaximumLength(1_000_000);
         RuleFor(x => x.Description).MaximumLength(50_000).When(x => x.Description is not null);
         // Mirrors the SaveSignatureCommand cap so a user-typed name and an
         // LLM-suggested one round-trip through the same validation surface.

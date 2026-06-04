@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { TopBar } from "@/shared/components/TopBar";
 import {
@@ -12,45 +12,317 @@ import { Icon } from "@/shared/icons/Icon";
 import { useAnalyzeComponent } from "./api";
 import { ApiError } from "@/shared/api/client";
 
-const ELIGIBLE_EXT = /\.(tsx|jsx|ts|js|txt)$/i;
+/**
+ * Files we silently drop because `file.text()` on them returns replacement-
+ * character garbage that pollutes the bundle and doesn't help the LLM. This
+ * is INTENTIONALLY tiny — the user-facing filter is the Exclude patterns
+ * field; this denylist exists only to keep clearly-binary blobs out.
+ *
+ * Text formats that LOOK binary at a glance but are actually text (SVG,
+ * JSON, YAML, …) are NOT here. SVG in particular is XML, the LLM can read
+ * it, and the user can still exclude it via the field if they want to.
+ */
+const BINARY_EXT =
+  /\.(png|jpe?g|gif|webp|avif|ico|bmp|tiff?|woff2?|ttf|otf|eot|mp[34]|webm|mov|avi|mkv|flac|wav|ogg|zip|tar|gz|bz2|7z|rar|pdf|exe|dll|so|dylib|class|jar|wasm|node|psd|ai|sketch|fig|xcf)$/i;
+
 const MAX_SINGLE_FILE_BYTES = 1_000_000;
-// Backend caps Source at 300,000 chars; leave headroom for path headers.
-const MAX_BUNDLE_CHARS = 290_000;
+// Backend caps Source at 1,000,000 chars. We mirror the cap here exactly —
+// path headers are already counted into each chunk's size in bundleFiles,
+// so there is no need to reserve extra headroom.
+const MAX_BUNDLE_CHARS = 1_000_000;
 // Backend caps Description at 50,000 chars.
 const MAX_DESCRIPTION_CHARS = 50_000;
 
+/**
+ * Patterns that are filtered out of a folder bundle by default. Playwright
+ * spec files are the most common case — they live next to the components
+ * they test and bloat the bundle with assertions that aren't part of the
+ * component's source-of-truth behavior.
+ *
+ * The user can edit this list in the upload UI. Comma- or newline-separated.
+ */
+const DEFAULT_EXCLUDE_PATTERNS = "*.spec.ts, *.spec.tsx, *.cy.ts, mock*, *.mock, *.css, *.scss";
+
 function isEligible(name: string) {
-  return ELIGIBLE_EXT.test(name);
+  // Denylist, not allowlist — we want everything text-decodable to flow
+  // into the bundle so the user controls inclusion via Exclude patterns.
+  return !BINARY_EXT.test(name);
 }
 
-async function bundleFiles(files: File[]): Promise<{ source: string; label: string } | null> {
-  const eligible = files.filter((f) => isEligible(f.name));
+/**
+ * A compiled exclude pattern. `usesPath` decides which value we match
+ * against — gitignore-style: a slash anywhere in the pattern means the
+ * pattern is a PATH glob (matched against the file's relative path);
+ * otherwise it's a NAME glob (matched against the basename only). This is
+ * the convention users expect — `*.spec.ts` should match `Foo.spec.ts`
+ * AND `src/Foo.spec.ts`, but `dist/` should only match the `dist`
+ * directory and not a file literally named "dist".
+ */
+type ExcludePattern = { rx: RegExp; usesPath: boolean; source: string };
+
+/**
+ * Compile a user-entered patterns string into a list of matchers. Supports:
+ *   • `*`  — any sequence of characters (including `/`)
+ *   • `?`  — any single character
+ *   • all other characters are matched literally
+ * Patterns are case-insensitive. Empty entries (extra commas / blank lines)
+ * are ignored. Invalid regex pieces can't happen because we escape every
+ * non-wildcard character before assembling the body.
+ */
+function compileExcludePatterns(input: string): ExcludePattern[] {
+  return input
+    .split(/[,\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((pattern) => {
+      const usesPath = pattern.includes("/");
+      const body = pattern
+        // Escape every regex special EXCEPT * and ? — those become the
+        // wildcard mappings below. (`-` is only special inside [] so it's
+        // safe here.)
+        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+        .replace(/\?/g, ".")
+        .replace(/\*/g, ".*");
+      return {
+        rx: new RegExp(`^${body}$`, "i"),
+        usesPath,
+        source: pattern,
+      };
+    });
+}
+
+function isExcluded(picked: PickedFile, patterns: ExcludePattern[]): boolean {
+  if (patterns.length === 0) return false;
+  return patterns.some((p) =>
+    p.usesPath ? p.rx.test(picked.relPath) : p.rx.test(picked.file.name),
+  );
+}
+
+/**
+ * A picked file with its display path relative to the root the user selected.
+ * Carrying the path explicitly is necessary because:
+ *   - File.webkitRelativePath is only populated for the <input webkitdirectory>
+ *     code path. Files obtained from a DataTransferItem's entry API have an
+ *     empty webkitRelativePath, so we have to reconstruct the path ourselves
+ *     while we walk the directory tree.
+ */
+type PickedFile = { file: File; relPath: string };
+
+/**
+ * Recursively walk a webkitGetAsEntry-style FileSystemEntry, collecting every
+ * file underneath it (at any depth) into `out`. Required because dropping a
+ * folder onto a dropzone gives you a DataTransferItem that resolves to a
+ * FileSystemDirectoryEntry — NOT a flat list of files. Without this walk,
+ * nested files are silently lost on drop.
+ *
+ * The entry types are minimally typed locally — the DOM lib's
+ * FileSystemEntry/FileSystemDirectoryEntry interfaces are sufficient for our
+ * needs but vendor-prefixed in older browsers, so we keep the surface small.
+ */
+type FsEntry = {
+  isFile: boolean;
+  isDirectory: boolean;
+  name: string;
+  file?: (cb: (f: File) => void, err?: (e: unknown) => void) => void;
+  createReader?: () => {
+    readEntries: (cb: (entries: FsEntry[]) => void, err?: (e: unknown) => void) => void;
+  };
+};
+
+async function walkEntry(entry: FsEntry, prefix: string, out: PickedFile[]): Promise<void> {
+  if (entry.isFile && entry.file) {
+    const file = await new Promise<File>((res, rej) => entry.file!(res, rej));
+    out.push({ file, relPath: prefix + file.name });
+    return;
+  }
+  if (entry.isDirectory && entry.createReader) {
+    const reader = entry.createReader();
+    // readEntries returns AT MOST 100 entries per call; keep calling until
+    // it returns an empty batch. Forgetting this loop is the #1 bug in
+    // hand-rolled directory walkers — large folders look fine in tests but
+    // truncate silently in production.
+    const children: FsEntry[] = [];
+    for (;;) {
+      const batch = await new Promise<FsEntry[]>((res, rej) =>
+        reader.readEntries(res, rej),
+      );
+      if (batch.length === 0) break;
+      children.push(...batch);
+    }
+    for (const child of children) {
+      await walkEntry(child, prefix + entry.name + "/", out);
+    }
+  }
+}
+
+/**
+ * Extract every file from a drop event, recursively descending into any
+ * directories that were dropped. Falls back to the flat FileList if the
+ * Entry API isn't available (very old browsers, drag from outside the OS
+ * file manager).
+ */
+async function pickFromDataTransfer(dt: DataTransfer): Promise<PickedFile[]> {
+  const out: PickedFile[] = [];
+
+  // Prefer the items API so we can recurse into folders.
+  if (dt.items && dt.items.length > 0) {
+    const entries: FsEntry[] = [];
+    for (let i = 0; i < dt.items.length; i++) {
+      const item = dt.items[i];
+      // webkitGetAsEntry is the de-facto cross-browser name; the standardised
+      // getAsEntry alias is still not universal as of mid-2025.
+      const getEntry = (
+        item as DataTransferItem & {
+          webkitGetAsEntry?: () => FsEntry | null;
+          getAsEntry?: () => FsEntry | null;
+        }
+      ).webkitGetAsEntry?.bind(item) ??
+        (item as DataTransferItem & { getAsEntry?: () => FsEntry | null }).getAsEntry?.bind(item);
+      const entry = getEntry?.();
+      if (entry) {
+        entries.push(entry);
+      } else {
+        // Item isn't a file (text/plain MIME, etc.) — try the file path anyway.
+        const f = item.getAsFile?.();
+        if (f) out.push({ file: f, relPath: f.name });
+      }
+    }
+    for (const e of entries) await walkEntry(e, "", out);
+    return out;
+  }
+
+  // Final fallback: dataTransfer.files only ever contains TOP-LEVEL files;
+  // nested files in a dropped folder are LOST on this path. We end up here
+  // only when the items API is completely unavailable.
+  for (const f of Array.from(dt.files)) out.push({ file: f, relPath: f.name });
+  return out;
+}
+
+/**
+ * Wrap a FileList from an <input type="file"> (with or without webkitdirectory)
+ * into our PickedFile shape. webkitRelativePath is already set by the browser
+ * for directory inputs.
+ */
+function pickFromFileList(files: FileList): PickedFile[] {
+  return Array.from(files).map((f) => ({
+    file: f,
+    relPath: (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name,
+  }));
+}
+
+type BundleResult = {
+  source: string;
+  label: string;
+  /** Raw count of files the user dropped / picked, BEFORE any filtering. */
+  totalPicked: number;
+  /** Files matching BINARY_EXT — dropped silently because file.text() on
+   *  them would return replacement-character garbage. */
+  binary: number;
+  /** Files that passed the binary denylist (totalPicked - binary). */
+  totalEligible: number;
+  /** Files that survived eligibility AND exclude patterns AND the size cap. */
+  included: number;
+  /** Eligible files dropped because adding them would breach MAX_BUNDLE_CHARS. */
+  skipped: number;
+  /** Eligible files dropped by exclude patterns. */
+  excluded: number;
+  /** Paths skipped by the size cap (for debugging "where did my file go?"). */
+  skippedPaths: string[];
+  /** Paths dropped by the user's exclude patterns. */
+  excludedPaths: string[];
+};
+
+async function bundleFiles(
+  picked: PickedFile[],
+  excludePatterns: ExcludePattern[],
+): Promise<BundleResult | null> {
+  const totalPicked = picked.length;
+  const eligible = picked
+    .filter((p) => isEligible(p.file.name))
+    // Sort by relative path so the bundle order is deterministic and the
+    // LLM sees a coherent tree (parent files first, then children).
+    .sort((a, b) => a.relPath.localeCompare(b.relPath));
+  const binary = totalPicked - eligible.length;
   if (eligible.length === 0) return null;
+
+  const afterExcludes: PickedFile[] = [];
+  const excludedPaths: string[] = [];
+  for (const p of eligible) {
+    if (isExcluded(p, excludePatterns)) excludedPaths.push(p.relPath);
+    else afterExcludes.push(p);
+  }
+  const excluded = excludedPaths.length;
+
+  if (afterExcludes.length === 0) {
+    // Every eligible file was filtered out by the user's exclude patterns.
+    // Return a zero-result bundle (rather than null) so the UI can
+    // distinguish "no source files at all" from "patterns excluded
+    // everything" — the second case needs a different message.
+    return {
+      source: "",
+      label: "",
+      totalPicked,
+      binary,
+      totalEligible: eligible.length,
+      included: 0,
+      skipped: 0,
+      excluded,
+      skippedPaths: [],
+      excludedPaths,
+    };
+  }
 
   const parts: string[] = [];
   let total = 0;
-  let skipped = 0;
-  for (const f of eligible) {
-    const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
-    const text = await f.text();
-    const chunk = `// === FILE: ${rel} ===\n${text}\n`;
+  const skippedPaths: string[] = [];
+  for (const p of afterExcludes) {
+    const text = await p.file.text();
+    const chunk = `// === FILE: ${p.relPath} ===\n${text}\n`;
     if (total + chunk.length > MAX_BUNDLE_CHARS) {
-      skipped++;
+      skippedPaths.push(p.relPath);
       continue;
     }
     parts.push(chunk);
     total += chunk.length;
   }
-  if (parts.length === 0) return null;
+  const skipped = skippedPaths.length;
+  if (parts.length === 0) {
+    return {
+      source: "",
+      label: "",
+      totalPicked,
+      binary,
+      totalEligible: eligible.length,
+      included: 0,
+      skipped,
+      excluded,
+      skippedPaths,
+      excludedPaths,
+    };
+  }
 
-  const firstRel = (eligible[0] as File & { webkitRelativePath?: string }).webkitRelativePath;
-  const folderName = firstRel ? firstRel.split("/")[0] : "";
+  // Folder name = the segment shared by every eligible file's relPath. When
+  // the user dropped multiple unrelated files, this falls back to a count.
+  const firstRel = afterExcludes[0].relPath;
+  const folderName = firstRel.includes("/") ? firstRel.split("/")[0] : "";
+  const included = parts.length;
   const label =
-    folderName && eligible.length > 1
-      ? `${folderName}/ (${parts.length} files${skipped ? `, ${skipped} skipped` : ""})`
-      : eligible[0].name;
+    folderName && afterExcludes.length > 1
+      ? `${folderName}/ (${included} files${skipped ? `, ${skipped} skipped` : ""}${excluded ? `, ${excluded} excluded` : ""})`
+      : afterExcludes[0].file.name;
 
-  return { source: parts.join("\n"), label };
+  return {
+    source: parts.join("\n"),
+    label,
+    totalPicked,
+    binary,
+    totalEligible: eligible.length,
+    included,
+    skipped,
+    excluded,
+    skippedPaths,
+    excludedPaths,
+  };
 }
 
 export function UploadPage() {
@@ -66,42 +338,136 @@ export function UploadPage() {
   const [name, setName] = useState("");
   const [dragging, setDragging] = useState(false);
 
+  // Picked files persist across pattern edits — this is what makes the
+  // "Exclude patterns" field interactive. We re-bundle from this list
+  // whenever either the files OR the patterns change. Single-file (non-
+  // folder) picks store one entry here too, and the rebundle effect
+  // detects them as a special case so the user-visible source isn't
+  // wrapped in `// === FILE: … ===` headers.
+  const [pickedFiles, setPickedFiles] = useState<PickedFile[]>([]);
+  const [excludePatterns, setExcludePatterns] = useState(DEFAULT_EXCLUDE_PATTERNS);
+  const [bundleInfo, setBundleInfo] = useState<{
+    /** Raw count of files in the drop / pick. */
+    totalPicked: number;
+    /** Files dropped by the binary denylist (images, fonts, archives, …). */
+    binary: number;
+    included: number;
+    excluded: number;
+    skipped: number;
+    totalEligible: number;
+    /** "all excluded" — every eligible file was filtered out by patterns. */
+    allExcluded: boolean;
+    /** Paths dropped by the size cap — surfaced so the user can verify
+     *  whether a specific missing file fell here. */
+    skippedPaths: string[];
+    /** Paths dropped by the user's exclude patterns. */
+    excludedPaths: string[];
+  } | null>(null);
+
   // Soft caps mirror the backend validators so we fail in the UI before a round-trip.
   const MAX_NAME_CHARS = 80;
 
-  async function onFile(file: File) {
-    if (file.size > MAX_SINGLE_FILE_BYTES) {
-      alert("File too large — keep it under 1 MB.");
+  // Re-bundle the picked files whenever the list OR the exclude patterns
+  // change. A run-id ref guards against the race where the user types
+  // quickly in the patterns box and a slow earlier bundle resolves AFTER
+  // a faster later one — we ignore stale results so the UI always shows
+  // the bundle for the latest input.
+  const bundleRunIdRef = useRef(0);
+  useEffect(() => {
+    if (pickedFiles.length === 0) {
+      setFileName("");
+      setSource("");
+      setBundleInfo(null);
       return;
     }
-    const text = await file.text();
-    if (text.length > MAX_BUNDLE_CHARS) {
-      alert(`File too large for the analyzer (${text.length.toLocaleString()} chars, limit ${MAX_BUNDLE_CHARS.toLocaleString()}).`);
+    const runId = ++bundleRunIdRef.current;
+    void (async () => {
+      // Single-file path: skip excludes entirely. The user explicitly chose
+      // one file; honouring `*.spec.ts` here would silently throw it away.
+      if (pickedFiles.length === 1 && !pickedFiles[0].relPath.includes("/")) {
+        const file = pickedFiles[0].file;
+        if (!isEligible(file.name)) {
+          // file.text() on a binary returns replacement-character garbage;
+          // bail explicitly so the user sees what's wrong.
+          alert("Binary files (images / fonts / archives) can't be analyzed. Pick a text-based source file.");
+          setPickedFiles([]);
+          return;
+        }
+        if (file.size > MAX_SINGLE_FILE_BYTES) {
+          alert("File too large — keep it under 1 MB.");
+          setPickedFiles([]);
+          return;
+        }
+        const text = await file.text();
+        if (runId !== bundleRunIdRef.current) return;
+        if (text.length > MAX_BUNDLE_CHARS) {
+          alert(
+            `File too large for the analyzer (${text.length.toLocaleString()} chars, limit ${MAX_BUNDLE_CHARS.toLocaleString()}).`,
+          );
+          setPickedFiles([]);
+          return;
+        }
+        setFileName(file.name);
+        setSource(text);
+        setBundleInfo(null);
+        return;
+      }
+
+      const compiled = compileExcludePatterns(excludePatterns);
+      const bundled = await bundleFiles(pickedFiles, compiled);
+      if (runId !== bundleRunIdRef.current) return;
+      if (!bundled) {
+        // No supported extensions in the picked set at all.
+        setFileName("");
+        setSource("");
+        setBundleInfo(null);
+        return;
+      }
+      setFileName(bundled.label);
+      setSource(bundled.source);
+      setBundleInfo({
+        totalPicked: bundled.totalPicked,
+        binary: bundled.binary,
+        included: bundled.included,
+        excluded: bundled.excluded,
+        skipped: bundled.skipped,
+        totalEligible: bundled.totalEligible,
+        allExcluded: bundled.included === 0 && bundled.excluded > 0,
+        skippedPaths: bundled.skippedPaths,
+        excludedPaths: bundled.excludedPaths,
+      });
+    })();
+  }, [pickedFiles, excludePatterns]);
+
+  async function onPicked(picked: PickedFile[]) {
+    if (picked.length === 0) return;
+    // Early eligibility check just to surface a useful alert when the user
+    // dropped a folder with NO supported files. The actual bundling
+    // happens in the effect above.
+    const anyEligible = picked.some((p) => isEligible(p.file.name));
+    if (!anyEligible) {
+      // Every file in the selection matched BINARY_EXT (images, fonts,
+      // archives, …). Nothing text-decodable to bundle.
+      alert("Selection contained only binary files (images / fonts / archives). Nothing to analyze.");
       return;
     }
-    setFileName(file.name);
-    setSource(text);
+    setPickedFiles(picked);
   }
 
   async function onFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
-    if (files.length === 1) {
-      await onFile(files[0]);
-      return;
-    }
-    const bundled = await bundleFiles(Array.from(files));
-    if (!bundled) {
-      alert("No supported files (.tsx/.jsx/.ts/.js/.txt) found in selection.");
-      return;
-    }
-    setFileName(bundled.label);
-    setSource(bundled.source);
+    await onPicked(pickFromFileList(files));
   }
 
-  function onDrop(e: React.DragEvent) {
+  async function onDrop(e: React.DragEvent) {
     e.preventDefault();
     setDragging(false);
-    if (e.dataTransfer.files.length > 0) onFiles(e.dataTransfer.files);
+    // Use the entry API instead of .files so nested files inside dropped
+    // folders are actually collected (see pickFromDataTransfer). The previous
+    // implementation read e.dataTransfer.files directly and silently lost
+    // every file living inside a subdirectory.
+    const picked = await pickFromDataTransfer(e.dataTransfer);
+    await onPicked(picked);
   }
 
   async function onDescriptionFile(file: File) {
@@ -220,13 +586,16 @@ export function UploadPage() {
                 Drop a component file or folder
               </div>
               <div style={{ color: "var(--text-3)", marginTop: 4, fontSize: 13 }}>
-                .tsx / .jsx / .ts / .js — we'll extract every testid-anchored element.
+                Any text-based source — components, templates, configs.
+                Refine the bundle with the Exclude patterns field below.
               </div>
             </div>
             <input
               ref={fileInputRef}
               type="file"
-              accept=".tsx,.jsx,.ts,.js,.txt"
+              // No accept filter — we accept any text-decodable file. The
+              // OS file picker stays open to everything; the BINARY_EXT
+              // denylist + the user's Exclude patterns are the real filter.
               style={{ display: "none" }}
               onChange={(e) => {
                 onFiles(e.target.files);
@@ -268,15 +637,166 @@ export function UploadPage() {
             <div
               style={{
                 display: "flex",
-                gap: 8,
-                flexWrap: "wrap",
-                justifyContent: "center",
+                flexDirection: "column",
+                gap: 6,
+                alignItems: "center",
               }}
             >
               {fileName && (
                 <Pill tone="orange" icon={Icon.file(10)}>
                   {fileName}
                 </Pill>
+              )}
+              {/* Inline counts so the user can tell at a glance how many
+                  files survived eligibility, the exclude patterns, and the
+                  size cap — and adjust patterns iteratively without
+                  re-dropping. The expandable lists below let the user
+                  verify exactly which files were dropped, so a missing
+                  file no longer requires guessing. */}
+              {bundleInfo && (
+                <div
+                  style={{
+                    fontFamily: "var(--f-mono)",
+                    fontSize: 10.5,
+                    color: bundleInfo.allExcluded ? "var(--err, #e07a5f)" : "var(--text-4)",
+                    textAlign: "center",
+                    width: "100%",
+                  }}
+                >
+                  {/* Headline: total files the user dropped, so it's
+                      obvious whether all of them were even picked up. */}
+                  <div style={{ marginBottom: 4 }}>
+                    {bundleInfo.totalPicked.toLocaleString()} file
+                    {bundleInfo.totalPicked === 1 ? "" : "s"} found in selection
+                  </div>
+                  {/* Breakdown grid — every number the user could plausibly
+                      want to verify. Coloured so a non-zero "excluded by
+                      patterns" / "skipped (size cap)" stands out. */}
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr auto",
+                      gap: "2px 14px",
+                      maxWidth: 320,
+                      margin: "0 auto",
+                      textAlign: "left",
+                    }}
+                  >
+                    <div style={{ color: "var(--text-3)" }}>Included in bundle</div>
+                    <div
+                      style={{
+                        color: bundleInfo.included > 0 ? "var(--ok, #66c98d)" : "var(--text-4)",
+                        textAlign: "right",
+                      }}
+                    >
+                      {bundleInfo.included.toLocaleString()}
+                    </div>
+
+                    <div style={{ color: "var(--text-3)" }}>Excluded by patterns</div>
+                    <div
+                      style={{
+                        color: bundleInfo.excluded > 0 ? "var(--orange-200)" : "var(--text-4)",
+                        textAlign: "right",
+                      }}
+                    >
+                      {bundleInfo.excluded.toLocaleString()}
+                    </div>
+
+                    <div style={{ color: "var(--text-3)" }}>Skipped (size cap)</div>
+                    <div
+                      style={{
+                        color: bundleInfo.skipped > 0 ? "var(--err, #e07a5f)" : "var(--text-4)",
+                        textAlign: "right",
+                      }}
+                    >
+                      {bundleInfo.skipped.toLocaleString()}
+                    </div>
+
+                    {bundleInfo.binary > 0 && (
+                      <>
+                        <div style={{ color: "var(--text-3)" }}>Binary (images / fonts / …)</div>
+                        <div style={{ color: "var(--text-4)", textAlign: "right" }}>
+                          {bundleInfo.binary.toLocaleString()}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  {bundleInfo.allExcluded && (
+                    <div style={{ marginTop: 6, color: "var(--err, #e07a5f)" }}>
+                      All {bundleInfo.totalEligible} eligible files were excluded by your patterns.
+                    </div>
+                  )}
+                  {(bundleInfo.skippedPaths.length > 0 || bundleInfo.excludedPaths.length > 0) && (
+                    <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4, textAlign: "left" }}>
+                      {bundleInfo.skippedPaths.length > 0 && (
+                        <details>
+                          <summary
+                            style={{
+                              cursor: "pointer",
+                              color: "var(--orange-200)",
+                              fontSize: 10.5,
+                            }}
+                          >
+                            Show {bundleInfo.skippedPaths.length} skipped (size cap) ▾
+                          </summary>
+                          <div
+                            style={{
+                              marginTop: 4,
+                              padding: "6px 8px",
+                              background: "var(--glass-1)",
+                              border: "1px solid var(--glass-stroke)",
+                              borderRadius: 6,
+                              maxHeight: 160,
+                              overflow: "auto",
+                              fontSize: 10.5,
+                              lineHeight: 1.45,
+                              color: "var(--text-3)",
+                            }}
+                          >
+                            {bundleInfo.skippedPaths.map((p) => (
+                              <div key={p} style={{ wordBreak: "break-all" }}>{p}</div>
+                            ))}
+                            <div style={{ marginTop: 6, color: "var(--text-4)", fontStyle: "italic" }}>
+                              Bundle limit is {MAX_BUNDLE_CHARS.toLocaleString()} chars.
+                              Narrow the folder, or tighten Exclude patterns, to free room for these files.
+                            </div>
+                          </div>
+                        </details>
+                      )}
+                      {bundleInfo.excludedPaths.length > 0 && (
+                        <details>
+                          <summary
+                            style={{
+                              cursor: "pointer",
+                              color: "var(--text-3)",
+                              fontSize: 10.5,
+                            }}
+                          >
+                            Show {bundleInfo.excludedPaths.length} excluded by patterns ▾
+                          </summary>
+                          <div
+                            style={{
+                              marginTop: 4,
+                              padding: "6px 8px",
+                              background: "var(--glass-1)",
+                              border: "1px solid var(--glass-stroke)",
+                              borderRadius: 6,
+                              maxHeight: 160,
+                              overflow: "auto",
+                              fontSize: 10.5,
+                              lineHeight: 1.45,
+                              color: "var(--text-3)",
+                            }}
+                          >
+                            {bundleInfo.excludedPaths.map((p) => (
+                              <div key={p} style={{ wordBreak: "break-all" }}>{p}</div>
+                            ))}
+                          </div>
+                        </details>
+                      )}
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -329,6 +849,57 @@ export function UploadPage() {
                   outline: "none",
                 }}
               />
+            </div>
+
+            {/* ── Exclude patterns — folder/multi-file uploads only ── */}
+            {/* Hidden when a single file was picked: excludes don't apply
+                there (the user explicitly chose that one file). The field
+                stays mounted so the value the user typed survives across
+                pick events. */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <label
+                style={{
+                  fontFamily: "var(--f-mono)",
+                  fontSize: 10.5,
+                  letterSpacing: "0.06em",
+                  color: "var(--text-3)",
+                  textTransform: "uppercase",
+                }}
+              >
+                Exclude patterns
+              </label>
+              <input
+                type="text"
+                value={excludePatterns}
+                onChange={(e) => setExcludePatterns(e.target.value)}
+                placeholder="e.g. *.spec.ts, *.test.tsx, fixtures/"
+                spellCheck={false}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  background: "var(--glass-1)",
+                  border: "1px solid var(--glass-stroke-2)",
+                  borderRadius: 8,
+                  color: "var(--text-1)",
+                  fontFamily: "var(--f-mono)",
+                  fontSize: 12,
+                  outline: "none",
+                }}
+              />
+              <div
+                style={{
+                  fontFamily: "var(--f-sans)",
+                  fontSize: 11,
+                  color: "var(--text-4)",
+                  lineHeight: 1.5,
+                }}
+              >
+                Glob patterns, comma- or newline-separated. <code style={{ fontFamily: "var(--f-mono)" }}>*</code>{" "}
+                matches any chars, <code style={{ fontFamily: "var(--f-mono)" }}>?</code> matches one.
+                Patterns without a <code style={{ fontFamily: "var(--f-mono)" }}>/</code> match the file name;
+                patterns containing <code style={{ fontFamily: "var(--f-mono)" }}>/</code> match the full path.
+                Only applies to folder / multi-file uploads.
+              </div>
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
