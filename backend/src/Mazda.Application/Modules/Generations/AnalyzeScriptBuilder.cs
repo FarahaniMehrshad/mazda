@@ -17,12 +17,31 @@ public static class AnalyzeScriptBuilder
     public const string StartMarker = "__MAZDA_STATE__";
     public const string EndMarker = "__MAZDA_STATE_END__";
 
-    public static string Build(Signature signature, Generation generation)
+    public static string Build(Signature signature, Generation generation, IReadOnlyList<Signature>? dependencies = null)
     {
-        var informational = signature.Elements
-            .Where(e => e.Category == ElementCategory.Informational)
-            .OrderBy(e => e.Order)
-            .ToList();
+        // Walk the root + every dependency. Informational elements get
+        // captured from the full union so dep components' read-targets
+        // (status pills, list rows, etc.) make it into the state JSON.
+        // Selector duplicates across signatures are collapsed (root wins —
+        // it's iterated first), since the analyze script would otherwise
+        // run the same locator twice.
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var informational = new List<SignatureElement>();
+        foreach (var e in signature.Elements.Where(x => x.Category == ElementCategory.Informational).OrderBy(x => x.Order))
+        {
+            if (seen.Add(e.ElementSelector)) informational.Add(e);
+        }
+        if (dependencies is not null)
+        {
+            foreach (var dep in dependencies)
+            {
+                if (dep.Id == signature.Id) continue;
+                foreach (var e in dep.Elements.Where(x => x.Category == ElementCategory.Informational).OrderBy(x => x.Order))
+                {
+                    if (seen.Add(e.ElementSelector)) informational.Add(e);
+                }
+            }
+        }
 
         // Setup script is prepended verbatim — it defines `test` (typically via
         // base.extend) and produces the `page` fixture. Falls back to a minimal

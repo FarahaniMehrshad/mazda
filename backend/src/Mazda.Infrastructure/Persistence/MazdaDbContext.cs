@@ -13,6 +13,7 @@ public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContex
     public DbSet<User> Users => Set<User>();
     public DbSet<Signature> Signatures => Set<Signature>();
     public DbSet<SignatureElement> SignatureElements => Set<SignatureElement>();
+    public DbSet<SignatureDependency> SignatureDependencies => Set<SignatureDependency>();
     public DbSet<Generation> Generations => Set<Generation>();
     public DbSet<McpTool> McpTools => Set<McpTool>();
 
@@ -21,6 +22,7 @@ public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContex
         mb.ApplyConfiguration(new UserConfig());
         mb.ApplyConfiguration(new SignatureConfig());
         mb.ApplyConfiguration(new SignatureElementConfig());
+        mb.ApplyConfiguration(new SignatureDependencyConfig());
         mb.ApplyConfiguration(new GenerationConfig());
         mb.ApplyConfiguration(new McpToolConfig());
     }
@@ -69,6 +71,35 @@ internal class SignatureConfig : IEntityTypeConfiguration<Signature>
          .HasForeignKey(e => e.SignatureId).OnDelete(DeleteBehavior.Cascade);
         b.Metadata.FindNavigation(nameof(Signature.Elements))!
          .SetPropertyAccessMode(PropertyAccessMode.Field);
+        // Dependencies (signature → signatures it depends on). The cascade is
+        // on the signature->dependency edge: if THIS signature is deleted, the
+        // join rows go too. The reverse edge (dep target deleted) is handled
+        // by a separate FK without a navigation; see SignatureDependencyConfig.
+        b.HasMany(x => x.Dependencies).WithOne()
+         .HasForeignKey(d => d.SignatureId).OnDelete(DeleteBehavior.Cascade);
+        b.Metadata.FindNavigation(nameof(Signature.Dependencies))!
+         .SetPropertyAccessMode(PropertyAccessMode.Field);
+    }
+}
+
+internal class SignatureDependencyConfig : IEntityTypeConfiguration<SignatureDependency>
+{
+    public void Configure(EntityTypeBuilder<SignatureDependency> b)
+    {
+        b.ToTable("signature_dependencies");
+        // Composite PK — a signature can appear once per (target) dependency.
+        b.HasKey(x => new { x.SignatureId, x.DependsOnSignatureId });
+        b.Property(x => x.SignatureId).HasColumnName("signature_id");
+        b.Property(x => x.DependsOnSignatureId).HasColumnName("depends_on_signature_id");
+        // FK to the TARGET signature, so when the dep target is deleted these
+        // rows are cleaned up too. The dependency-OWNER side is configured on
+        // SignatureConfig (HasMany Dependencies WithOne) — we leave THAT FK
+        // implicit here (no .HasOne to Signatures on the owner side) so EF
+        // doesn't double-register the relationship.
+        b.HasOne<Signature>().WithMany()
+         .HasForeignKey(d => d.DependsOnSignatureId)
+         .OnDelete(DeleteBehavior.Cascade);
+        b.HasIndex(x => x.DependsOnSignatureId);
     }
 }
 

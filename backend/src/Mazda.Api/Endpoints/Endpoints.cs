@@ -68,6 +68,21 @@ public static class Endpoints
         sigs.MapPut("/{id:guid}/flows", async (Guid id, [FromBody] FlowsBody body, ISender s) =>
             (await s.Send(new UpdateUserFlowsCommand(id, body.FlowsJson))).ToHttp());
 
+        // ── Dependencies — signature → signature(s) it embeds / uses ──
+        // The generation pipeline merges every transitive dep's elements into
+        // the LLM context, so a test author can reference behaviour of an
+        // embedded component without re-declaring its selectors. List returns
+        // direct deps only; the resolver expands the transitive closure at
+        // generation time.
+        sigs.MapGet("/{id:guid}/dependencies", async (Guid id, ISender s) =>
+            (await s.Send(new ListSignatureDependenciesQuery(id))).ToHttp());
+
+        sigs.MapPost("/{id:guid}/dependencies", async (Guid id, [FromBody] AddDependencyBody body, ISender s) =>
+            (await s.Send(new AddSignatureDependencyCommand(id, body.DependsOnId))).ToHttp());
+
+        sigs.MapDelete("/{id:guid}/dependencies/{depId:guid}", async (Guid id, Guid depId, ISender s) =>
+            (await s.Send(new RemoveSignatureDependencyCommand(id, depId))).ToHttp());
+
         // ── Generations (auth) ────────────────────────────────────
         var gens = app.MapGroup("/api/generations").RequireAuthorization().WithTags("Generations");
 
@@ -166,4 +181,5 @@ public static class Endpoints
     public record ScriptBody(string Script);
     public record GenerateFlowsBody(string? CypressSource);
     public record FlowsBody(string FlowsJson);
+    public record AddDependencyBody(Guid DependsOnId);
 }

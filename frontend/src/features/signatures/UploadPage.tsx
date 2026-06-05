@@ -551,8 +551,15 @@ export function UploadPage() {
             onDragLeave={() => setDragging(false)}
             onDrop={onDrop}
             style={{
-              flex: "1 1 auto",
-              padding: 28,
+              // 0 0 auto so the dropzone NEVER shrinks when the column has
+              // other content (bundle-info panel + Details panel). Previously
+              // `flex: "1 1 auto"` plus `minHeight: 240` made the dropzone
+              // collapse to ~240px after a successful drop, which read as
+              // "the icon shrank" even though the icon itself is fixed-size.
+              // Now the dropzone keeps its full visual weight; if the column
+              // runs out of room the parent's `overflow: auto` scrolls.
+              flex: "0 0 auto",
+              padding: 40,
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
@@ -563,7 +570,7 @@ export function UploadPage() {
                 : "1px dashed var(--glass-stroke-2)",
               transition: "border-color 160ms ease, background 160ms ease",
               background: dragging ? "rgba(194,65,12,0.06)" : "var(--glass-2)",
-              minHeight: 240,
+              minHeight: 380,
             }}
           >
             <div
@@ -647,159 +654,121 @@ export function UploadPage() {
                   {fileName}
                 </Pill>
               )}
-              {/* Inline counts so the user can tell at a glance how many
-                  files survived eligibility, the exclude patterns, and the
-                  size cap — and adjust patterns iteratively without
-                  re-dropping. The expandable lists below let the user
-                  verify exactly which files were dropped, so a missing
-                  file no longer requires guessing. */}
-              {bundleInfo && (
+            </div>
+          </div>
+
+          {/* ── Bundle breakdown — counts + expandable path lists ── */}
+          {/* Lives OUTSIDE the dropzone so expanding the skipped / excluded
+              path lists doesn't stretch the dropzone's dashed border. The
+              previous layout nested this inside the dropzone, which made
+              clicking "Show N excluded" balloon the drop-target area into
+              a sprawling info panel. */}
+          {bundleInfo && (
+            <div
+              className="mz-glass"
+              style={{
+                flex: "0 0 auto",
+                padding: 16,
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+                fontFamily: "var(--f-mono)",
+                fontSize: 11,
+                color: bundleInfo.allExcluded ? "var(--err, #e07a5f)" : "var(--text-3)",
+                minWidth: 0,
+              }}
+            >
+              {/* Headline. */}
+              <div style={{ textAlign: "center" }}>
+                {bundleInfo.totalPicked.toLocaleString()} file
+                {bundleInfo.totalPicked === 1 ? "" : "s"} found in selection
+              </div>
+
+              {/* Breakdown grid. Coloured so non-zero "excluded by patterns" /
+                  "skipped (size cap)" stand out. */}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr auto",
+                  gap: "2px 14px",
+                  maxWidth: 360,
+                  margin: "0 auto",
+                  textAlign: "left",
+                  width: "100%",
+                }}
+              >
+                <div style={{ color: "var(--text-3)" }}>Included in bundle</div>
                 <div
                   style={{
-                    fontFamily: "var(--f-mono)",
-                    fontSize: 10.5,
-                    color: bundleInfo.allExcluded ? "var(--err, #e07a5f)" : "var(--text-4)",
-                    textAlign: "center",
-                    width: "100%",
+                    color: bundleInfo.included > 0 ? "var(--ok, #66c98d)" : "var(--text-4)",
+                    textAlign: "right",
                   }}
                 >
-                  {/* Headline: total files the user dropped, so it's
-                      obvious whether all of them were even picked up. */}
-                  <div style={{ marginBottom: 4 }}>
-                    {bundleInfo.totalPicked.toLocaleString()} file
-                    {bundleInfo.totalPicked === 1 ? "" : "s"} found in selection
-                  </div>
-                  {/* Breakdown grid — every number the user could plausibly
-                      want to verify. Coloured so a non-zero "excluded by
-                      patterns" / "skipped (size cap)" stands out. */}
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "1fr auto",
-                      gap: "2px 14px",
-                      maxWidth: 320,
-                      margin: "0 auto",
-                      textAlign: "left",
-                    }}
-                  >
-                    <div style={{ color: "var(--text-3)" }}>Included in bundle</div>
-                    <div
-                      style={{
-                        color: bundleInfo.included > 0 ? "var(--ok, #66c98d)" : "var(--text-4)",
-                        textAlign: "right",
-                      }}
-                    >
-                      {bundleInfo.included.toLocaleString()}
-                    </div>
+                  {bundleInfo.included.toLocaleString()}
+                </div>
 
-                    <div style={{ color: "var(--text-3)" }}>Excluded by patterns</div>
-                    <div
-                      style={{
-                        color: bundleInfo.excluded > 0 ? "var(--orange-200)" : "var(--text-4)",
-                        textAlign: "right",
-                      }}
-                    >
-                      {bundleInfo.excluded.toLocaleString()}
-                    </div>
+                <div style={{ color: "var(--text-3)" }}>Excluded by patterns</div>
+                <div
+                  style={{
+                    color: bundleInfo.excluded > 0 ? "var(--orange-200)" : "var(--text-4)",
+                    textAlign: "right",
+                  }}
+                >
+                  {bundleInfo.excluded.toLocaleString()}
+                </div>
 
-                    <div style={{ color: "var(--text-3)" }}>Skipped (size cap)</div>
-                    <div
-                      style={{
-                        color: bundleInfo.skipped > 0 ? "var(--err, #e07a5f)" : "var(--text-4)",
-                        textAlign: "right",
-                      }}
-                    >
-                      {bundleInfo.skipped.toLocaleString()}
-                    </div>
+                <div style={{ color: "var(--text-3)" }}>Skipped (size cap)</div>
+                <div
+                  style={{
+                    color: bundleInfo.skipped > 0 ? "var(--err, #e07a5f)" : "var(--text-4)",
+                    textAlign: "right",
+                  }}
+                >
+                  {bundleInfo.skipped.toLocaleString()}
+                </div>
 
-                    {bundleInfo.binary > 0 && (
-                      <>
-                        <div style={{ color: "var(--text-3)" }}>Binary (images / fonts / …)</div>
-                        <div style={{ color: "var(--text-4)", textAlign: "right" }}>
-                          {bundleInfo.binary.toLocaleString()}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                  {bundleInfo.allExcluded && (
-                    <div style={{ marginTop: 6, color: "var(--err, #e07a5f)" }}>
-                      All {bundleInfo.totalEligible} eligible files were excluded by your patterns.
+                {bundleInfo.binary > 0 && (
+                  <>
+                    <div style={{ color: "var(--text-3)" }}>Binary (images / fonts / …)</div>
+                    <div style={{ color: "var(--text-4)", textAlign: "right" }}>
+                      {bundleInfo.binary.toLocaleString()}
                     </div>
+                  </>
+                )}
+              </div>
+
+              {bundleInfo.allExcluded && (
+                <div style={{ textAlign: "center", color: "var(--err, #e07a5f)" }}>
+                  All {bundleInfo.totalEligible} eligible files were excluded by your patterns.
+                </div>
+              )}
+
+              {(bundleInfo.skippedPaths.length > 0 || bundleInfo.excludedPaths.length > 0) && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, textAlign: "left", minWidth: 0 }}>
+                  {bundleInfo.skippedPaths.length > 0 && (
+                    <PathListDetails
+                      label={`Show ${bundleInfo.skippedPaths.length} skipped (size cap)`}
+                      paths={bundleInfo.skippedPaths}
+                      summaryColor="var(--orange-200)"
+                      footer={
+                        <>
+                          Bundle limit is {MAX_BUNDLE_CHARS.toLocaleString()} chars.
+                          Narrow the folder, or tighten Exclude patterns, to free room for these files.
+                        </>
+                      }
+                    />
                   )}
-                  {(bundleInfo.skippedPaths.length > 0 || bundleInfo.excludedPaths.length > 0) && (
-                    <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4, textAlign: "left" }}>
-                      {bundleInfo.skippedPaths.length > 0 && (
-                        <details>
-                          <summary
-                            style={{
-                              cursor: "pointer",
-                              color: "var(--orange-200)",
-                              fontSize: 10.5,
-                            }}
-                          >
-                            Show {bundleInfo.skippedPaths.length} skipped (size cap) ▾
-                          </summary>
-                          <div
-                            style={{
-                              marginTop: 4,
-                              padding: "6px 8px",
-                              background: "var(--glass-1)",
-                              border: "1px solid var(--glass-stroke)",
-                              borderRadius: 6,
-                              maxHeight: 160,
-                              overflow: "auto",
-                              fontSize: 10.5,
-                              lineHeight: 1.45,
-                              color: "var(--text-3)",
-                            }}
-                          >
-                            {bundleInfo.skippedPaths.map((p) => (
-                              <div key={p} style={{ wordBreak: "break-all" }}>{p}</div>
-                            ))}
-                            <div style={{ marginTop: 6, color: "var(--text-4)", fontStyle: "italic" }}>
-                              Bundle limit is {MAX_BUNDLE_CHARS.toLocaleString()} chars.
-                              Narrow the folder, or tighten Exclude patterns, to free room for these files.
-                            </div>
-                          </div>
-                        </details>
-                      )}
-                      {bundleInfo.excludedPaths.length > 0 && (
-                        <details>
-                          <summary
-                            style={{
-                              cursor: "pointer",
-                              color: "var(--text-3)",
-                              fontSize: 10.5,
-                            }}
-                          >
-                            Show {bundleInfo.excludedPaths.length} excluded by patterns ▾
-                          </summary>
-                          <div
-                            style={{
-                              marginTop: 4,
-                              padding: "6px 8px",
-                              background: "var(--glass-1)",
-                              border: "1px solid var(--glass-stroke)",
-                              borderRadius: 6,
-                              maxHeight: 160,
-                              overflow: "auto",
-                              fontSize: 10.5,
-                              lineHeight: 1.45,
-                              color: "var(--text-3)",
-                            }}
-                          >
-                            {bundleInfo.excludedPaths.map((p) => (
-                              <div key={p} style={{ wordBreak: "break-all" }}>{p}</div>
-                            ))}
-                          </div>
-                        </details>
-                      )}
-                    </div>
+                  {bundleInfo.excludedPaths.length > 0 && (
+                    <PathListDetails
+                      label={`Show ${bundleInfo.excludedPaths.length} excluded by patterns`}
+                      paths={bundleInfo.excludedPaths}
+                      summaryColor="var(--text-3)"
+                    />
                   )}
                 </div>
               )}
             </div>
-          </div>
+          )}
 
           {/* ── Details — optional custom name + description ── */}
           {/* Both fields are optional. When the user leaves Name empty, the
@@ -1013,5 +982,66 @@ export function UploadPage() {
         </div>
       </div>
     </ScreenShell>
+  );
+}
+
+/**
+ * Collapsible path list. Native <details>/<summary> so we don't have to
+ * track open state ourselves. The inner panel caps its height and scrolls
+ * internally — without that cap a long list (200+ paths) would push the
+ * entire layout. Paths use `overflowWrap: anywhere` instead of
+ * `wordBreak: break-all` so long Angular-style nested paths wrap at any
+ * point but the breaks are visually softer.
+ */
+function PathListDetails({
+  label,
+  paths,
+  summaryColor,
+  footer,
+}: {
+  label: string;
+  paths: string[];
+  summaryColor: string;
+  footer?: React.ReactNode;
+}) {
+  return (
+    <details style={{ minWidth: 0 }}>
+      <summary
+        style={{
+          cursor: "pointer",
+          color: summaryColor,
+          fontSize: 10.5,
+          fontFamily: "var(--f-mono)",
+          letterSpacing: "0.04em",
+        }}
+      >
+        {label} ▾
+      </summary>
+      <div
+        className="mz-scroll"
+        style={{
+          marginTop: 4,
+          padding: "6px 8px",
+          background: "var(--glass-1)",
+          border: "1px solid var(--glass-stroke)",
+          borderRadius: 6,
+          maxHeight: 140,
+          overflow: "auto",
+          fontSize: 10.5,
+          lineHeight: 1.45,
+          color: "var(--text-3)",
+          minWidth: 0,
+        }}
+      >
+        {paths.map((p) => (
+          <div key={p} style={{ overflowWrap: "anywhere" }}>{p}</div>
+        ))}
+        {footer && (
+          <div style={{ marginTop: 6, color: "var(--text-4)", fontStyle: "italic", overflowWrap: "anywhere" }}>
+            {footer}
+          </div>
+        )}
+      </div>
+    </details>
   );
 }

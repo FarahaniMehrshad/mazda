@@ -44,6 +44,19 @@ public class Signature : Entity
     private readonly List<SignatureElement> _elements = new();
     public IReadOnlyList<SignatureElement> Elements => _elements;
 
+    /// <summary>
+    /// IDs of signatures THIS signature depends on. When a generation pipeline
+    /// runs against this signature, the elements + descriptions of every
+    /// transitive dependency are merged into the LLM context — see
+    /// <c>IEffectiveSignatureResolver</c>. Stored as ID-only (not full
+    /// navigation properties) because dependency rows are tiny lookup joins;
+    /// the resolver does its own follow-up load.
+    /// </summary>
+    private readonly List<SignatureDependency> _dependencies = new();
+    public IReadOnlyList<SignatureDependency> Dependencies => _dependencies;
+    public IReadOnlyList<Guid> DependencyIds =>
+        _dependencies.Select(d => d.DependsOnSignatureId).ToList();
+
     private Signature() { }
 
     public static Signature Create(Guid ownerId, string name, string? source, string? type, string? humanDescription = null)
@@ -112,6 +125,54 @@ public class Signature : Entity
     {
         _elements.Add(element);
         Touch();
+    }
+
+    /// <summary>
+    /// Declare that this signature depends on another. Idempotent — adding a
+    /// dependency that's already declared is a no-op. Cycle detection is
+    /// performed at the application layer because the domain doesn't have
+    /// access to the transitive dependency graph of the OTHER signature.
+    /// </summary>
+    public void AddDependency(Guid dependsOnSignatureId)
+    {
+        if (dependsOnSignatureId == Id)
+            throw new InvalidOperationException("A signature cannot depend on itself.");
+        if (dependsOnSignatureId == Guid.Empty)
+            throw new ArgumentException("dependsOnSignatureId required.", nameof(dependsOnSignatureId));
+        if (_dependencies.Any(d => d.DependsOnSignatureId == dependsOnSignatureId)) return;
+        _dependencies.Add(new SignatureDependency(Id, dependsOnSignatureId));
+        // Adding/removing a dep changes the effective signature for every
+        // future generation — same invalidation story as element edits.
+        InvalidateDerivedCaches();
+    }
+
+    public void RemoveDependency(Guid dependsOnSignatureId)
+    {
+        var existing = _dependencies.FirstOrDefault(d => d.DependsOnSignatureId == dependsOnSignatureId);
+        if (existing is null) return;
+        _dependencies.Remove(existing);
+        InvalidateDerivedCaches();
+    }
+}
+
+/// <summary>
+/// Join row: signature S depends on signature D. Composite key
+/// (SignatureId, DependsOnSignatureId). Cascade-deleted when either side
+/// is removed.
+/// </summary>
+public class SignatureDependency
+{
+    public Guid SignatureId { get; private set; }
+    public Guid DependsOnSignatureId { get; private set; }
+
+    private SignatureDependency() { }
+
+    public SignatureDependency(Guid signatureId, Guid dependsOnSignatureId)
+    {
+        if (signatureId == Guid.Empty) throw new ArgumentException("signatureId required.", nameof(signatureId));
+        if (dependsOnSignatureId == Guid.Empty) throw new ArgumentException("dependsOnSignatureId required.", nameof(dependsOnSignatureId));
+        SignatureId = signatureId;
+        DependsOnSignatureId = dependsOnSignatureId;
     }
 }
 

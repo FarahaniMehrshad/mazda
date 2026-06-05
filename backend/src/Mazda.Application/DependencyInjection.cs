@@ -2,6 +2,8 @@ using FluentValidation;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using System.Reflection;
+using Mazda.Application.Common.Abstractions;
+using Mazda.Application.Common.Services;
 
 namespace Mazda.Application;
 
@@ -13,6 +15,10 @@ public static class DependencyInjection
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(asm));
         services.AddValidatorsFromAssembly(asm);
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
+        // Effective-signature resolver — loads root + transitive deps, BFS
+        // by level, used by generation use cases to merge dep elements into
+        // the LLM context.
+        services.AddScoped<IEffectiveSignatureResolver, EffectiveSignatureResolver>();
         return services;
     }
 }

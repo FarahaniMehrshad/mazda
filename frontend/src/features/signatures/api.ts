@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/shared/api/client";
-import type { SignatureDto, SignatureElementDto } from "@/shared/api/types";
+import type { SignatureDto, SignatureElementDto, SignatureDependencyDto } from "@/shared/api/types";
 
 export interface SaveSignatureInput {
   id?: string;
@@ -26,6 +26,13 @@ export const signatureApi = {
     api.post<SignatureDto>(`/api/signatures/${id}/analyze-informational`, {}),
   reanalyzeInteractive: (id: string) =>
     api.post<SignatureDto>(`/api/signatures/${id}/reanalyze-interactive`, {}),
+  // ── Dependencies ──
+  listDependencies: (id: string) =>
+    api.get<SignatureDependencyDto[]>(`/api/signatures/${id}/dependencies`),
+  addDependency: (id: string, dependsOnId: string) =>
+    api.post<SignatureDependencyDto[]>(`/api/signatures/${id}/dependencies`, { dependsOnId }),
+  removeDependency: (id: string, depId: string) =>
+    api.del<SignatureDependencyDto[]>(`/api/signatures/${id}/dependencies/${depId}`),
 };
 
 export function useSignatures() {
@@ -114,6 +121,43 @@ export function useReanalyzeInteractive() {
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["signatures"] });
       qc.setQueryData(["signature", data.id], data);
+    },
+  });
+}
+
+// ── Dependencies ──────────────────────────────────────────────────
+
+export function useSignatureDependencies(id: string | undefined) {
+  return useQuery({
+    queryKey: ["signature-dependencies", id],
+    queryFn: () => signatureApi.listDependencies(id!),
+    enabled: !!id,
+  });
+}
+
+export function useAddSignatureDependency(signatureId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (dependsOnId: string) => signatureApi.addDependency(signatureId!, dependsOnId),
+    onSuccess: (data) => {
+      qc.setQueryData(["signature-dependencies", signatureId], data);
+      // Adding a dep invalidates derived caches on the signature — refetch so
+      // the Last-* indicators (which the editor surfaces indirectly via the
+      // run pre-fills) come back fresh.
+      qc.invalidateQueries({ queryKey: ["signature", signatureId] });
+      qc.invalidateQueries({ queryKey: ["signatures"] });
+    },
+  });
+}
+
+export function useRemoveSignatureDependency(signatureId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (depId: string) => signatureApi.removeDependency(signatureId!, depId),
+    onSuccess: (data) => {
+      qc.setQueryData(["signature-dependencies", signatureId], data);
+      qc.invalidateQueries({ queryKey: ["signature", signatureId] });
+      qc.invalidateQueries({ queryKey: ["signatures"] });
     },
   });
 }

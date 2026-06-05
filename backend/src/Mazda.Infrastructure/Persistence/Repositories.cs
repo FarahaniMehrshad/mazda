@@ -24,14 +24,26 @@ public class SignatureRepository(MazdaDbContext db) : ISignatureRepository
     public Task<Signature?> FindByIdAsync(Guid id, Guid ownerId, CancellationToken ct = default)
         => db.Signatures
             .Include(s => s.Elements)
+            .Include(s => s.Dependencies)
             .FirstOrDefaultAsync(s => s.Id == id && s.OwnerId == ownerId, ct);
 
     public async Task<IReadOnlyList<Signature>> ListAsync(Guid ownerId, CancellationToken ct = default)
         => await db.Signatures
             .Include(s => s.Elements)
+            .Include(s => s.Dependencies)
             .Where(s => s.OwnerId == ownerId)
             .OrderByDescending(s => s.UpdatedAt)
             .ToListAsync(ct);
+
+    public async Task<IReadOnlyList<Signature>> FindManyByIdsAsync(IReadOnlyCollection<Guid> ids, Guid ownerId, CancellationToken ct = default)
+    {
+        if (ids.Count == 0) return Array.Empty<Signature>();
+        return await db.Signatures
+            .Include(s => s.Elements)
+            .Include(s => s.Dependencies)
+            .Where(s => s.OwnerId == ownerId && ids.Contains(s.Id))
+            .ToListAsync(ct);
+    }
 
     public async Task AddAsync(Signature signature, CancellationToken ct = default)
         => await db.Signatures.AddAsync(signature, ct);

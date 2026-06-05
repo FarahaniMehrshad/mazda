@@ -1375,14 +1375,14 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
           with `npx playwright test`.
         """;
 
-    public Task<ScriptGenerationResult> GenerateSetupAsync(Signature signature, string setupPrompt, CancellationToken ct = default)
+    public Task<ScriptGenerationResult> GenerateSetupAsync(Signature signature, string setupPrompt, IReadOnlyList<Signature>? dependencies = null, CancellationToken ct = default)
     {
-        var userMsg = BuildSignatureContext(signature) +
+        var userMsg = BuildSignatureContext(signature, dependencies) +
             $"\n\nSetup prompt:\n{setupPrompt}";
         return Call(opts => opts.GeneratorModel, SetupSystemPrompt, userMsg, ct);
     }
 
-    public Task<ScriptGenerationResult> GenerateTestAsync(Signature signature, string testPrompt, string? setupScript, string? stateJson = null, CancellationToken ct = default)
+    public Task<ScriptGenerationResult> GenerateTestAsync(Signature signature, string testPrompt, string? setupScript, string? stateJson = null, IReadOnlyList<Signature>? dependencies = null, CancellationToken ct = default)
     {
         var flowsBlock = string.IsNullOrWhiteSpace(signature.UserFlowsJson)
             ? string.Empty
@@ -1393,7 +1393,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         var stateBlock = string.IsNullOrWhiteSpace(stateJson)
             ? string.Empty
             : $"\n\nCurrent component state (captured live before this run; semantic JSON built from the informational signature elements):\n```json\n{stateJson}\n```";
-        var userMsg = BuildSignatureContext(signature) + flowsBlock + setupBlock + stateBlock +
+        var userMsg = BuildSignatureContext(signature, dependencies) + flowsBlock + setupBlock + stateBlock +
             $"\n\nTest prompt:\n{testPrompt}";
         return Call(opts => opts.GeneratorModel, TestSystemPrompt, userMsg, ct);
     }
@@ -1415,31 +1415,61 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
     }
 
     // ── helpers ──────────────────────────────────────────────────────
-    private static string BuildSignatureContext(Signature signature)
+    private static string BuildSignatureContext(Signature signature, IReadOnlyList<Signature>? dependencies = null)
     {
         var descriptionBlock = string.IsNullOrWhiteSpace(signature.HumanDescription)
             ? string.Empty
             : $"Human-written description of how the component works (use as context, do not echo back):\n\n{signature.HumanDescription}\n\n---\n\n";
 
-        var sigJson = JsonSerializer.Serialize(new
-        {
-            name = signature.Name,
-            version = signature.Version,
-            type = signature.Type,
-            elements = signature.Elements.OrderBy(e => e.Order).Select(e => new
-            {
-                elementSelector = e.ElementSelector,
-                elementCategory = e.Category.ToString().ToLowerInvariant(), // "interactive" | "informational"
-                elementType = e.ElementType,
-                elementDescription = e.ElementDescription,
-                // Optional structural / lifecycle / relational notes. Omitted from the
-                // serialisation when empty so the LLM sees fewer noisy keys.
-                elementLogic = string.IsNullOrWhiteSpace(e.ElementLogic) ? null : e.ElementLogic,
-            })
-        }, new JsonSerializerOptions { WriteIndented = true });
+        var sigJson = JsonSerializer.Serialize(BuildSignatureNode(signature),
+            new JsonSerializerOptions { WriteIndented = true });
 
-        return $"{descriptionBlock}Signature:\n{sigJson}";
+        // Dependency block: the root signature depends on these component
+        // signatures. The LLM sees them as labeled sub-blocks so it knows
+        // which elements belong to which component but can still use any
+        // selector in the union. Empty when there are no deps.
+        var depBlock = string.Empty;
+        if (dependencies is not null && dependencies.Count > 0)
+        {
+            // Filter out the root signature itself — the resolver emits root
+            // last, so callers may pass the full topo-ordered list. We render
+            // only the actual deps (everything except the root).
+            var depsOnly = dependencies.Where(d => d.Id != signature.Id).ToList();
+            if (depsOnly.Count > 0)
+            {
+                var depJson = JsonSerializer.Serialize(
+                    depsOnly.Select(BuildSignatureNode).ToList(),
+                    new JsonSerializerOptions { WriteIndented = true });
+                depBlock = $"\n\nComponent dependencies (the primary component above embeds / uses these. " +
+                           $"Their selectors are valid INSIDE the same page as the primary signature — you may " +
+                           $"target any of them when the test prompt references behavior of an embedded " +
+                           $"component):\n{depJson}";
+            }
+        }
+
+        return $"{descriptionBlock}Signature:\n{sigJson}{depBlock}";
     }
+
+    /// <summary>
+    /// One node in the signature JSON tree — used for both the root and every
+    /// dependency. Same shape on both sides so the LLM doesn't need to
+    /// switch reading strategies.
+    /// </summary>
+    private static object BuildSignatureNode(Signature s) => new
+    {
+        name = s.Name,
+        version = s.Version,
+        type = s.Type,
+        humanDescription = string.IsNullOrWhiteSpace(s.HumanDescription) ? null : s.HumanDescription,
+        elements = s.Elements.OrderBy(e => e.Order).Select(e => new
+        {
+            elementSelector = e.ElementSelector,
+            elementCategory = e.Category.ToString().ToLowerInvariant(), // "interactive" | "informational"
+            elementType = e.ElementType,
+            elementDescription = e.ElementDescription,
+            elementLogic = string.IsNullOrWhiteSpace(e.ElementLogic) ? null : e.ElementLogic,
+        })
+    };
 
     private async Task<ScriptGenerationResult> Call(Func<LlmOptions, string> modelPicker, string systemPrompt, string userMsg, CancellationToken ct)
     {

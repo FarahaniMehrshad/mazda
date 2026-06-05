@@ -25,6 +25,20 @@ export interface SignatureDto {
   nodeCount: number;
   updatedAt: string;
   elements: SignatureElementDto[];
+  /**
+   * IDs of OTHER signatures this one depends on. Generation pipelines union
+   * every transitive dep's elements into the LLM context, so a test author
+   * can reference behaviour of an embedded component without re-declaring
+   * its selectors. Empty when the signature stands alone.
+   */
+  dependencyIds: string[];
+}
+
+export interface SignatureDependencyDto {
+  id: string;
+  name: string;
+  type: string;
+  elementCount: number;
 }
 
 export interface UserFlowsGraph {

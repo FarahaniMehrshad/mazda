@@ -100,23 +100,51 @@ public class LlmStateBuilder(IOptions<LlmOptions> options) : IStateBuilder
           }
         """;
 
-    public async Task<StateBuildResult> BuildStateAsync(Signature signature, string rawExtractionJson, CancellationToken ct = default)
+    public async Task<StateBuildResult> BuildStateAsync(Signature signature, string rawExtractionJson, IReadOnlyList<Signature>? dependencies = null, CancellationToken ct = default)
     {
         var opts = options.Value;
         var chat = ChatClientFactory.ForModel(opts, opts.AnalyzerModel);
+
+        // Union of root + dependency informational elements. The analyze
+        // script captured every informational selector in the union, so the
+        // state builder needs to know about ALL of them to name fields. The
+        // raw extraction JSON keys ARE the selectors — we just need the
+        // descriptions / logic next to each. Deduplicated by selector
+        // (root's element wins on collision because we list it first).
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var allElements = new List<(SignatureElement E, string SourceName)>();
+        foreach (var e in signature.Elements.OrderBy(x => x.Order))
+        {
+            if (seen.Add(e.ElementSelector)) allElements.Add((e, signature.Name));
+        }
+        if (dependencies is not null)
+        {
+            foreach (var dep in dependencies)
+            {
+                if (dep.Id == signature.Id) continue;
+                foreach (var e in dep.Elements.OrderBy(x => x.Order))
+                {
+                    if (seen.Add(e.ElementSelector)) allElements.Add((e, dep.Name));
+                }
+            }
+        }
 
         var sigJson = JsonSerializer.Serialize(new
         {
             name = signature.Name,
             type = signature.Type,
             humanDescription = signature.HumanDescription,
-            elements = signature.Elements.OrderBy(e => e.Order).Select(e => new
+            elements = allElements.Select(t => new
             {
-                selector = e.ElementSelector,
-                category = e.Category.ToString().ToLowerInvariant(),
-                elementType = e.ElementType,
-                description = e.ElementDescription,
-                logic = string.IsNullOrWhiteSpace(e.ElementLogic) ? null : e.ElementLogic,
+                selector = t.E.ElementSelector,
+                category = t.E.Category.ToString().ToLowerInvariant(),
+                elementType = t.E.ElementType,
+                description = t.E.ElementDescription,
+                logic = string.IsNullOrWhiteSpace(t.E.ElementLogic) ? null : t.E.ElementLogic,
+                // Which component owns this element. Helps the state builder
+                // disambiguate when grouping fields ("connections" might come
+                // from the primary signature; "userMenu" from a dep).
+                fromComponent = t.SourceName,
             }),
         }, new JsonSerializerOptions { WriteIndented = true });
 

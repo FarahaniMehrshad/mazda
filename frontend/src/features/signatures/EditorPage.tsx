@@ -14,6 +14,7 @@ import { useSignature, useSaveSignature, useReanalyzeInteractive } from "./api";
 import type { SignatureElementDto } from "@/shared/api/types";
 import { ApiError } from "@/shared/api/client";
 import { useStepNavigator } from "@/shared/components/useStepNavigator";
+import { DependenciesPanel } from "./DependenciesPanel";
 
 interface DraftShape {
   name: string;
@@ -197,7 +198,7 @@ export function EditorPage() {
             )}
           </div>
 
-          {/* ── RIGHT — interactive elements preview only ── */}
+          {/* ── RIGHT — dependencies + interactive elements preview ── */}
           <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
             <div
               className="mz-scroll"
@@ -210,6 +211,11 @@ export function EditorPage() {
                 gap: 16,
               }}
             >
+              {/* Dependencies — declared first so users see the inherited
+                  surface area BEFORE the interactive list, mirroring how
+                  the LLM consumes them (dep elements listed alongside the
+                  primary signature in generation prompts). */}
+              <DependenciesPanel signatureId={signature.id} />
               <ElementSection
                 title={`Interactive · ${interactive.length}`}
                 elements={interactive}

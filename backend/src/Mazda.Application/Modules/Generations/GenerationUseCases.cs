@@ -105,6 +105,7 @@ public class GenerateSetupHandler(
     ISignatureRepository signatures,
     IGenerationRepository generations,
     IScriptGenerator generator,
+    IEffectiveSignatureResolver effective,
     ICurrentUser me,
     IUnitOfWork uow) : IRequestHandler<GenerateSetupCommand, Result<GenerationDto>>
 {
@@ -118,6 +119,13 @@ public class GenerateSetupHandler(
         var sig = await signatures.FindByIdAsync(gen.SignatureId, me.UserId.Value, ct);
         if (sig is null) return Result.Failure<GenerationDto>(Error.NotFound("Signature"));
 
+        // Resolve dependencies: every transitive component this signature
+        // depends on. Passed to the LLM so generated setup code knows about
+        // controls inside embedded components too. Null when the signature
+        // has no deps.
+        var effectiveSigs = await effective.ResolveAsync(sig.Id, me.UserId.Value, ct);
+        var deps = effectiveSigs?.Where(s => s.Id != sig.Id).ToList();
+
         gen.SetSetupPrompt(cmd.SetupPrompt);
         sig.SetLastSetupPrompt(cmd.SetupPrompt);
         gen.MarkGenerating();
@@ -125,7 +133,7 @@ public class GenerateSetupHandler(
 
         try
         {
-            var result = await generator.GenerateSetupAsync(sig, cmd.SetupPrompt, ct);
+            var result = await generator.GenerateSetupAsync(sig, cmd.SetupPrompt, deps, ct);
             gen.SetSetupScript(result.Script);
             sig.SetLastSetupScript(result.Script);
             gen.MarkReady(result.TokensUsed);
@@ -158,6 +166,7 @@ public class GenerateTestHandler(
     ISignatureRepository signatures,
     IGenerationRepository generations,
     IScriptGenerator generator,
+    IEffectiveSignatureResolver effective,
     ICurrentUser me,
     IUnitOfWork uow) : IRequestHandler<GenerateTestCommand, Result<GenerationDto>>
 {
@@ -171,6 +180,13 @@ public class GenerateTestHandler(
         var sig = await signatures.FindByIdAsync(gen.SignatureId, me.UserId.Value, ct);
         if (sig is null) return Result.Failure<GenerationDto>(Error.NotFound("Signature"));
 
+        // Pull every transitive dep — the test prompt may reference behavior
+        // of embedded components. Without this, selectors that belong to an
+        // included child component (e.g. a shared dropdown library) wouldn't
+        // appear in the LLM context and the generated test would miss them.
+        var effectiveSigs = await effective.ResolveAsync(sig.Id, me.UserId.Value, ct);
+        var deps = effectiveSigs?.Where(s => s.Id != sig.Id).ToList();
+
         gen.SetTestPrompt(cmd.TestPrompt);
         sig.SetLastTestPrompt(cmd.TestPrompt);
         gen.MarkGenerating();
@@ -178,7 +194,7 @@ public class GenerateTestHandler(
 
         try
         {
-            var result = await generator.GenerateTestAsync(sig, cmd.TestPrompt, gen.SetupScript, gen.AnalyzeStateJson, ct);
+            var result = await generator.GenerateTestAsync(sig, cmd.TestPrompt, gen.SetupScript, gen.AnalyzeStateJson, deps, ct);
             gen.SetTestScript(result.Script);
             sig.SetLastTestScript(result.Script);
             gen.MarkReady(result.TokensUsed);
@@ -410,6 +426,7 @@ public record GenerateAnalyzeScriptCommand(Guid GenerationId) : IRequest<Result<
 public class GenerateAnalyzeScriptHandler(
     ISignatureRepository signatures,
     IGenerationRepository generations,
+    IEffectiveSignatureResolver effective,
     ICurrentUser me,
     IUnitOfWork uow) : IRequestHandler<GenerateAnalyzeScriptCommand, Result<GenerationDto>>
 {
@@ -421,7 +438,13 @@ public class GenerateAnalyzeScriptHandler(
         var sig = await signatures.FindByIdAsync(gen.SignatureId, me.UserId.Value, ct);
         if (sig is null) return Result.Failure<GenerationDto>(Error.NotFound("Signature"));
 
-        var script = AnalyzeScriptBuilder.Build(sig, gen);
+        // Resolve deps so the analyze script reads informational state from
+        // embedded components too. Otherwise tests that reference a dep
+        // component's status text would see stale "captured no value" state.
+        var effectiveSigs = await effective.ResolveAsync(sig.Id, me.UserId.Value, ct);
+        var deps = effectiveSigs?.Where(s => s.Id != sig.Id).ToList();
+
+        var script = AnalyzeScriptBuilder.Build(sig, gen, deps);
         gen.SetAnalyzeStateScript(script);
         sig.SetLastAnalyzeStateScript(script);
         await uow.SaveChangesAsync(ct);
@@ -468,6 +491,7 @@ public class RunAnalyzeHandler(
     IGenerationRepository generations,
     IScriptRunner runner,
     IStateBuilder builder,
+    IEffectiveSignatureResolver effective,
     ICurrentUser me,
     IUnitOfWork uow) : IRequestHandler<RunAnalyzeCommand, Result<GenerationDto>>
 {
@@ -481,6 +505,13 @@ public class RunAnalyzeHandler(
         if (string.IsNullOrWhiteSpace(gen.AnalyzeStateScript))
             return Result.Failure<GenerationDto>(Error.Validation("Analyze script missing — generate it first."));
 
+        // Resolve deps so the state builder can name fields coming from
+        // dep components' informational selectors. The analyze script already
+        // captured them (it was built with deps too); this side just needs the
+        // descriptions to translate the raw JSON into a semantic blob.
+        var effectiveSigs = await effective.ResolveAsync(sig.Id, me.UserId.Value, ct);
+        var deps = effectiveSigs?.Where(s => s.Id != sig.Id).ToList();
+
         // 1. Execute the script one-shot, capturing all stdout/stderr.
         var run = await runner.RunOnceAsync(gen.AnalyzeStateScript!, ct);
 
@@ -492,7 +523,7 @@ public class RunAnalyzeHandler(
         try
         {
             // 3. Hand the raw JSON + signature to the LLM state builder.
-            var built = await builder.BuildStateAsync(sig, rawJson, ct);
+            var built = await builder.BuildStateAsync(sig, rawJson, deps, ct);
             stateJson = built.StateJson;
         }
         catch (Exception ex)

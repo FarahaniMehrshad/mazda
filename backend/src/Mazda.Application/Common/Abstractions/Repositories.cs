@@ -21,6 +21,15 @@ public interface ISignatureRepository
 {
     Task<Signature?> FindByIdAsync(Guid id, Guid ownerId, CancellationToken ct = default);
     Task<IReadOnlyList<Signature>> ListAsync(Guid ownerId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Bulk-load multiple signatures by id, scoped to the owner. Used by the
+    /// dependency resolver to materialize the transitive closure in fewer
+    /// round-trips than a per-id Find loop. Returns an empty list when
+    /// <paramref name="ids"/> is empty.
+    /// </summary>
+    Task<IReadOnlyList<Signature>> FindManyByIdsAsync(IReadOnlyCollection<Guid> ids, Guid ownerId, CancellationToken ct = default);
+
     Task AddAsync(Signature signature, CancellationToken ct = default);
     Task RemoveAsync(Signature signature, CancellationToken ct = default);
 

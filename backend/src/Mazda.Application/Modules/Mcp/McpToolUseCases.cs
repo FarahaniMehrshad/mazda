@@ -251,6 +251,7 @@ public class InvokeMcpToolHandler(
     IScriptGenerator generator,
     IStateBuilder stateBuilder,
     IScriptRunner runner,
+    IEffectiveSignatureResolver effective,
     ICurrentUser me,
     IUnitOfWork uow) : IRequestHandler<InvokeMcpToolCommand, Result<McpInvocationResult>>
 {
@@ -264,6 +265,12 @@ public class InvokeMcpToolHandler(
 
         var sig = await signatures.FindByIdAsync(tool.SignatureId, me.UserId.Value, ct);
         if (sig is null) return Result.Failure<McpInvocationResult>(Error.NotFound("Signature"));
+
+        // MCP invocations run the same effective-signature view as wizard
+        // generations — every transitive dep flows into setup / analyze /
+        // test prompts. Resolved once here and threaded through the pipeline.
+        var effectiveSigs = await effective.ResolveAsync(sig.Id, me.UserId.Value, ct);
+        var deps = effectiveSigs?.Where(s => s.Id != sig.Id).ToList();
 
         // Resolve the prompts: caller-provided wins, fall back to tool defaults.
         var setupPrompt = !string.IsNullOrWhiteSpace(cmd.SetupPrompt) ? cmd.SetupPrompt!.Trim() : tool.DefaultSetupPrompt;
@@ -293,13 +300,13 @@ public class InvokeMcpToolHandler(
             // 1 — Generate setup script.
             gen.SetSetupPrompt(setupPrompt);
             sig.SetLastSetupPrompt(setupPrompt);
-            var setup = await generator.GenerateSetupAsync(sig, setupPrompt, ct);
+            var setup = await generator.GenerateSetupAsync(sig, setupPrompt, deps, ct);
             gen.SetSetupScript(setup.Script);
             sig.SetLastSetupScript(setup.Script);
             await uow.SaveChangesAsync(ct);
 
             // 2 — Build deterministic analyze script.
-            var analyzeScript = AnalyzeScriptBuilder.Build(sig, gen);
+            var analyzeScript = AnalyzeScriptBuilder.Build(sig, gen, deps);
             gen.SetAnalyzeStateScript(analyzeScript);
             sig.SetLastAnalyzeStateScript(analyzeScript);
             await uow.SaveChangesAsync(ct);
@@ -310,7 +317,7 @@ public class InvokeMcpToolHandler(
             string stateJson;
             try
             {
-                var built = await stateBuilder.BuildStateAsync(sig, rawJson, ct);
+                var built = await stateBuilder.BuildStateAsync(sig, rawJson, deps, ct);
                 stateJson = built.StateJson;
             }
             catch (Exception ex)
@@ -324,7 +331,7 @@ public class InvokeMcpToolHandler(
             // 4 — Generate the test body.
             gen.SetTestPrompt(testPrompt);
             sig.SetLastTestPrompt(testPrompt);
-            var test = await generator.GenerateTestAsync(sig, testPrompt, gen.SetupScript, stateJson, ct);
+            var test = await generator.GenerateTestAsync(sig, testPrompt, gen.SetupScript, stateJson, deps, ct);
             gen.SetTestScript(test.Script);
             sig.SetLastTestScript(test.Script);
             await uow.SaveChangesAsync(ct);

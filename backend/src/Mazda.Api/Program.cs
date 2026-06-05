@@ -190,6 +190,21 @@ using (var scope = app.Services.CreateScope())
             ADD COLUMN IF NOT EXISTS mcp_tool_id  uuid;
         CREATE INDEX IF NOT EXISTS ix_generations_mcp_tool ON generations(mcp_tool_id);
         """);
+
+    // Signature dependencies (component A's signature can depend on component
+    // B's signature → A's effective signature unions A + B + transitives).
+    // Composite PK (signature_id, depends_on_signature_id). Both FKs cascade
+    // so a deleted signature can't leave orphan dependency rows on either side.
+    db.Database.ExecuteSqlRaw("""
+        CREATE TABLE IF NOT EXISTS signature_dependencies (
+            signature_id              uuid NOT NULL REFERENCES signatures("Id") ON DELETE CASCADE,
+            depends_on_signature_id   uuid NOT NULL REFERENCES signatures("Id") ON DELETE CASCADE,
+            PRIMARY KEY (signature_id, depends_on_signature_id),
+            CHECK (signature_id <> depends_on_signature_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_signature_dependencies_target
+            ON signature_dependencies(depends_on_signature_id);
+        """);
 }
 
 app.UseExceptionHandler();

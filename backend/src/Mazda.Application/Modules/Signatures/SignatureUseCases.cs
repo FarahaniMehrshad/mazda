@@ -18,7 +18,11 @@ public record SignatureDto(
     string UserFlowsJson,
     int NodeCount,
     DateTime UpdatedAt,
-    IReadOnlyList<SignatureElementDto> Elements);
+    IReadOnlyList<SignatureElementDto> Elements,
+    // IDs of signatures this one depends on. Frontend uses the count for the
+    // sidebar badge; the full Dependencies panel pulls the labeled rows via
+    // ListSignatureDependenciesQuery (which adds names + element counts).
+    IReadOnlyList<Guid> DependencyIds);
 
 internal static class SignatureMapper
 {
@@ -26,7 +30,8 @@ internal static class SignatureMapper
         s.Id, s.Name, s.Version, s.Source, s.Type, s.HumanDescription, s.UserFlowsJson,
         s.Elements.Count, s.UpdatedAt,
         s.Elements.OrderBy(e => e.Order).Select(e => new SignatureElementDto(
-            e.ElementSelector, e.Category.ToString(), e.ElementType, e.ElementDescription, e.ElementLogic)).ToList());
+            e.ElementSelector, e.Category.ToString(), e.ElementType, e.ElementDescription, e.ElementLogic)).ToList(),
+        s.DependencyIds);
 
     internal static ElementCategory ParseCategory(string? raw)
     {

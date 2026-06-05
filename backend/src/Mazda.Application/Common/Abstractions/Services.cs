@@ -2,6 +2,33 @@ using Mazda.Domain.Modules.Signatures;
 
 namespace Mazda.Application.Common.Abstractions;
 
+/// <summary>
+/// Resolves the "effective signature" of a component — its own Signature
+/// PLUS every transitive dependency in topological order — so generation
+/// pipelines see one merged view. Cycles are surfaced as exceptions because
+/// they imply data corruption (the Add-dependency use case rejects cycles
+/// at write time).
+/// </summary>
+public interface IEffectiveSignatureResolver
+{
+    /// <summary>
+    /// Returns the root signature followed by every transitive dependency
+    /// in topological order: the deepest dependency first, then its parents,
+    /// then the root LAST. Order matters for the LLM context: deeper deps
+    /// are foundation components mentioned earlier as "context", the root is
+    /// what the prompt actually targets.
+    /// Returns null when the root signature isn't found / not owned by user.
+    /// </summary>
+    Task<IReadOnlyList<Signature>?> ResolveAsync(Guid rootId, Guid ownerId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Cheap check: given an existing signature and a candidate new
+    /// dependency, would adding it create a cycle? Used by the add-dependency
+    /// use case to reject invalid edits with a clean validation error.
+    /// </summary>
+    Task<bool> WouldCreateCycleAsync(Guid signatureId, Guid candidateDependsOnId, Guid ownerId, CancellationToken ct = default);
+}
+
 public interface ICurrentUser
 {
     Guid? UserId { get; }
@@ -33,6 +60,7 @@ public interface IScriptGenerator
     Task<ScriptGenerationResult> GenerateSetupAsync(
         Signature signature,
         string setupPrompt,
+        IReadOnlyList<Signature>? dependencies = null,
         CancellationToken ct = default);
 
     /// <summary>
@@ -45,6 +73,7 @@ public interface IScriptGenerator
         string testPrompt,
         string? setupScript,
         string? stateJson = null,
+        IReadOnlyList<Signature>? dependencies = null,
         CancellationToken ct = default);
 
     /// <summary>
@@ -101,6 +130,7 @@ public interface IStateBuilder
     Task<StateBuildResult> BuildStateAsync(
         Signature signature,
         string rawExtractionJson,
+        IReadOnlyList<Signature>? dependencies = null,
         CancellationToken ct = default);
 }
 
