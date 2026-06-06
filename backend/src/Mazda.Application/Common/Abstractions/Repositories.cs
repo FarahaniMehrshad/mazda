@@ -46,6 +46,14 @@ public interface IGenerationRepository
 {
     Task<Generation?> FindByIdAsync(Guid id, Guid ownerId, CancellationToken ct = default);
     Task<IReadOnlyList<Generation>> ListRecentAsync(Guid ownerId, int take, CancellationToken ct = default);
+
+    /// <summary>
+    /// All generations created against a given signature, owned by the user.
+    /// Used by the dependency-change handlers to invalidate analyze caches
+    /// across every generation that points at the signature.
+    /// </summary>
+    Task<IReadOnlyList<Generation>> ListForSignatureAsync(Guid signatureId, Guid ownerId, CancellationToken ct = default);
+
     Task AddAsync(Generation generation, CancellationToken ct = default);
 }
 

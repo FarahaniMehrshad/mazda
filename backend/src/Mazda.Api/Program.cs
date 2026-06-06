@@ -205,6 +205,16 @@ using (var scope = app.Services.CreateScope())
         CREATE INDEX IF NOT EXISTS ix_signature_dependencies_target
             ON signature_dependencies(depends_on_signature_id);
         """);
+
+    // Analyze-state scope selector — optional CSS selector that scopes the
+    // analyze script to a sub-tree (modal, popover, portal, …). Both per-run
+    // (generations) and per-signature (last-used pre-fill).
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE generations
+            ADD COLUMN IF NOT EXISTS analyze_state_scope        varchar(500);
+        ALTER TABLE signatures
+            ADD COLUMN IF NOT EXISTS last_analyze_state_scope   varchar(500) NOT NULL DEFAULT '';
+        """);
 }
 
 app.UseExceptionHandler();

@@ -15,6 +15,7 @@ import {
   useGenerateAnalyzeScript,
   useSaveAnalyzeScript,
   useRunAnalyze,
+  useSaveAnalyzeScope,
 } from "./api";
 import { ApiError } from "@/shared/api/client";
 import { useStepNavigator } from "@/shared/components/useStepNavigator";
@@ -26,6 +27,7 @@ export function AnalyzeStatePage() {
   const generate = useGenerateAnalyzeScript();
   const save = useSaveAnalyzeScript();
   const run = useRunAnalyze();
+  const saveScope = useSaveAnalyzeScope();
   // Must be called before any early-return so the hook count stays stable
   // across the loading → loaded transition (React error #310 otherwise).
   const onStepClick = useStepNavigator(
@@ -41,6 +43,22 @@ export function AnalyzeStatePage() {
   useEffect(() => {
     if (!draftDirty) setDraft(persisted);
   }, [persisted, draftDirty]);
+
+  // Scope selector — when set, the analyze script roots every locator inside
+  // that container instead of querying the whole page. We mirror the
+  // persisted value into a local edit buffer so the user can type freely
+  // and only commit on blur (or Enter). The local buffer also lets us
+  // detect "user changed the value" so we can wipe the script cache server-
+  // side (the SetAnalyzeStateScope domain method handles that on save).
+  const [scopeDraft, setScopeDraft] = useState<string>("");
+  const persistedScope = gen?.analyzeStateScope ?? "";
+  useEffect(() => {
+    setScopeDraft(persistedScope);
+    // Re-sync only when the persisted value changes. We don't want to clobber
+    // the user's in-progress typing on every re-render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [persistedScope]);
+  const scopeDirty = scopeDraft.trim() !== persistedScope.trim();
 
   async function onGenerate() {
     if (!id) return;
@@ -72,6 +90,24 @@ export function AnalyzeStatePage() {
       setDraftDirty(false);
     } catch (err) {
       alert(err instanceof ApiError ? err.message : "Analyze run failed.");
+    }
+  }
+
+  // Persist the scope selector. Changing the scope wipes the cached
+  // analyze script server-side (the domain SetAnalyzeStateScope method
+  // does that), so we mark the local draft as not-dirty — the next
+  // useGeneration result will re-sync `draft` from the now-empty persisted
+  // script and the user will see an empty editor + a "Generate analyze
+  // script" prompt.
+  async function onSaveScope() {
+    if (!id) return;
+    const next = scopeDraft.trim();
+    if (next === persistedScope.trim()) return;
+    try {
+      await saveScope.mutateAsync({ id, scope: next.length === 0 ? null : next });
+      setDraftDirty(false);
+    } catch (err) {
+      alert(err instanceof ApiError ? err.message : "Save scope failed.");
     }
   }
 
@@ -168,6 +204,75 @@ export function AnalyzeStatePage() {
                 text is then handed to the LLM, which produces a clean JSON of
                 the current component state — used as ground-truth context in
                 the next step.
+              </div>
+
+              <div className="mz-divider" />
+
+              {/* ── Scope selector — optional ── */}
+              {/* When set, the analyze script roots every locator inside the
+                  named container. Useful for components mounted in modals /
+                  popovers / portals where generic selectors would otherwise
+                  match unrelated nodes elsewhere on the page. Saving a new
+                  value wipes the cached script (server-side, via the domain
+                  SetAnalyzeStateScope -> InvalidateAnalyzeAndDownstreamCaches
+                  flow) so the user has to re-Generate. */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <label
+                  style={{
+                    fontFamily: "var(--f-mono)",
+                    fontSize: 10.5,
+                    letterSpacing: "0.06em",
+                    color: "var(--text-3)",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  Scope selector
+                </label>
+                <input
+                  type="text"
+                  value={scopeDraft}
+                  onChange={(e) => setScopeDraft(e.target.value)}
+                  onBlur={onSaveScope}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      (e.target as HTMLInputElement).blur();
+                    }
+                  }}
+                  placeholder='e.g. nz-modal, [data-testid="profile-panel"]'
+                  spellCheck={false}
+                  disabled={isBusy || saveScope.isPending}
+                  style={{
+                    width: "100%",
+                    padding: "8px 10px",
+                    background: "var(--glass-1)",
+                    border: scopeDirty
+                      ? "1px solid var(--orange-200)"
+                      : "1px solid var(--glass-stroke-2)",
+                    borderRadius: 8,
+                    color: "var(--text-1)",
+                    fontFamily: "var(--f-mono)",
+                    fontSize: 12,
+                    outline: "none",
+                  }}
+                />
+                <div
+                  style={{
+                    fontFamily: "var(--f-sans)",
+                    fontSize: 10.5,
+                    color: "var(--text-4)",
+                    lineHeight: 1.45,
+                  }}
+                >
+                  Empty = whole page. When set, every signature selector is
+                  evaluated INSIDE the named container. Changing this wipes
+                  the cached script — click Generate again to apply.
+                  {scopeDirty && (
+                    <span style={{ color: "var(--orange-200)" }}>
+                      {" "}● unsaved (press Enter or tab away to save)
+                    </span>
+                  )}
+                </div>
               </div>
 
               <div className="mz-divider" />

@@ -110,6 +110,11 @@ public static class Endpoints
         gens.MapPut("/{id:guid}/analyze-state-script", async (Guid id, [FromBody] ScriptBody body, ISender s) =>
             (await s.Send(new UpdateAnalyzeScriptCommand(id, body.Script))).ToHttp());
 
+        // Update the scope selector that the analyze script roots its
+        // lookups in. Body shape: { "scope": "<selector or null>" }.
+        gens.MapPut("/{id:guid}/analyze-state-scope", async (Guid id, [FromBody] AnalyzeScopeBody body, ISender s) =>
+            (await s.Send(new UpdateAnalyzeScopeCommand(id, body.Scope))).ToHttp());
+
         gens.MapPost("/{id:guid}/analyze-state/run", async (Guid id, ISender s) =>
             (await s.Send(new RunAnalyzeCommand(id))).ToHttp());
 
@@ -180,6 +185,7 @@ public static class Endpoints
     public record GenerateTestBody(string TestPrompt);
     public record ScriptBody(string Script);
     public record GenerateFlowsBody(string? CypressSource);
+    public record AnalyzeScopeBody(string? Scope);
     public record FlowsBody(string FlowsJson);
     public record AddDependencyBody(Guid DependsOnId);
 }

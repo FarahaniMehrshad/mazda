@@ -80,6 +80,10 @@ export interface GenerationDto {
   analyzeStateScript: string | null;
   analyzeStateRawOutput: string | null;
   analyzeStateJson: string | null;
+  // Optional CSS selector that scopes the analyze-state extraction to a
+  // specific sub-tree of the page (modal, popover, panel, …). Null/empty
+  // means whole-page extraction.
+  analyzeStateScope: string | null;
   testPrompt: string;
   testScript: string | null;
   finalScript: string | null;

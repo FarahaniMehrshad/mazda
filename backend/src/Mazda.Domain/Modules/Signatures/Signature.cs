@@ -40,6 +40,12 @@ public class Signature : Entity
     // back without having to re-Run after every minor edit elsewhere.
     public string LastAnalyzeStateRawOutput { get; private set; } = string.Empty;
     public string LastAnalyzeStateJson { get; private set; } = string.Empty;
+    // Most recently used analyze-state scope selector. New generations
+    // pre-fill from this so the user doesn't have to re-type the scope per
+    // run; persisted on signature because the scope is almost always a
+    // property of the COMPONENT (a modal selector, a card root) not the
+    // run.
+    public string LastAnalyzeStateScope { get; private set; } = string.Empty;
 
     private readonly List<SignatureElement> _elements = new();
     public IReadOnlyList<SignatureElement> Elements => _elements;
@@ -84,6 +90,7 @@ public class Signature : Entity
     public void SetLastTestScript(string? script) { LastTestScript = script ?? string.Empty; Touch(); }
     public void SetLastFinalScript(string? script) { LastFinalScript = script ?? string.Empty; Touch(); }
     public void SetLastAnalyzeStateScript(string? script) { LastAnalyzeStateScript = script ?? string.Empty; Touch(); }
+    public void SetLastAnalyzeStateScope(string? scope) { LastAnalyzeStateScope = scope?.Trim() ?? string.Empty; Touch(); }
 
     /// <summary>
     /// Wipe every signature-level cache that was derived from the element set.

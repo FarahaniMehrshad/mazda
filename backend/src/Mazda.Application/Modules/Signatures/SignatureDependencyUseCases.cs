@@ -72,6 +72,7 @@ public class AddSignatureDependencyValidator : AbstractValidator<AddSignatureDep
 
 public class AddSignatureDependencyHandler(
     ISignatureRepository repo,
+    IGenerationRepository generations,
     IEffectiveSignatureResolver effective,
     ICurrentUser me,
     IUnitOfWork uow) : IRequestHandler<AddSignatureDependencyCommand, Result<IReadOnlyList<SignatureDependencyDto>>>
@@ -97,6 +98,18 @@ public class AddSignatureDependencyHandler(
                                  $"(it already depends on '{sig.Name}', directly or transitively)."));
 
         sig.AddDependency(cmd.DependsOnSignatureId);
+
+        // Invalidate every existing generation's analyze-state cache for this
+        // signature. The cached AnalyzeStateScript was built from the old
+        // dep graph and doesn't reference the new dep's informational
+        // selectors; running it would silently miss them. Wiping forces the
+        // user to click "Generate analyze script" again, which produces a
+        // fresh script that DOES include the new dep's selectors.
+        // Downstream caches (test script, final script) also go because they
+        // were built off the now-stale state JSON.
+        var gens = await generations.ListForSignatureAsync(cmd.SignatureId, me.UserId.Value, ct);
+        foreach (var g in gens) g.InvalidateAnalyzeAndDownstreamCaches();
+
         await uow.SaveChangesAsync(ct);
 
         // Return the updated list — saves the frontend a round-trip.
@@ -112,6 +125,7 @@ public record RemoveSignatureDependencyCommand(Guid SignatureId, Guid DependsOnS
 
 public class RemoveSignatureDependencyHandler(
     ISignatureRepository repo,
+    IGenerationRepository generations,
     ICurrentUser me,
     IUnitOfWork uow) : IRequestHandler<RemoveSignatureDependencyCommand, Result<IReadOnlyList<SignatureDependencyDto>>>
 {
@@ -123,6 +137,14 @@ public class RemoveSignatureDependencyHandler(
         if (sig is null) return Result.Failure<IReadOnlyList<SignatureDependencyDto>>(Error.NotFound("Signature"));
 
         sig.RemoveDependency(cmd.DependsOnSignatureId);
+
+        // Same invalidation as Add — removing a dep means the cached analyze
+        // script still references the dep's selectors, which won't match
+        // anything in the current shape of the parent component. Wipe so a
+        // fresh script picks up only the surviving union.
+        var gens = await generations.ListForSignatureAsync(cmd.SignatureId, me.UserId.Value, ct);
+        foreach (var g in gens) g.InvalidateAnalyzeAndDownstreamCaches();
+
         await uow.SaveChangesAsync(ct);
 
         return await new ListSignatureDependenciesHandler(repo, me).Handle(

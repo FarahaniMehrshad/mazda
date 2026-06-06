@@ -16,6 +16,7 @@ public record GenerationDto(
     string? AnalyzeStateScript,
     string? AnalyzeStateRawOutput,
     string? AnalyzeStateJson,
+    string? AnalyzeStateScope,
     string TestPrompt,
     string? TestScript,
     string? FinalScript,
@@ -35,7 +36,7 @@ internal static class GenerationMapper
     public static GenerationDto ToDto(this Generation g) => new(
         g.Id, g.SignatureId,
         g.SetupPrompt, g.SetupScript,
-        g.AnalyzeStateScript, g.AnalyzeStateRawOutput, g.AnalyzeStateJson,
+        g.AnalyzeStateScript, g.AnalyzeStateRawOutput, g.AnalyzeStateJson, g.AnalyzeStateScope,
         g.TestPrompt, g.TestScript,
         g.FinalScript,
         g.Status, g.FailureReason, g.TokensUsed,
@@ -78,6 +79,11 @@ public class CreateGenerationHandler(
         if (!string.IsNullOrWhiteSpace(sig.LastTestScript))  gen.SetTestScript(sig.LastTestScript);
         if (!string.IsNullOrWhiteSpace(sig.LastFinalScript)) gen.SetFinalScript(sig.LastFinalScript);
         if (!string.IsNullOrWhiteSpace(sig.LastAnalyzeStateScript)) gen.SetAnalyzeStateScript(sig.LastAnalyzeStateScript);
+        // Pre-fill scope from the signature's last-used value BEFORE seeding
+        // the cached script, so a stale LastAnalyzeStateScript whose scope
+        // doesn't match the persisted scope doesn't get used. SetAnalyzeStateScope
+        // is a no-op when the value matches what's already there.
+        if (!string.IsNullOrWhiteSpace(sig.LastAnalyzeStateScope)) gen.SetAnalyzeStateScope(sig.LastAnalyzeStateScope);
         // Analyze-state RUN OUTPUT (raw + semantic JSON) is what the test-generation
         // step actually consumes — restore it too so the user doesn't have to re-Run
         // every time they create a fresh generation against the same signature.
@@ -447,6 +453,48 @@ public class GenerateAnalyzeScriptHandler(
         var script = AnalyzeScriptBuilder.Build(sig, gen, deps);
         gen.SetAnalyzeStateScript(script);
         sig.SetLastAnalyzeStateScript(script);
+        await uow.SaveChangesAsync(ct);
+        return Result.Success(gen.ToDto());
+    }
+}
+
+// Update the scope selector that the analyze script uses to root all
+// element lookups. Empty / null = whole-page extraction (default). When
+// the scope changes, the cached AnalyzeStateScript + downstream caches
+// are wiped on the Generation (via SetAnalyzeStateScope -> Invalidate*).
+// The signature's "Last used" scope is also updated so fresh generations
+// pre-fill from this value.
+public record UpdateAnalyzeScopeCommand(Guid GenerationId, string? Scope) : IRequest<Result<GenerationDto>>;
+
+public class UpdateAnalyzeScopeValidator : AbstractValidator<UpdateAnalyzeScopeCommand>
+{
+    public UpdateAnalyzeScopeValidator()
+    {
+        RuleFor(x => x.GenerationId).NotEmpty();
+        // Cap mirrors the DB column. The scope is a CSS selector, normally
+        // very short ("nz-modal", "[data-testid='profile-panel']"). The
+        // length cap exists so a pasted novel doesn't make it through.
+        RuleFor(x => x.Scope).MaximumLength(500).When(x => x.Scope is not null);
+    }
+}
+
+public class UpdateAnalyzeScopeHandler(
+    ISignatureRepository signatures,
+    IGenerationRepository generations,
+    ICurrentUser me,
+    IUnitOfWork uow) : IRequestHandler<UpdateAnalyzeScopeCommand, Result<GenerationDto>>
+{
+    public async Task<Result<GenerationDto>> Handle(UpdateAnalyzeScopeCommand cmd, CancellationToken ct)
+    {
+        if (me.UserId is null) return Result.Failure<GenerationDto>(Error.Validation("Not authenticated."));
+        var gen = await generations.FindByIdAsync(cmd.GenerationId, me.UserId.Value, ct);
+        if (gen is null) return Result.Failure<GenerationDto>(Error.NotFound("Generation"));
+        var sig = await signatures.FindByIdAsync(gen.SignatureId, me.UserId.Value, ct);
+
+        gen.SetAnalyzeStateScope(cmd.Scope);
+        // Mirror onto the signature so a subsequent CreateGenerationHandler
+        // pre-fills from this value.
+        sig?.SetLastAnalyzeStateScope(cmd.Scope);
         await uow.SaveChangesAsync(ct);
         return Result.Success(gen.ToDto());
     }

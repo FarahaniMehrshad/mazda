@@ -144,6 +144,11 @@ public class GenerationRepository(MazdaDbContext db) : IGenerationRepository
             .Take(take)
             .ToListAsync(ct);
 
+    public async Task<IReadOnlyList<Generation>> ListForSignatureAsync(Guid signatureId, Guid ownerId, CancellationToken ct = default)
+        => await db.Generations
+            .Where(g => g.SignatureId == signatureId && g.OwnerId == ownerId)
+            .ToListAsync(ct);
+
     public async Task AddAsync(Generation generation, CancellationToken ct = default)
         => await db.Generations.AddAsync(generation, ct);
 }

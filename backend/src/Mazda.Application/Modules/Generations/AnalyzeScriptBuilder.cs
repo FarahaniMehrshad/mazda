@@ -54,6 +54,17 @@ public static class AnalyzeScriptBuilder
             informational.Select(e => new[] { RewriteTemplatedSelector(e.ElementSelector) }).ToArray(),
             new JsonSerializerOptions { WriteIndented = false });
 
+        // Optional scope selector — when set, every signature selector is
+        // evaluated INSIDE the named container. Useful when the component
+        // lives in a modal / popover / portal and we want to ignore matches
+        // elsewhere on the page. The scope itself is also recorded in the
+        // extraction blob (under a "_scope" key) so the downstream state
+        // builder knows what it represents.
+        var scope = string.IsNullOrWhiteSpace(generation.AnalyzeStateScope)
+            ? null
+            : generation.AnalyzeStateScope!.Trim();
+        var scopeLiteral = scope is null ? "null" : JsonSerializer.Serialize(scope);
+
         var sb = new StringBuilder();
         sb.AppendLine(setup);
         sb.AppendLine();
@@ -61,11 +72,19 @@ public static class AnalyzeScriptBuilder
         sb.AppendLine("  // Selectors are the informational entries of the signature, in order.");
         sb.AppendLine("  // We capture count + per-match innerText for each. Errors are caught");
         sb.AppendLine("  // per-selector so one bad locator doesn't kill the whole capture.");
+        sb.AppendLine($"  const SCOPE_SELECTOR: string | null = {scopeLiteral};");
+        sb.AppendLine("  // When SCOPE_SELECTOR is set, every locator is evaluated INSIDE that");
+        sb.AppendLine("  // container so generic selectors (e.g. [data-testid=\"title\"]) only");
+        sb.AppendLine("  // match elements within the scoped sub-tree — not the whole page.");
+        sb.AppendLine("  // page.locator(...) and Locator.locator(...) share the same chaining API");
+        sb.AppendLine("  // so the rest of the extraction loop doesn't care which one `root` is.");
+        sb.AppendLine("  const root: any = SCOPE_SELECTOR ? page.locator(SCOPE_SELECTOR) : page;");
         sb.AppendLine($"  const selectors: string[][] = {selectorsJson};");
         sb.AppendLine("  const result: Record<string, any> = {};");
+        sb.AppendLine("  if (SCOPE_SELECTOR) result._scope = SCOPE_SELECTOR;");
         sb.AppendLine("  for (const [sel] of selectors) {");
         sb.AppendLine("    try {");
-        sb.AppendLine("      const loc = page.locator(sel);");
+        sb.AppendLine("      const loc = root.locator(sel);");
         sb.AppendLine("      const count = await loc.count();");
         sb.AppendLine("      const texts: string[] = [];");
         sb.AppendLine("      for (let i = 0; i < count; i++) {");

@@ -27,6 +27,8 @@ export const generationApi = {
     api.put<GenerationDto>(`/api/generations/${id}/analyze-state-script`, { script }),
   runAnalyze: (id: string) =>
     api.post<GenerationDto>(`/api/generations/${id}/analyze-state/run`, {}),
+  saveAnalyzeScope: (id: string, scope: string | null) =>
+    api.put<GenerationDto>(`/api/generations/${id}/analyze-state-scope`, { scope }),
 };
 
 export function useRecentGenerations(take = 20) {
@@ -141,6 +143,15 @@ export function useRunAnalyze() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => generationApi.runAnalyze(id),
+    onSuccess: invalidateOnSuccess(qc),
+  });
+}
+
+export function useSaveAnalyzeScope() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, scope }: { id: string; scope: string | null }) =>
+      generationApi.saveAnalyzeScope(id, scope),
     onSuccess: invalidateOnSuccess(qc),
   });
 }

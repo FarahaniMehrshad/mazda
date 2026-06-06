@@ -42,6 +42,20 @@ public class Generation : Entity
     public string? AnalyzeStateRawOutput { get; private set; }
     public string? AnalyzeStateJson { get; private set; }
 
+    /// <summary>
+    /// Optional CSS selector that scopes the analyze-state extraction to a
+    /// SPECIFIC sub-tree of the page. Empty / null means the script queries
+    /// the whole document (default). When set, every signature selector is
+    /// evaluated as <c>page.locator(scope).locator(sel)</c> — so the extract
+    /// only sees elements INSIDE the named container.
+    ///
+    /// Useful when the component under test lives inside a modal / popover /
+    /// portal that shares ids/classes with other regions of the page; without
+    /// scoping, generic selectors like <c>[data-testid="title"]</c> can
+    /// resolve to dozens of unrelated nodes elsewhere on the page.
+    /// </summary>
+    public string? AnalyzeStateScope { get; private set; }
+
     public string TestPrompt { get; private set; } = string.Empty;
     public string? TestScript { get; private set; }
 
@@ -81,8 +95,51 @@ public class Generation : Entity
     public void SetSetupPrompt(string prompt) { SetupPrompt = (prompt ?? string.Empty).Trim(); Touch(); }
     public void SetSetupScript(string script) { SetupScript = script ?? string.Empty; Touch(); }
 
+    /// <summary>
+    /// Wipe every script / output cache derived from the parent signature's
+    /// elements + dependency graph. Called when the underlying signature
+    /// changes shape (deps added/removed, elements replaced) so the user
+    /// doesn't keep running a stale analyze script that doesn't know about
+    /// the new dep selectors. The cleared columns are exactly the ones a
+    /// fresh wizard pass would regenerate from sig+deps:
+    ///   • AnalyzeStateScript  — built from sig+deps informational elements
+    ///   • AnalyzeStateRawOutput, AnalyzeStateJson — captured by running it
+    ///   • TestScript          — uses the captured state as context
+    ///   • FinalScript         — merges setup + test
+    /// Setup script and prompts are user-authored and stay.
+    /// </summary>
+    public void InvalidateAnalyzeAndDownstreamCaches()
+    {
+        AnalyzeStateScript = null;
+        AnalyzeStateRawOutput = null;
+        AnalyzeStateJson = null;
+        TestScript = null;
+        FinalScript = null;
+        Touch();
+    }
+
     public void SetAnalyzeStateScript(string script) { AnalyzeStateScript = script ?? string.Empty; Touch(); }
     public void SetAnalyzeStateOutput(string raw, string json) { AnalyzeStateRawOutput = raw ?? string.Empty; AnalyzeStateJson = json ?? string.Empty; Touch(); }
+
+    /// <summary>
+    /// Set the scope selector. Null/empty/whitespace all collapse to "no
+    /// scope" (the script queries the whole page). When the scope changes
+    /// the cached AnalyzeStateScript is wiped so the user can't accidentally
+    /// run the OLD scope's script — they must click "Generate analyze
+    /// script" again to get one rebuilt against the new scope. The
+    /// downstream caches (raw output, state JSON) go too because they were
+    /// captured by the old script and would mislead the test generation
+    /// step that reads them next.
+    /// </summary>
+    public void SetAnalyzeStateScope(string? scope)
+    {
+        var trimmed = string.IsNullOrWhiteSpace(scope) ? null : scope.Trim();
+        if (string.Equals(AnalyzeStateScope, trimmed, StringComparison.Ordinal)) return;
+        AnalyzeStateScope = trimmed;
+        // Scope is a structural input to the analyze script — anything
+        // built against the old value is stale.
+        InvalidateAnalyzeAndDownstreamCaches();
+    }
 
     public void SetTestPrompt(string prompt) { TestPrompt = (prompt ?? string.Empty).Trim(); Touch(); }
     public void SetTestScript(string script) { TestScript = script ?? string.Empty; Touch(); }
