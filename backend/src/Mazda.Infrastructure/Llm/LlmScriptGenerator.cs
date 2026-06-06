@@ -1384,9 +1384,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
 
     public Task<ScriptGenerationResult> GenerateTestAsync(Signature signature, string testPrompt, string? setupScript, string? stateJson = null, IReadOnlyList<Signature>? dependencies = null, CancellationToken ct = default)
     {
-        var flowsBlock = string.IsNullOrWhiteSpace(signature.UserFlowsJson)
-            ? string.Empty
-            : $"\n\nUser flows (canonical UI states + element-anchored transitions — map the prompt onto a path here):\n```json\n{signature.UserFlowsJson}\n```";
+        var flowsBlock = BuildFlowsBlock(signature, dependencies);
         var setupBlock = string.IsNullOrWhiteSpace(setupScript)
             ? string.Empty
             : $"\n\nSetup script (for context — do not re-emit imports or fixtures):\n```ts\n{setupScript}\n```";
@@ -1396,6 +1394,44 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         var userMsg = BuildSignatureContext(signature, dependencies) + flowsBlock + setupBlock + stateBlock +
             $"\n\nTest prompt:\n{testPrompt}";
         return Call(opts => opts.GeneratorModel, TestSystemPrompt, userMsg, ct);
+    }
+
+    /// <summary>
+    /// Combine the root signature's user-flows JSON with each dependency's
+    /// flows JSON into a single block. Each component gets its own labeled
+    /// sub-block so the LLM doesn't have to guess which states/transitions
+    /// belong to which component — that ambiguity would lead to invented
+    /// edges that don't actually exist in either graph.
+    ///
+    /// Returns empty when NO component (root or dep) has a non-blank flows
+    /// JSON, so the prompt doesn't carry a useless "User flows:" header.
+    /// </summary>
+    private static string BuildFlowsBlock(Signature root, IReadOnlyList<Signature>? dependencies)
+    {
+        var blocks = new List<string>();
+        if (!string.IsNullOrWhiteSpace(root.UserFlowsJson))
+            blocks.Add($"User flows for `{root.Name}` (the primary component):\n```json\n{root.UserFlowsJson}\n```");
+
+        if (dependencies is not null)
+        {
+            foreach (var dep in dependencies)
+            {
+                if (dep.Id == root.Id) continue;
+                if (string.IsNullOrWhiteSpace(dep.UserFlowsJson)) continue;
+                blocks.Add(
+                    $"User flows for embedded component `{dep.Name}` " +
+                    "(reachable within the primary component — its states and transitions can be exercised " +
+                    "by interacting with the dep's elements above):\n" +
+                    $"```json\n{dep.UserFlowsJson}\n```");
+            }
+        }
+
+        if (blocks.Count == 0) return string.Empty;
+        return "\n\nUser flows — canonical UI states + element-anchored transitions. " +
+               "Treat each graph as a REACHABILITY ORACLE for its component; when the prompt " +
+               "spans the primary and an embedded component, traverse only the edges you " +
+               "actually need from each.\n\n" +
+               string.Join("\n\n", blocks);
     }
 
     public Task<ScriptGenerationResult> MergeAsync(string setupScript, string testScript, CancellationToken ct = default)
