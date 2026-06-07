@@ -249,9 +249,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
               await __mzClick(kebab);                         // not asked
               ...
             ✓ // Inline type dropdown exists per row — use it directly.
-              await __mzClick(page.locator('<inline-type-trigger>').nth(0));
-              await page.keyboard.type('Number');
-              await __mzClick(page.getByText('Number', { exact: true }).first());
+              await __mzSelectOption(page, page.locator('<inline-type-trigger>').nth(0), 'Number');
 
         (4) Multi-locator chains where a single Signature selector works.
             See the LOCATOR SCOPING rule below — page-level locators with
@@ -752,24 +750,23 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
               has not been materialised. `scrollIntoViewIfNeeded()` cannot
               help — there is no element to scroll to. Pick ONE of:
 
-              (i) PREFER — type-to-filter. Searchable comboboxes narrow the
-                  list as you type, which forces the target into the
-                  rendered window almost immediately. Most custom dropdowns
-                  auto-focus their internal search input as soon as the
-                  trigger is clicked, so the keystrokes can be dispatched
-                  via `page.keyboard.*`:
+              (i) PREFER — `__mzSelectOption`. The helper opens the
+                  combobox, types the option text (so virtualised lists
+                  collapse onto the match and put the option into the
+                  DOM), and clicks the option inside the popup container
+                  that became visible AFTER the trigger click — never an
+                  unrelated copy elsewhere on the page. See the "select"
+                  ELEMENT TYPE HARD RULE for the full contract:
 
-                      await __mzClick(page.locator('<combobox selector>'));
-                      await page.keyboard.press('ControlOrMeta+a');
-                      // ↑ harmless when the search input is empty; clears
-                      //   any pre-filled query so the upcoming search wins.
-                      await page.keyboard.type('QA mssql');
-                      await __mzClick(
-                        page.getByText('QA mssql', { exact: true }).first()
+                      await __mzSelectOption(
+                        page,
+                        page.locator('<combobox selector>'),
+                        'QA mssql'
                       );
 
                   API NOTE — `Keyboard` vs `Locator` have DIFFERENT type-input
-                  APIs and you MUST NOT mix them:
+                  APIs and you MUST NOT mix them inside any manual typing
+                  you write outside the helper:
 
                     • `Locator.pressSequentially(text)` — Locator-only.
                       Auto-focuses the locator before typing. Use this when
@@ -785,23 +782,14 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
                       INPUTS rule below targets the `Locator.*` methods; the
                       `Keyboard.*` methods are fine.
 
-                  Equivalently, if you can locate the dropdown's internal
-                  search input via the Signature, type into it directly with
-                  the canonical Locator flow:
-
-                      const search = page.locator('<search-input selector>');
-                      await __mzClick(search);
-                      await search.press('ControlOrMeta+a');
-                      await search.pressSequentially('QA mssql');
-                      await __mzClick(
-                        page.getByText('QA mssql', { exact: true }).first()
-                      );
-
               (ii) FALLBACK — scroll the panel until the option mounts. Use
                    when the combobox has no search / the prompt forbids
                    typing. Scroll the inner scroll container, not the
                    document. Cap the iterations so a missing option fails
-                   fast instead of hanging the test:
+                   fast instead of hanging the test. Scope the option
+                   locator to the panel — a page-wide `getByText` would
+                   also match the trigger label, a recently-selected pill,
+                   or unrelated copy elsewhere on the page:
 
                       await __mzClick(page.locator('<combobox selector>'));
                       // Common virtual-scroll containers, in order of likelihood:
@@ -811,7 +799,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
                       const panel = page
                         .locator('cdk-virtual-scroll-viewport, .rc-virtual-list-holder, [role="listbox"]')
                         .first();
-                      const option = page.getByText('QA mssql', { exact: true });
+                      const option = panel.getByText('QA mssql', { exact: true });
                       for (let i = 0; i < 30; i++) {
                         if ((await option.count()) > 0) break;
                         await panel.evaluate(el => {
@@ -1223,125 +1211,118 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
 
         ── "select" ELEMENT TYPE — HARD RULE ──
         When the Signature lists an element with `elementType: "select"` (or
-        `"combobox"` / `"multiselect"`), NEVER call `locator.selectOption(...)`.
-        Playwright's `selectOption` only works on native `<select>` elements,
-        and modern apps almost universally implement these as custom dropdowns
-        built from `<div>`/`<button>`/`<ul>` + popper/portal. Calling
-        `selectOption` on them either errors or silently does nothing.
+        `"combobox"` / `"multiselect"`), use the runner-injected helper:
 
-        ── DEFAULT PATTERN — open → TYPE-TO-FILTER → click option ──
-        For EVERY custom select / combobox / multiselect, the default is a
-        THREE-step interaction. Typing is NOT a fallback for virtualization
-        edge cases — it is the unconditional first choice, because:
+            await __mzSelectOption(page, page.locator('<select trigger selector>'), '<option text>');
 
-          • Virtually every modern combobox library (ng-zorro, Material,
-            PrimeNG, MUI Autocomplete, Radix, Headless UI, …) supports
-            type-to-filter even when it isn't visually obvious.
-          • The list may be virtualized (`cdk-virtual-scroll-viewport`,
-            `react-window`, `react-virtual`, `rc-virtual-list`, Virtuoso,
-            TanStack Virtual). A click-option-by-text WITHOUT typing first
-            finds NOTHING when the target option lives below the rendered
-            window — there's no DOM node to click. Typing collapses the
-            visible window onto the match, which puts the option into the
-            DOM regardless of virtualization.
-          • Even non-virtualized long lists put the target option below the
-            viewport, where `getByText(...).click()` resolves to the right
-            element but auto-scroll inside the dropdown's overflow
-            container fights with the page scroll, often clicking the
-            trigger or an overlay sibling instead.
-          • Same-text duplicates elsewhere on the page (the trigger label,
-            another option group, a recently-selected pill) stop being a
-            problem once the dropdown's filter narrows the list to a
-            handful of rows.
+        The helper is in scope automatically — do NOT import or define it.
+        Apply this UNCONDITIONALLY for every custom dropdown — ng-zorro
+        nz-select, Angular Material mat-select, MUI Select / Autocomplete,
+        PrimeNG p-dropdown / p-multiselect, Radix Select, Headless UI
+        Listbox, shadcn, and bare <div>/<ul> popovers all work the same
+        way through this entry point.
 
-        Canonical three-step pattern — use this UNCONDITIONALLY:
+        ── WHY THE HELPER, NOT A MANUAL CLICK / TYPE / GETBYTEXT SEQUENCE ──
+        The previous canonical pattern was three steps:
 
-            // Step 1: open the dropdown. (__mzClick — see the click HARD RULE.)
-            await __mzClick(page.locator('<select selector>'));
+            await __mzClick(page.locator('<trigger>'));
+            await page.keyboard.type('<text>');
+            await __mzClick(page.getByText('<text>', { exact: true }).first());
 
-            // Step 2: type the option text. Most custom combos auto-focus
-            //         their internal search input on open, so keystrokes
-            //         dispatched via page.keyboard land on the filter.
-            await page.keyboard.type('<option text>');
+        It is FORBIDDEN now. The third line is the bug: `page.getByText`
+        searches the WHOLE document, so it matches not just the option
+        inside the popup but ALSO the trigger's currently-selected label,
+        a recently-selected pill, the header copy, or any unrelated cell
+        that shares the string. `.first()` then picks the topmost match
+        in DOM order — frequently the wrong element. Strict-mode
+        violations and wrong-element clicks both follow.
 
-            // Step 3: click the now-filtered option by exact text. With
-            //         the list filtered there should be ONE match; `.first()`
-            //         is belt-and-braces for combobox UIs that keep the
-            //         trigger label in the DOM under the same text.
-            await __mzClick(page.getByText('<option text>', { exact: true }).first());
+        `__mzSelectOption` solves all three at once:
+          1. Click the trigger via __mzClick (the click HARD RULE still
+             applies — actionability gauntlet, then dispatchEvent
+             fallback).
+          2. Type `<option text>` via page.keyboard. Most custom combos
+             auto-focus an internal search input on open, so keystrokes
+             land on the filter — this also collapses virtualised lists
+             onto the match so the option exists in the DOM.
+          3. Scope the option search to popup containers that became
+             VISIBLE only AFTER the click. The helper records the
+             pre-click set of visible floating elements (position:
+             fixed/absolute) and considers only newcomers — portaled
+             popups (Angular CDK overlay container, Radix portal, Vue
+             Teleport, MUI Popper at document root) and inline-mounted
+             ones alike. Same-text duplicates elsewhere on the page are
+             excluded by construction.
+          4. Inside the popup the helper prefers, in order:
+             (a) [role="option" | "menuitem" | "treeitem"] with exact
+                 text, (b) the smallest sub-tree whose textContent
+                 equals the target, (c) the smallest sub-tree that
+                 contains the target text (case-insensitive — handles
+                 highlight-match markup like "<b>Q</b>A mssql").
+          5. Click the resolved option via __mzClick.
 
-        Per the getByText rule, the `{ exact: true }` argument is MANDATORY
-        on Step 3. Bare substring matches catch the trigger label, recently-
-        selected pills, neighbouring option groups, etc., and produce
-        strict-mode violations or wrong-element clicks.
+        ── NATIVE <select> CARVE-OUT ──
+        If — and only if — the element is a native HTML `<select>` tag
+        (NOT a styled wrapper, NOT a custom combobox), use the native API
+        directly:
 
-        Per the Keyboard vs Locator rule, Step 2 uses `page.keyboard.type(...)`
-        — NOT `pressSequentially` (Locator-only). If the Signature surfaces
-        the dropdown's internal search input as its OWN element, you may
-        type into it directly with the canonical Locator flow instead:
+            await page.locator('select[name="role"]').selectOption('admin');
+
+        In every other case, including when you are unsure, use
+        `__mzSelectOption`. `locator.selectOption(...)` does NOT work on
+        custom dropdowns — it either errors or silently no-ops.
+
+        ── FORBIDDEN ──
+        ✗ await page.locator('nz-select').selectOption('admin');
+        ✗ await page.locator('mat-select').selectOption({ label: 'admin' });
+        ✗ await __mzClick(page.locator('<trigger>'));
+          await page.keyboard.type('<text>');
+          await __mzClick(page.getByText('<text>', { exact: true }).first());
+        ✗ await __mzClick(page.locator('<trigger>'));
+          await __mzClick(page.getByText('<text>', { exact: true }).first());
+          // No type step + page-wide getByText = the bug above.
+        ✗ await __mzClick(page.getByRole('option', { name: '<text>', exact: true }));
+          // Equivalent page-wide search; defeats the popup-scope guarantee.
+
+        ── DISAMBIGUATION FALLBACK ──
+        If the helper resolves the wrong element in a pathological dropdown
+        (extremely rare — happens when the popup is `position: static`
+        rather than absolute/fixed, so the "newly visible floating
+        container" heuristic misses it), fall back to a popup-scoped
+        Locator and add a one-line comment explaining the deviation:
+
+            // Inline expander, not a floating popup — helper can't scope.
+            await __mzClick(page.locator('<trigger>'));
+            await page.keyboard.type('<text>');
+            await __mzClick(
+              page.locator('<popup container selector>')
+                  .getByText('<text>', { exact: true })
+            );
+
+        Do NOT add the comment for normal cases — the helper covers the
+        overwhelming majority of UIs and the test should read like a
+        human chose it on purpose.
+
+        ── INTERNAL SEARCH INPUT VARIANT ──
+        If the Signature surfaces the dropdown's internal search input as
+        its OWN interactive element AND the prompt explicitly drives that
+        input (e.g. "type into the connection picker's search field, then
+        pick QA mssql"), you may type into it directly with the canonical
+        Locator flow before calling the helper with an empty text so it
+        skips its own typing step:
 
             const search = page.locator('<search-input selector>');
             await __mzClick(search);
             await search.press('ControlOrMeta+a');
             await search.pressSequentially('<option text>');
-            await __mzClick(page.getByText('<option text>', { exact: true }).first());
+            await __mzSelectOption(page, page.locator('<trigger>'), '<option text>');
 
-        ── FALLBACK PATTERN — open → click option (no typing) ──
-        Skip the type step ONLY when there is concrete evidence the dropdown
-        is NOT searchable AND the option list is short enough to fully
-        render at once. "Concrete evidence" means one of:
-          • the Signature description for the dropdown explicitly says
-            "no search" / "not searchable" / "fixed N options",
-          • the human description / User flows note the same,
-          • the element type is the rare native `<select>` (then use the
-            real `selectOption` API on `select[name="…"]` — that IS still
-            allowed for native selects only).
-
-        In every other case, type-to-filter is the right move. Do not
-        rationalize skipping it ("this list is probably short" / "the
-        option is probably visible") — the cost of typing when unnecessary
-        is two extra keystrokes; the cost of skipping it when wrong is a
-        flaky test.
-
-        Fallback pattern (rare):
-
-            await __mzClick(page.locator('<select selector>'));
-            await __mzClick(page.getByText('<option text>', { exact: true }).first());
-
-        ── FORBIDDEN ──
-        - Calling `.selectOption(...)` on anything that isn't a native
-          `<select>`:
-            ✗ await page.locator('nz-select').selectOption('admin');
-            ✗ await page.locator('mat-select').selectOption({ label: 'admin' });
-        - Defaulting to `getByRole('option', { name })` without evidence
-          the dropdown emits `role="option"`. Most custom dropdowns render
-          options as plain `<div>` / `<li>` / `<span>` without ARIA
-          roles, and `getByRole('option', …)` hangs on nodes that don't
-          exist in the rendered DOM:
-            ✗ await __mzClick(page.getByRole('option', { name: '<option text>' }));
-            ✗ await __mzClick(page.locator('[role="option"]', { hasText: '<option text>' }));
-          You MAY use `getByRole('option', { name, exact: true })` if the
-          Signature / description names an ARIA-compliant library
-          (Headless UI, MUI Select, Radix Select, shadcn). Without that
-          evidence, use `getByText('<option text>', { exact: true })`.
-        - Skipping the type-to-filter step on a non-native dropdown
-          WITHOUT one of the "concrete evidence" carve-outs above.
+        This is rare. The default is `__mzSelectOption(page, trigger, text)`.
 
         Apply this rule UNCONDITIONALLY for every Signature element whose
         `elementType` is "select", "combobox", or "multiselect", regardless
-        of whether the prompt phrased it as "select X" / "choose X" /
-        "pick X" / "set X to Y". Do NOT add a comment explaining the
-        substitution; the test must read like a human chose this approach
-        on purpose.
-
-        ── DISAMBIGUATION REFINEMENTS ──
-        If even the typed-and-filtered list still produces multiple matches
-        for the option text (e.g. the dropdown trigger ALSO shows the
-        currently-selected label and the new option has the same text),
-        narrow with a Signature-named option selector or `.nth(i)`:
-
-            await __mzClick(page.locator('[data-testid="<option-testid-from-signature>"]', { hasText: '<text>' }));
-            await __mzClick(page.getByText('<option text>', { exact: true }).nth(1));
+        of how the prompt phrases it ("select X" / "choose X" / "pick X" /
+        "set X to Y"). Do NOT add a comment explaining the substitution.
         """;
 
     // ── MERGE ────────────────────────────────────────────────────────

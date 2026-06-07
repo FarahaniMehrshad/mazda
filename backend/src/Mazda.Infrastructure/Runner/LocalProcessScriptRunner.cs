@@ -431,6 +431,162 @@ async function __mzPointerSwap(page: any, items: any, i: number, j: number): Pro
 
 """;
 
+    // Framework-agnostic select / combobox driver. Solves the recurring bug
+    // where a manually-written three-step pattern —
+    //     await __mzClick(trigger);
+    //     await page.keyboard.type(text);
+    //     await __mzClick(page.getByText(text, { exact: true }).first());
+    // — resolves the trigger's currently-selected label, a recently-selected
+    // pill, or unrelated copy elsewhere on the page INSTEAD of the option
+    // inside the popup. `getByText` searches the whole document; the popup is
+    // just one of many places the same string might be rendered.
+    //
+    // The helper scopes the option search to popup containers that became
+    // VISIBLE only AFTER the trigger was clicked. We don't hard-code library
+    // selectors (.cdk-overlay-container / .ant-select-dropdown / etc.) — the
+    // strategy works for portaled (Angular CDK overlay, Radix portal, Vue
+    // Teleport, MUI Popper at document root) and inline-mounted dropdowns
+    // alike, because both kinds use position:absolute|fixed for popper
+    // placement.
+    //
+    // Within the resolved popup the option is chosen by, in order:
+    //   (a) [role="option" | "menuitem" | "treeitem"] with exact text — the
+    //       most reliable signal across libraries that bother with ARIA.
+    //   (b) The smallest sub-tree whose trimmed textContent equals the
+    //       target — handles bare <div>/<li> custom dropdowns without ARIA.
+    //   (c) The smallest sub-tree that contains the target text (case-
+    //       insensitive) — last-resort fallback for highlight-match markup
+    //       like "<b>Q</b>A mssql" where the option's leaf node isn't an
+    //       exact textContent match.
+    //
+    // The click goes through __mzClick so dispatchEvent fallback still
+    // applies if Playwright actionability rejects a normal click (overlay
+    // sibling intercepts, animation mid-transition, etc.).
+    private const string SelectOptionHelperBlock = """
+
+// === Mazda runner: select-option helper (auto-injected) ===
+async function __mzSelectOption(page: any, trigger: any, text: string): Promise<void> {
+  const tag = '__mz_opt_' + Math.random().toString(36).slice(2, 10);
+
+  // STEP 1 — pre-baseline. Mark every currently-VISIBLE floating element
+  // (position:fixed/absolute) so we can later detect newcomers. We mark
+  // ONLY visible ones: a popup that was already in the DOM but kept
+  // display:none / opacity:0 / 0×0 stays un-marked, so when it toggles
+  // visible on open it shows up as "new" alongside fully-portaled popups
+  // that mount on open. We clear any stale markers from a prior failed
+  // call before re-marking, so a half-cleaned baseline doesn't poison
+  // this run.
+  await page.evaluate(() => {
+    document.querySelectorAll('[data-mz-popup-pre]').forEach((el: Element) =>
+      el.removeAttribute('data-mz-popup-pre'));
+    const all = document.body.querySelectorAll('*');
+    for (let i = 0; i < all.length; i++) {
+      const el = all[i] as HTMLElement;
+      const cs = getComputedStyle(el);
+      if (cs.position !== 'fixed' && cs.position !== 'absolute') continue;
+      if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+      if (parseFloat(cs.opacity) === 0) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      el.setAttribute('data-mz-popup-pre', '1');
+    }
+  });
+
+  // STEP 2 — open the dropdown via the robust-click helper.
+  await __mzClick(trigger);
+
+  // STEP 3 — type the option text. Most custom comboboxes auto-focus an
+  // internal search input on open, so page.keyboard.type lands on the
+  // filter. Skipped when the caller passes an empty string (rare: pick
+  // by text without typing first).
+  if (text) await page.keyboard.type(text);
+
+  // STEP 4 — locate the option INSIDE a newly-visible floating container,
+  // then tag it with a unique attribute so the click in step 5 can address
+  // it via a normal Locator (preserving __mzClick's safety net).
+  await page.waitForFunction(
+    (args: { target: string; tag: string }) => {
+      const target = args.target;
+      const tag = args.tag;
+      const lower = target.toLowerCase();
+      const isVisible = (el: Element) => {
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+        if (parseFloat(cs.opacity) === 0) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      };
+
+      // Newly-visible floating containers — the popup(s) that opened.
+      const containers: Element[] = [];
+      const all = document.body.querySelectorAll('*');
+      for (let i = 0; i < all.length; i++) {
+        const el = all[i];
+        if (el.hasAttribute('data-mz-popup-pre')) continue;
+        const cs = getComputedStyle(el);
+        if (cs.position !== 'fixed' && cs.position !== 'absolute') continue;
+        if (!isVisible(el)) continue;
+        containers.push(el);
+      }
+      if (!containers.length) return false;
+
+      // Gather option candidates across containers, classified by match
+      // quality so we can prefer ARIA-exact > text-exact > text-contains.
+      const exactMatches: Element[] = [];
+      const partialMatches: Element[] = [];
+      const ariaMatches: Element[] = [];
+      for (const c of containers) {
+        const within = c.querySelectorAll('*');
+        for (let i = 0; i < within.length; i++) {
+          const el = within[i];
+          if (!isVisible(el)) continue;
+          const t = (el.textContent || '').trim();
+          if (!t) continue;
+          const role = el.getAttribute('role') || '';
+          const isAria = role === 'option' || role === 'menuitem' || role === 'treeitem';
+          if (t === target || t.toLowerCase() === lower) {
+            exactMatches.push(el);
+            if (isAria) ariaMatches.push(el);
+          } else if (target && t.toLowerCase().includes(lower)) {
+            partialMatches.push(el);
+          }
+        }
+      }
+
+      // Pick the smallest sub-tree in the chosen set — i.e. the candidate
+      // that has no descendant also in the set. That's the leaf-most
+      // option, which is the most reliable click target.
+      const smallest = (arr: Element[]) =>
+        arr.find(el => !arr.some(o => o !== el && el.contains(o))) || arr[0];
+
+      let best: Element | null = null;
+      if (ariaMatches.length) best = smallest(ariaMatches);
+      else if (exactMatches.length) best = smallest(exactMatches);
+      else if (partialMatches.length) best = smallest(partialMatches);
+
+      if (!best) return false;
+      best.setAttribute('data-mz-tag', tag);
+      return true;
+    },
+    { target: text, tag },
+    { timeout: 5000, polling: 100 }
+  );
+
+  // STEP 5 — click the tagged option via the robust-click helper.
+  await __mzClick(page.locator('[data-mz-tag="' + tag + '"]'));
+
+  // STEP 6 — clean up markers so subsequent calls start fresh.
+  await page.evaluate((tag: string) => {
+    document.querySelectorAll('[data-mz-popup-pre]').forEach((el: Element) =>
+      el.removeAttribute('data-mz-popup-pre'));
+    document.querySelectorAll('[data-mz-tag="' + tag + '"]').forEach((el: Element) =>
+      el.removeAttribute('data-mz-tag'));
+  }, tag);
+}
+// === end auto-injected ===
+
+""";
+
     // ANSI escape stripper. Covers the three sequence families Playwright /
     // Jest / Node ever actually emit:
     //   - CSI (most common): ESC '[' <params> <intermediates> <final 0x40-0x7E>
@@ -494,13 +650,17 @@ async function __mzPointerSwap(page: any, items: any, i: number, j: number): Pro
 
         // 3 — figure out which helpers the test actually uses, and inject only those.
         //   Swap depends on Drag, so requesting Swap implicitly requests Drag too.
+        //   SelectOption depends on Click, so requesting Select implicitly
+        //   requests Click too.
         var needsCdpHelper = changed;
         var needsSwapHelper = Regex.IsMatch(rewritten, @"\b__mzPointerSwap\s*\(");
         var needsDragHelper = needsSwapHelper
             || Regex.IsMatch(rewritten, @"\b__mzPointerDrag\s*\(");
-        var needsClickHelper = Regex.IsMatch(rewritten, @"\b__mzClick\s*\(");
+        var needsSelectHelper = Regex.IsMatch(rewritten, @"\b__mzSelectOption\s*\(");
+        var needsClickHelper = needsSelectHelper
+            || Regex.IsMatch(rewritten, @"\b__mzClick\s*\(");
 
-        if (!needsCdpHelper && !needsDragHelper && !needsSwapHelper && !needsClickHelper)
+        if (!needsCdpHelper && !needsDragHelper && !needsSwapHelper && !needsClickHelper && !needsSelectHelper)
             return rewritten;
 
         // Inject after the last top-level import statement so type imports stay
@@ -515,9 +675,13 @@ async function __mzPointerSwap(page: any, items: any, i: number, j: number): Pro
 
         var injection = string.Empty;
         if (needsCdpHelper) injection += CdpHelperBlock;
+        // Order is presentational only — these are top-level `async function`
+        // declarations and are all hoisted together — but reading top-to-
+        // bottom is easier when callers come after callees.
         if (needsClickHelper) injection += ClickHelperBlock;
         if (needsDragHelper) injection += PointerDragHelperBlock;
         if (needsSwapHelper) injection += PointerSwapHelperBlock;
+        if (needsSelectHelper) injection += SelectOptionHelperBlock;
         return rewritten.Insert(insertPos, injection);
     }
 }
