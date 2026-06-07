@@ -1,0 +1,52 @@
+# ── .NET build outputs (host-only — must NOT enter the container) ──
+# These directories get written by `dotnet build` / `dotnet restore` on your
+# host machine. If they reach the image build context, the COPY of backend/src
+# overlays the host's project.assets.json (which references Windows package
+# paths) on top of the one the container's restore wrote — `dotnet publish
+# --no-restore` then errors with NETSDK1064 because those Windows paths don't
+# exist inside the container.
+**/bin/
+**/obj/
+**/.vs/
+**/*.user
+
+# ── Frontend build outputs & deps ──
+# The frontend is built in its own multi-stage Dockerfile; we don't need its
+# node_modules or dist/ for the backend image, and they'd add hundreds of MB
+# to the build context transfer.
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.cache/
+
+# ── Git / IDE / docs / OS junk ──
+.git/
+.gitignore
+.github/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ── Logs & local environment ──
+*.log
+.env
+.env.*
+!.env.example
+
+# ── Test artifacts & traces ──
+**/test-results/
+**/playwright-report/
+**/coverage/
+**/*.trace
+**/trace.zip
+
+# ── Misc context bloat ──
+README.md
+SESSION_CONTEXT.md
+docker-compose.yml
+docker-compose.*.yml
+*.Dockerfile
+Dockerfile*
