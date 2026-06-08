@@ -575,84 +575,15 @@ async function __mzSelectOption(page: any, trigger: any, text: string): Promise<
   // STEP 5 — click the tagged option via the robust-click helper.
   await __mzClick(page.locator('[data-mz-tag="' + tag + '"]'));
 
-  // STEP 6 — dismiss any popover that didn't close on its own.
-  // Multi-select dropdowns (ng-zorro nz-tree-select with nzMultiple/nzCheckable,
-  // ant-select-multiple, mat-select multiple, etc.) deliberately keep their
-  // popup open between picks. Even single-selects sometimes leave the panel
-  // visible for a few hundred ms — long enough to overlap whatever the next
-  // test step is about to click. We dismiss with a click on a viewport
-  // coordinate that lies OUTSIDE every visible popup-like container. The
-  // click is a real mouse-down at a deterministic pixel rather than a
-  // body-element click so libraries that listen for document-level
-  // pointerdown to close (CDK overlay, Headless UI, Radix) reliably fire
-  // their outside-click handler.
-  const safeSpot = await page.evaluate(() => {
-    // Find every currently-visible popup-like container. We use the same
-    // shape signal as the matcher: floating position + popup-ish role/class.
-    const isVisible = (el: Element) => {
-      const cs = getComputedStyle(el);
-      if (cs.display === 'none' || cs.visibility === 'hidden') return false;
-      if (parseFloat(cs.opacity) === 0) return false;
-      const r = el.getBoundingClientRect();
-      return r.width > 0 && r.height > 0;
-    };
-    const popupLike = (el: Element) => {
-      const role = el.getAttribute('role') || '';
-      if (role === 'listbox' || role === 'menu' || role === 'tree' || role === 'dialog')
-        return true;
-      const cls = (el.getAttribute('class') || '').toLowerCase();
-      if (/\bcdk-overlay/.test(cls)) return true;
-      if (/cdk-virtual-scroll-content-wrapper/.test(cls)) return true;
-      return /(select-overlay|select-dropdown|select-panel|dropdown-menu|dropdown-panel|combobox-panel|autocomplete|ant-select-dropdown|mat-select-panel|mat-mdc-select-panel|p-dropdown-panel|p-overlaypanel|nz-select-dropdown|ant-select-tree|ant-tree-select-dropdown)/.test(cls);
-    };
-    const rects: Array<{ x: number; y: number; w: number; h: number }> = [];
-    const all = document.body.querySelectorAll('*');
-    for (let i = 0; i < all.length; i++) {
-      const el = all[i];
-      const cs = getComputedStyle(el);
-      if (cs.position !== 'fixed' && cs.position !== 'absolute') continue;
-      if (!isVisible(el)) continue;
-      if (!popupLike(el)) continue;
-      const r = el.getBoundingClientRect();
-      rects.push({ x: r.left, y: r.top, w: r.width, h: r.height });
-    }
-    if (!rects.length) return { open: false, x: 0, y: 0 };
-
-    // Sweep a grid of viewport coordinates and pick the first one not
-    // covered by any popup rect. Starts at the corners (most likely to be
-    // page chrome rather than content) and falls through to a denser sweep
-    // so we always find SOME safe pixel even when the popup is huge. We
-    // explicitly do NOT fall back to Escape — caller asked for click-only.
-    const vw = window.innerWidth, vh = window.innerHeight;
-    const inside = (x: number, y: number) =>
-      rects.some(r => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h);
-    const corners = [
-      { x: 4, y: 4 }, { x: vw - 4, y: 4 },
-      { x: 4, y: vh - 4 }, { x: vw - 4, y: vh - 4 },
-      { x: Math.floor(vw / 2), y: 4 },
-      { x: Math.floor(vw / 2), y: vh - 4 },
-    ];
-    for (const c of corners) if (!inside(c.x, c.y)) return { open: true, x: c.x, y: c.y };
-    // Dense fallback: 20×20 grid across the viewport interior.
-    for (let gy = 1; gy < 20; gy++) {
-      for (let gx = 1; gx < 20; gx++) {
-        const x = Math.floor((vw * gx) / 20);
-        const y = Math.floor((vh * gy) / 20);
-        if (!inside(x, y)) return { open: true, x, y };
-      }
-    }
-    // Popup covers the entire viewport (unlikely — full-screen modal).
-    // Click the (1,1) pixel anyway; if the library treats inside-clicks
-    // as no-ops the next operation will simply observe the popup still
-    // open and the test will surface the real problem.
-    return { open: true, x: 1, y: 1 };
+  // STEP 6 — click the trigger's parent to dismiss the popover. Multi-select
+  // dropdowns deliberately keep their popup open between picks; we close it
+  // by clicking the immediate parent of the trigger, which is outside the
+  // popup (so its outside-click handler fires) but inside any wrapping
+  // modal/drawer (so unrelated overlays are not dismissed).
+  await trigger.evaluate((el: Element) => {
+    const parent = el.parentElement;
+    if (parent) (parent as HTMLElement).click();
   });
-  if (safeSpot.open) {
-    await page.mouse.click(safeSpot.x, safeSpot.y);
-    // Give the close animation a beat so the next step doesn't race a
-    // half-dismissed overlay (CDK overlay's leave animation is ~150ms).
-    await page.waitForTimeout(200);
-  }
 
   // STEP 7 — clean up markers so subsequent calls start fresh.
   await page.evaluate((tag: string) => {
