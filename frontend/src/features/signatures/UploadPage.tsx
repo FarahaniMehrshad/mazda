@@ -41,7 +41,7 @@ const MAX_DESCRIPTION_CHARS = 50_000;
  *
  * The user can edit this list in the upload UI. Comma- or newline-separated.
  */
-const DEFAULT_EXCLUDE_PATTERNS = "*.spec.ts, *.spec.tsx, *.cy.ts, mock*, *.mock, *.css, *.scss";
+const DEFAULT_EXCLUDE_PATTERNS = "*.ts, *.spec.ts, *.spec.tsx, *.cy.ts, mock*, *.mock, *.css, *.scss";
 
 function isEligible(name: string) {
   // Denylist, not allowlist — we want everything text-decodable to flow
