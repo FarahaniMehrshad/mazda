@@ -78,7 +78,7 @@ export function TestPromptPage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={7} onStepClick={onStepClick} />
+        <StepIndicator step={8} onStepClick={onStepClick} />
         <div
           style={{
             display: "grid",

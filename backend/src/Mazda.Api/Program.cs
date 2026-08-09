@@ -215,6 +215,15 @@ using (var scope = app.Services.CreateScope())
         ALTER TABLE signatures
             ADD COLUMN IF NOT EXISTS last_analyze_state_scope   varchar(500) NOT NULL DEFAULT '';
         """);
+
+    // Element relationships graph — output of the dedicated relationship
+    // analysis step. Stored as JSON text on the signature; the runtime
+    // serializer caps payload at 500_000 chars in the EF mapping. Empty
+    // until the user runs the step.
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE signatures
+            ADD COLUMN IF NOT EXISTS relationships_json text NOT NULL DEFAULT '';
+        """);
 }
 
 app.UseExceptionHandler();

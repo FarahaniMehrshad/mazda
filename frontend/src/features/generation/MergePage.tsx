@@ -93,7 +93,7 @@ export function MergePage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={8} onStepClick={onStepClick} />
+        <StepIndicator step={9} onStepClick={onStepClick} />
         <div
           style={{
             display: "grid",

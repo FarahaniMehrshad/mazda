@@ -26,12 +26,13 @@ export type StepNavigatorContext =
  *                             context. From run mode, step 1 is a no-op.)
  *   2  Interactable        → /signatures/:id
  *   3  Informational       → /signatures/:id/informational
- *   4  User flows          → /signatures/:id/flows
- *   5  Setup               → /runs/:id/setup            (run mode only)
- *   6  Analyze state       → /runs/:id/analyze-state    (run mode only)
- *   7  Test prompt         → /runs/:id/test             (run mode only)
- *   8  Merge & finalize    → /runs/:id/merge            (run mode only)
- *   9  Execution           → /runs/:id/execute          (run mode only)
+ *   4  Relationships       → /signatures/:id/relationships
+ *   5  User flows          → /signatures/:id/flows
+ *   6  Setup               → /runs/:id/setup            (run mode only)
+ *   7  Analyze state       → /runs/:id/analyze-state    (run mode only)
+ *   8  Test prompt         → /runs/:id/test             (run mode only)
+ *   9  Merge & finalize    → /runs/:id/merge            (run mode only)
+ *  10  Execution           → /runs/:id/execute          (run mode only)
  */
 export function useStepNavigator(ctx: StepNavigatorContext | null): (step: number) => void {
   const navigate = useNavigate();
@@ -52,25 +53,28 @@ export function useStepNavigator(ctx: StepNavigatorContext | null): (step: numbe
           navigate(`/signatures/${sigId}/informational`);
           return;
         case 4:
+          navigate(`/signatures/${sigId}/relationships`);
+          return;
+        case 5:
           navigate(`/signatures/${sigId}/flows`);
           return;
       }
       if (ctx.mode !== "run") return;
       const runId = ctx.runId;
       switch (step) {
-        case 5:
+        case 6:
           navigate(`/runs/${runId}/setup`);
           return;
-        case 6:
+        case 7:
           navigate(`/runs/${runId}/analyze-state`);
           return;
-        case 7:
+        case 8:
           navigate(`/runs/${runId}/test`);
           return;
-        case 8:
+        case 9:
           navigate(`/runs/${runId}/merge`);
           return;
-        case 9:
+        case 10:
           navigate(`/runs/${runId}/execute`);
           return;
       }

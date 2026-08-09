@@ -32,6 +32,7 @@ public static class DependencyInjection
         services.Configure<LlmOptions>(cfg.GetSection("Llm"));
         services.AddSingleton<IComponentAnalyzer, LlmComponentAnalyzer>();
         services.AddSingleton<IInformationalAnalyzer, LlmInformationalAnalyzer>();
+        services.AddSingleton<IRelationshipAnalyzer, LlmRelationshipAnalyzer>();
         services.AddSingleton<IFlowAnalyzer, LlmFlowAnalyzer>();
         services.AddSingleton<IScriptGenerator, LlmScriptGenerator>();
         services.AddSingleton<IStateBuilder, LlmStateBuilder>();

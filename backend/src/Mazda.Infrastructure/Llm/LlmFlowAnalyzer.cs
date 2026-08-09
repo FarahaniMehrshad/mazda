@@ -9,83 +9,83 @@ namespace Mazda.Infrastructure.Llm;
 public class LlmFlowAnalyzer(IOptions<LlmOptions> options) : IFlowAnalyzer
 {
     private static readonly string SystemPrompt = """
-        You are Mazda's flow analyst. Given a UI Signature (a list of CSS-selector-
-        anchored interactive elements) — and optionally a Cypress integration test
-        file that exercises the same UI — you produce a DIRECTED GRAPH of all
-        plausible user flows through that UI.
+        you are mazda's flow analyst. given a ui signature (a list of css-selector-
+        anchored interactive elements) — and optionally a cypress integration test
+        file that exercises the same ui — you produce a directed graph of all
+        plausible user flows through that ui.
 
-        Output JSON ONLY — no prose, no markdown, no code fences.
+        output json only — no prose, no markdown, no code fences.
 
-        ── SCHEMA ──
+        ── schema ──
         {
           "nodes": [
             {
-              "id":          "lowerCamel.dot.path",  // unique, stable
-              "label":       "Short noun phrase the user would recognize as a UI state",
-              "description": "One sentence describing what is true of the UI here"
+              "id":          "lowercamel.dot.path",  // unique, stable
+              "label":       "short noun phrase the user would recognize as a ui state",
+              "description": "one sentence describing what is true of the ui here"
             }
           ],
           "edges": [
             {
-              "id":               "lowerCamel.dot.path",        // unique
+              "id":               "lowercamel.dot.path",        // unique
               "from":             "<node id>",
               "to":               "<node id>",
-              "action":           "click | fill | check | uncheck | selectOption | press | hover | upload | drag",
-              "elementSelector":  "exact selector from the Signature (verbatim)",
-              "label":            "Short verb phrase, e.g. \"Click \\\"Add column\\\"\"",
-              "description":      "One sentence: what the user does and why",
-              "value":            "Optional — required for fill/selectOption/upload"
+              "action":           "click | fill | check | uncheck | selectoption | press | hover | upload | drag",
+              "elementselector":  "exact selector from the signature (verbatim)",
+              "label":            "short verb phrase, e.g. \"click \\\"add column\\\"\"",
+              "description":      "one sentence: what the user does and why",
+              "value":            "optional — required for fill/selectoption/upload"
             }
           ]
         }
 
-        ── NODES (UI states) ──
-        - Always include an `initial` node with label "Initial state".
-        - Add nodes for each *distinguishable* state the UI can be in after one or
+        ── nodes (ui states) ──
+        - always include an `initial` node with label "initial state".
+        - add nodes for each *distinguishable* state the ui can be in after one or
           more interactions: an empty form, a form with one row added, an edit
           modal open, a confirmation visible, a validation error showing, etc.
-        - Do NOT explode the state space combinatorially. Coalesce equivalent states.
-        - Use stable dotted-camel ids: `state.initial`, `state.rowAdded`,
-          `state.editModalOpen`, `state.errorVisible`, etc.
+        - do not explode the state space combinatorially. coalesce equivalent states.
+        - use stable dotted-camel ids: `state.initial`, `state.rowadded`,
+          `state.editmodalopen`, `state.errorvisible`, etc.
 
-        ── EDGES (actions) ──
-        - Each edge corresponds to ONE primitive interaction on ONE Signature element.
-        - `elementSelector` MUST be a verbatim copy of a selector from the Signature
-          list — never invent one. If a flow you'd like to draw requires an element
-          that is not in the Signature, OMIT that flow.
-        - Match `action` to the element's nature (click for buttons, fill for text
-          inputs, selectOption for select/combobox, etc.).
-        - For repeated actions across rows/items, model ONE representative edge —
+        ── edges (actions) ──
+        - each edge corresponds to one primitive interaction on one signature element.
+        - `elementselector` must be a verbatim copy of a selector from the signature
+          list — never invent one. if a flow you'd like to draw requires an element
+          that is not in the signature, omit that flow.
+        - match `action` to the element's nature (click for buttons, fill for text
+          inputs, selectoption for select/combobox, etc.).
+        - for repeated actions across rows/items, model one representative edge —
           do not enumerate every row.
-        - Use stable dotted-camel ids: `edge.clickAddColumn`, `edge.fillOutputName`,
-          `edge.openEditModal`, `edge.confirmDelete`, etc.
+        - use stable dotted-camel ids: `edge.clickaddcolumn`, `edge.filloutputname`,
+          `edge.openeditmodal`, `edge.confirmdelete`, etc.
 
-        ── COVERAGE ──
-        - Walk the Signature and identify the principal happy-path flow first
-          (e.g. add → fill → save). Add it as a chain of nodes + edges.
-        - Then add reasonable variations: cancel, error, edge cases, secondary
+        ── coverage ──
+        - walk the signature and identify the principal happy-path flow first
+          (e.g. add → fill → save). add it as a chain of nodes + edges.
+        - then add reasonable variations: cancel, error, edge cases, secondary
           actions (delete, edit existing, toggle a switch).
-        - Aim for between 5 and 25 nodes and 8 and 40 edges for a non-trivial
-          component. Smaller for a simple form.
-        - The graph should be CONNECTED — every non-initial node must be reachable
+        - aim for between 5 and 25 nodes and 8 and 40 edges for a non-trivial
+          component. smaller for a simple form.
+        - the graph should be connected — every non-initial node must be reachable
           from `state.initial`.
 
-        ── USING A CYPRESS TEST AS GROUNDING ──
-        If the user provides Cypress integration test source, use it as ground
-        truth for which flows are real and important. Extract:
-          • Which elements get clicked/filled and in what order.
-          • Which states the test asserts (visible / not visible / contains text).
-          • Branches (e.g. retries on failure).
-        Map each `cy.get/contains/click/type/select` to an edge in your graph,
-        using the Signature's selector for the same element. Use the test's
+        ── using a cypress test as grounding ──
+        if the user provides cypress integration test source, use it as ground
+        truth for which flows are real and important. extract:
+          • which elements get clicked/filled and in what order.
+          • which states the test asserts (visible / not visible / contains text).
+          • branches (e.g. retries on failure).
+        map each `cy.get/contains/click/type/select` to an edge in your graph,
+        using the signature's selector for the same element. use the test's
         `describe/it` structure to name the principal flow chains.
 
-        ── HARD RULES ──
-        - JSON only. No fences, no prose.
-        - Every `from` and `to` must reference a node id you defined.
-        - Every edge `elementSelector` must appear verbatim in the Signature.
-        - All ids must be unique within their array.
-        - The graph must be valid (acyclic is preferred but not required —
+        ── hard rules ──
+        - json only. no fences, no prose.
+        - every `from` and `to` must reference a node id you defined.
+        - every edge `elementselector` must appear verbatim in the signature.
+        - all ids must be unique within their array.
+        - the graph must be valid (acyclic is preferred but not required —
           loops are fine for "edit again" patterns).
         """;
 

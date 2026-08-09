@@ -22,6 +22,16 @@ public class Signature : Entity
     public string Type { get; private set; } = "component"; // form | wizard | grid | modal | uploader | tabs | page
     public string HumanDescription { get; private set; } = string.Empty;
     public string UserFlowsJson { get; private set; } = string.Empty;
+    /// <summary>
+    /// Element-relationship graph: serialized
+    /// <c>{ "nodes": [ ... ], "edges": [ ... ] }</c> JSON produced by the
+    /// relationship-analysis step. Captures the semantic connections that
+    /// hide in the DOM tree — a parent container whose heading labels its
+    /// children, a "select X related to Y" relationship, mutual-exclusion
+    /// pairs, controls-the-state-of edges, etc. Empty until the step runs.
+    /// Generation pipelines feed it to the test LLM as additional grounding.
+    /// </summary>
+    public string RelationshipsJson { get; private set; } = string.Empty;
     // Most-recent setup / test prompts used against this signature. New
     // generations created off the signature pre-fill from these.
     public string LastSetupPrompt { get; private set; } = string.Empty;
@@ -84,6 +94,7 @@ public class Signature : Entity
     public void BumpVersion(string version) { Version = version.Trim(); Touch(); }
     public void SetHumanDescription(string? description) { HumanDescription = description?.Trim() ?? string.Empty; Touch(); }
     public void SetUserFlows(string? json) { UserFlowsJson = json ?? string.Empty; Touch(); }
+    public void SetRelationships(string? json) { RelationshipsJson = json ?? string.Empty; Touch(); }
     public void SetLastSetupPrompt(string? prompt) { LastSetupPrompt = prompt?.Trim() ?? string.Empty; Touch(); }
     public void SetLastTestPrompt(string? prompt) { LastTestPrompt = prompt?.Trim() ?? string.Empty; Touch(); }
     public void SetLastSetupScript(string? script) { LastSetupScript = script ?? string.Empty; Touch(); }
@@ -112,6 +123,10 @@ public class Signature : Entity
         LastAnalyzeStateRawOutput = string.Empty;
         LastAnalyzeStateJson = string.Empty;
         UserFlowsJson = string.Empty;
+        // The relationship graph is BUILT from selectors + descriptions, so an
+        // element edit (rename / add / remove) makes the persisted graph stale
+        // the same way it makes flows / analyze-state stale.
+        RelationshipsJson = string.Empty;
         Touch();
     }
     public void SetLastAnalyzeStateOutput(string? raw, string? json)

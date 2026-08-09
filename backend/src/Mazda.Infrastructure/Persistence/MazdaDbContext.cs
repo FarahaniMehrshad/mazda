@@ -56,6 +56,7 @@ internal class SignatureConfig : IEntityTypeConfiguration<Signature>
         b.Property(x => x.Type).HasMaxLength(40);
         b.Property(x => x.HumanDescription).HasColumnName("human_description").HasMaxLength(50_000);
         b.Property(x => x.UserFlowsJson).HasColumnName("user_flows").HasMaxLength(200_000);
+        b.Property(x => x.RelationshipsJson).HasColumnName("relationships_json").HasMaxLength(500_000);
         // Prompts are intentionally unbounded so the user can paste arbitrarily
         // large context (long English instructions, copied logs, etc.).
         b.Property(x => x.LastSetupPrompt).HasColumnName("last_setup_prompt");

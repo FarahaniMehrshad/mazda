@@ -26,6 +26,10 @@ export const signatureApi = {
     api.post<SignatureDto>(`/api/signatures/${id}/analyze-informational`, {}),
   reanalyzeInteractive: (id: string) =>
     api.post<SignatureDto>(`/api/signatures/${id}/reanalyze-interactive`, {}),
+  analyzeRelationships: (id: string) =>
+    api.post<SignatureDto>(`/api/signatures/${id}/analyze-relationships`, {}),
+  saveRelationships: (id: string, graphJson: string) =>
+    api.put<SignatureDto>(`/api/signatures/${id}/relationships`, { graphJson }),
   // ── Dependencies ──
   listDependencies: (id: string) =>
     api.get<SignatureDependencyDto[]>(`/api/signatures/${id}/dependencies`),
@@ -118,6 +122,29 @@ export function useReanalyzeInteractive() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => signatureApi.reanalyzeInteractive(id),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["signatures"] });
+      qc.setQueryData(["signature", data.id], data);
+    },
+  });
+}
+
+export function useAnalyzeRelationships() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => signatureApi.analyzeRelationships(id),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["signatures"] });
+      qc.setQueryData(["signature", data.id], data);
+    },
+  });
+}
+
+export function useSaveRelationships() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, graphJson }: { id: string; graphJson: string }) =>
+      signatureApi.saveRelationships(id, graphJson),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["signatures"] });
       qc.setQueryData(["signature", data.id], data);

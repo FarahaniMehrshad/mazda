@@ -172,7 +172,7 @@ export function AnalyzeStatePage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={6} onStepClick={onStepClick} />
+        <StepIndicator step={7} onStepClick={onStepClick} />
         <div
           style={{
             display: "grid",

@@ -78,7 +78,7 @@ export function SetupPage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={5} onStepClick={onStepClick} />
+        <StepIndicator step={6} onStepClick={onStepClick} />
         <div
           style={{
             display: "grid",

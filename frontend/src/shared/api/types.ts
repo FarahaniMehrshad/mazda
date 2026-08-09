@@ -22,6 +22,14 @@ export interface SignatureDto {
   type: string;
   humanDescription: string;
   userFlowsJson: string;
+  /**
+   * Element-relationship graph JSON produced by the relationship-analysis
+   * step. Captures semantic edges between selectors that the DOM tree itself
+   * doesn't reveal (a parent container's heading labels its children, a
+   * button controls a field, a row's name identifies its delete action,
+   * etc.). Empty string until the step runs.
+   */
+  relationshipsJson: string;
   nodeCount: number;
   updatedAt: string;
   elements: SignatureElementDto[];
@@ -52,6 +60,56 @@ export interface UserFlowsGraph {
     label: string;
     description?: string;
     value?: string;
+  }>;
+}
+
+/**
+ * Element-relationship graph produced by signature step 4.
+ *
+ * - `nodes` reuse the selectors from the signature where possible. `role`
+ *   distinguishes element nodes (interactive / informational) from purely
+ *   structural pivot nodes (container / section) introduced by the
+ *   analyzer when a relation pivots on a group / panel that isn't itself
+ *   a signature element.
+ *
+ * - `edges` carry a `relation` discriminator (the structural relationship
+ *   type — "labels", "controls", "grouped-under", "refers-to", …) plus
+ *   a short human-readable `label` for graph display.
+ *
+ * The viewer renders this graph via @xyflow/react + dagre, mirroring the
+ * UserFlowsPage layout.
+ */
+export type RelationshipRelation =
+  | "labels"
+  | "grouped-under"
+  | "controls"
+  | "submits"
+  | "opens"
+  | "closes"
+  | "mutually-exclusive"
+  | "depends-on"
+  | "refers-to"
+  | "sibling-of"
+  | "list-item-of"
+  | "value-of"
+  | "related"
+  | string;
+
+export interface RelationshipGraph {
+  nodes: Array<{
+    id: string;
+    selector: string;
+    label: string;
+    role: "interactive" | "informational" | "container" | "section" | string;
+    description?: string;
+  }>;
+  edges: Array<{
+    id: string;
+    from: string;
+    to: string;
+    relation: RelationshipRelation;
+    label: string;
+    description?: string;
   }>;
 }
 

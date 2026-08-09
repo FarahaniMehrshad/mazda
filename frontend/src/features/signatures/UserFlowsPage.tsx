@@ -236,7 +236,7 @@ export function UserFlowsPage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={4} onStepClick={onStepClick} />
+        <StepIndicator step={5} onStepClick={onStepClick} />
         <div
           style={{
             display: "grid",

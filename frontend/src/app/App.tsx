@@ -9,6 +9,7 @@ import { LibraryPage } from "@/features/signatures/LibraryPage";
 import { UploadPage } from "@/features/signatures/UploadPage";
 import { EditorPage } from "@/features/signatures/EditorPage";
 import { InformationalReviewPage } from "@/features/signatures/InformationalReviewPage";
+import { RelationshipsPage } from "@/features/signatures/RelationshipsPage";
 import { UserFlowsPage } from "@/features/signatures/UserFlowsPage";
 import { NewRunPage } from "@/features/generation/NewRunPage";
 import { SetupPage } from "@/features/generation/SetupPage";
@@ -73,6 +74,14 @@ export function App() {
             element={
               <RequireAuth>
                 <InformationalReviewPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/signatures/:id/relationships"
+            element={
+              <RequireAuth>
+                <RelationshipsPage />
               </RequireAuth>
             }
           />

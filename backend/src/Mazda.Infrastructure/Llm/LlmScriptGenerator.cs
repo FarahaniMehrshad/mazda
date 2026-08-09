@@ -1366,15 +1366,63 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
     public Task<ScriptGenerationResult> GenerateTestAsync(Signature signature, string testPrompt, string? setupScript, string? stateJson = null, IReadOnlyList<Signature>? dependencies = null, CancellationToken ct = default)
     {
         var flowsBlock = BuildFlowsBlock(signature, dependencies);
+        var relationshipsBlock = BuildRelationshipsBlock(signature, dependencies);
         var setupBlock = string.IsNullOrWhiteSpace(setupScript)
             ? string.Empty
             : $"\n\nSetup script (for context — do not re-emit imports or fixtures):\n```ts\n{setupScript}\n```";
         var stateBlock = string.IsNullOrWhiteSpace(stateJson)
             ? string.Empty
             : $"\n\nCurrent component state (captured live before this run; semantic JSON built from the informational signature elements):\n```json\n{stateJson}\n```";
-        var userMsg = BuildSignatureContext(signature, dependencies) + flowsBlock + setupBlock + stateBlock +
+        var userMsg = BuildSignatureContext(signature, dependencies) + flowsBlock + relationshipsBlock + setupBlock + stateBlock +
             $"\n\nTest prompt:\n{testPrompt}";
         return Call(opts => opts.GeneratorModel, TestSystemPrompt, userMsg, ct);
+    }
+
+    /// <summary>
+    /// Combine the root signature's relationship graph with each dependency's
+    /// relationship graph into a single labeled block. Mirrors BuildFlowsBlock
+    /// — each component gets its own sub-block so the LLM doesn't mix edges
+    /// from different components.
+    ///
+    /// Returns empty when NO component (root or dep) has a non-blank
+    /// relationships JSON. The block header explains how the model is
+    /// expected to USE these edges when resolving relational phrasing in the
+    /// user prompt.
+    /// </summary>
+    private static string BuildRelationshipsBlock(Signature root, IReadOnlyList<Signature>? dependencies)
+    {
+        var blocks = new List<string>();
+        if (!string.IsNullOrWhiteSpace(root.RelationshipsJson))
+            blocks.Add($"Element relationships for `{root.Name}` (the primary component):\n```json\n{root.RelationshipsJson}\n```");
+
+        if (dependencies is not null)
+        {
+            foreach (var dep in dependencies)
+            {
+                if (dep.Id == root.Id) continue;
+                if (string.IsNullOrWhiteSpace(dep.RelationshipsJson)) continue;
+                blocks.Add(
+                    $"Element relationships for embedded component `{dep.Name}`:\n" +
+                    $"```json\n{dep.RelationshipsJson}\n```");
+            }
+        }
+
+        if (blocks.Count == 0) return string.Empty;
+        return "\n\nElement relationships — semantic edges between selectors that the DOM tree itself " +
+               "doesn't reveal. Use them to RESOLVE relational phrasing in the user prompt:\n" +
+               "  • `grouped-under` / `labels`  → when the user says \"the X under <header>\" or " +
+               "\"the X labeled Y\", filter children whose parent group node carries that label.\n" +
+               "  • `refers-to` / `sibling-of`  → when the user says \"the X next to row Y\" or " +
+               "\"the X for entry Y\", find the row-level node whose identifying text matches Y, " +
+               "then pick the connected action.\n" +
+               "  • `controls` / `submits` / `opens` / `closes`  → when the user says \"submit the form\", " +
+               "\"open the picker\", \"close the dialog\", pick the control whose edge points to the affected node.\n" +
+               "  • `mutually-exclusive`  → when only one of two slot-mates is currently visible, " +
+               "wait for / assert the right one before interacting.\n" +
+               "  • `depends-on`  → when the user prompts \"enable\" / \"set X first\", traverse the " +
+               "depends-on edge to find what to do before the dependent action.\n" +
+               "Treat unknown edges as soft hints; trust your direct reading of the signature first.\n\n" +
+               string.Join("\n\n", blocks);
     }
 
     /// <summary>

@@ -133,7 +133,7 @@ export function ScreenShell({ children }: ScreenShellProps) {
 }
 
 interface StepIndicatorProps {
-  step: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+  step: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
   /**
    * Optional click handler. When provided, each step becomes a button-like
    * clickable target — cursor pointer, hover affordance, keyboard-focusable.
@@ -148,12 +148,13 @@ const STEPS = [
   { n: "01", t: "Upload" },
   { n: "02", t: "Interactable" },
   { n: "03", t: "Informational" },
-  { n: "04", t: "User flows" },
-  { n: "05", t: "Setup" },
-  { n: "06", t: "Analyze state" },
-  { n: "07", t: "Test prompt" },
-  { n: "08", t: "Merge & finalize" },
-  { n: "09", t: "Execution" },
+  { n: "04", t: "Relationships" },
+  { n: "05", t: "User flows" },
+  { n: "06", t: "Setup" },
+  { n: "07", t: "Analyze state" },
+  { n: "08", t: "Test prompt" },
+  { n: "09", t: "Merge & finalize" },
+  { n: "10", t: "Execution" },
 ];
 
 export function StepIndicator({ step, onStepClick }: StepIndicatorProps) {

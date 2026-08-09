@@ -120,6 +120,32 @@ public interface IInformationalAnalyzer
 public record InformationalAnalysisResult(IReadOnlyList<AnalyzedElement> Elements, int TokensUsed);
 
 /// <summary>
+/// Outbound port for the RELATIONSHIP analysis pass — step 4 of the signature
+/// pipeline. Receives the existing Signature (interactive + informational
+/// elements already extracted) PLUS the component source, and produces a
+/// graph that captures the SEMANTIC RELATIONS that hide in the DOM tree:
+/// a parent container whose heading labels its children (group-membership),
+/// a "button that controls field X" (controls), mutually-exclusive pairs,
+/// "refers to the same entity as", etc. The result is consumed by the
+/// test-generation prompt as additional grounding when the user phrases a
+/// step relationally ("click the delete button next to row X", "select the
+/// option under <heading>").
+///
+/// The result JSON is opaque to the application layer — the analyzer is
+/// expected to emit a well-formed { "nodes": [...], "edges": [...] } shape
+/// and the use case just persists the string verbatim onto the signature.
+/// </summary>
+public interface IRelationshipAnalyzer
+{
+    Task<RelationshipAnalysisResult> AnalyzeRelationshipsAsync(
+        Signature signature,
+        string componentSource,
+        CancellationToken ct = default);
+}
+
+public record RelationshipAnalysisResult(string GraphJson, int TokensUsed);
+
+/// <summary>
 /// Outbound port: given the raw extraction JSON produced by the analyze-state
 /// Playwright script (an opaque per-selector key→value blob) and the signature
 /// (descriptions / logic for each selector), produce a clean semantic JSON

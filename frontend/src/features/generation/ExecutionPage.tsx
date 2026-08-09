@@ -140,7 +140,7 @@ export function ExecutionPage() {
           overflow: "hidden",
         }}
       >
-        <StepIndicator step={9} onStepClick={onStepClick} />
+        <StepIndicator step={10} onStepClick={onStepClick} />
         <div
           style={{
             display: "grid",

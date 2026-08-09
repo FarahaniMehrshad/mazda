@@ -61,7 +61,15 @@ public static class Endpoints
         sigs.MapPost("/{id:guid}/analyze-informational", async (Guid id, ISender s) =>
             (await s.Send(new AnalyzeInformationalCommand(id))).ToHttp());
 
-        // Wizard step 4 — user flows.
+        // Wizard step 4 — element-relationship graph (semantic edges between
+        // selectors: labels, grouped-under, controls, refers-to, etc.).
+        sigs.MapPost("/{id:guid}/analyze-relationships", async (Guid id, ISender s) =>
+            (await s.Send(new AnalyzeRelationshipsCommand(id))).ToHttp());
+
+        sigs.MapPut("/{id:guid}/relationships", async (Guid id, [FromBody] RelationshipsBody body, ISender s) =>
+            (await s.Send(new UpdateRelationshipsCommand(id, body.GraphJson))).ToHttp());
+
+        // Wizard step 5 — user flows.
         sigs.MapPost("/{id:guid}/flows/generate", async (Guid id, [FromBody] GenerateFlowsBody body, ISender s) =>
             (await s.Send(new GenerateUserFlowsCommand(id, body.CypressSource))).ToHttp());
 
@@ -187,5 +195,6 @@ public static class Endpoints
     public record GenerateFlowsBody(string? CypressSource);
     public record AnalyzeScopeBody(string? Scope);
     public record FlowsBody(string FlowsJson);
+    public record RelationshipsBody(string GraphJson);
     public record AddDependencyBody(Guid DependsOnId);
 }

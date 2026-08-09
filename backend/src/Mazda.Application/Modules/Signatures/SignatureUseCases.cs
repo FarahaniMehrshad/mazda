@@ -16,6 +16,11 @@ public record SignatureDto(
     string Type,
     string HumanDescription,
     string UserFlowsJson,
+    // Element-relationship graph JSON produced by the relationship-analysis
+    // step (step 4 of the signature pipeline). Empty string when the step
+    // hasn't run yet. Frontend's RelationshipsPage round-trips it through a
+    // JSON editor + graph viewer.
+    string RelationshipsJson,
     int NodeCount,
     DateTime UpdatedAt,
     IReadOnlyList<SignatureElementDto> Elements,
@@ -28,6 +33,7 @@ internal static class SignatureMapper
 {
     public static SignatureDto ToDto(this Signature s) => new(
         s.Id, s.Name, s.Version, s.Source, s.Type, s.HumanDescription, s.UserFlowsJson,
+        s.RelationshipsJson,
         s.Elements.Count, s.UpdatedAt,
         s.Elements.OrderBy(e => e.Order).Select(e => new SignatureElementDto(
             e.ElementSelector, e.Category.ToString(), e.ElementType, e.ElementDescription, e.ElementLogic)).ToList(),
@@ -423,6 +429,83 @@ public class AnalyzeInformationalHandler(
             .ToList();
 
         await repo.ReplaceElementsAsync(sig, merged, ct);
+        await uow.SaveChangesAsync(ct);
+        return Result.Success(sig.ToDto());
+    }
+}
+
+// === Element-relationship graph (signature step 4) ===
+// Runs after Interactive + Informational passes have populated the signature
+// with element selectors and descriptions. Asks the LLM to infer the
+// semantic graph: which container labels which children, which control
+// affects which field, which read target identifies which row, etc.
+// Persists the resulting JSON onto the signature; downstream test-gen
+// merges it into the LLM context so relational prompts ("delete next to
+// row X") get the right selector.
+
+public record AnalyzeRelationshipsCommand(Guid SignatureId) : IRequest<Result<SignatureDto>>;
+
+public class AnalyzeRelationshipsValidator : AbstractValidator<AnalyzeRelationshipsCommand>
+{
+    public AnalyzeRelationshipsValidator()
+    {
+        RuleFor(x => x.SignatureId).NotEmpty();
+    }
+}
+
+public class AnalyzeRelationshipsHandler(
+    ISignatureRepository repo,
+    IRelationshipAnalyzer analyzer,
+    ICurrentUser me,
+    IUnitOfWork uow) : IRequestHandler<AnalyzeRelationshipsCommand, Result<SignatureDto>>
+{
+    public async Task<Result<SignatureDto>> Handle(AnalyzeRelationshipsCommand cmd, CancellationToken ct)
+    {
+        if (me.UserId is null) return Result.Failure<SignatureDto>(Error.Validation("Not authenticated."));
+        var sig = await repo.FindByIdAsync(cmd.SignatureId, me.UserId.Value, ct);
+        if (sig is null) return Result.Failure<SignatureDto>(Error.NotFound("Signature"));
+
+        if (string.IsNullOrWhiteSpace(sig.SourceCode))
+            return Result.Failure<SignatureDto>(Error.Validation("Original component source not available; re-upload the component."));
+
+        RelationshipAnalysisResult result;
+        try { result = await analyzer.AnalyzeRelationshipsAsync(sig, sig.SourceCode, ct); }
+        catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Relationship analyzer failed: {ex.Message}")); }
+
+        sig.SetRelationships(result.GraphJson);
+        await uow.SaveChangesAsync(ct);
+        return Result.Success(sig.ToDto());
+    }
+}
+
+// Hand-edit pass on the relationship graph — lets the user fix up the
+// LLM's output without rerunning the analyzer.
+public record UpdateRelationshipsCommand(Guid SignatureId, string GraphJson) : IRequest<Result<SignatureDto>>;
+
+public class UpdateRelationshipsValidator : AbstractValidator<UpdateRelationshipsCommand>
+{
+    public UpdateRelationshipsValidator()
+    {
+        RuleFor(x => x.SignatureId).NotEmpty();
+        RuleFor(x => x.GraphJson).NotNull().MaximumLength(500_000);
+    }
+}
+
+public class UpdateRelationshipsHandler(
+    ISignatureRepository repo,
+    ICurrentUser me,
+    IUnitOfWork uow) : IRequestHandler<UpdateRelationshipsCommand, Result<SignatureDto>>
+{
+    public async Task<Result<SignatureDto>> Handle(UpdateRelationshipsCommand cmd, CancellationToken ct)
+    {
+        if (me.UserId is null) return Result.Failure<SignatureDto>(Error.Validation("Not authenticated."));
+        var sig = await repo.FindByIdAsync(cmd.SignatureId, me.UserId.Value, ct);
+        if (sig is null) return Result.Failure<SignatureDto>(Error.NotFound("Signature"));
+
+        try { using var _ = System.Text.Json.JsonDocument.Parse(cmd.GraphJson); }
+        catch (System.Text.Json.JsonException ex) { return Result.Failure<SignatureDto>(Error.Validation($"Relationships JSON invalid: {ex.Message}")); }
+
+        sig.SetRelationships(cmd.GraphJson);
         await uow.SaveChangesAsync(ct);
         return Result.Success(sig.ToDto());
     }

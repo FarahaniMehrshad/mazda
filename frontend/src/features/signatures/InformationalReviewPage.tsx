@@ -102,7 +102,7 @@ export function InformationalReviewPage() {
   }
 
   function onContinue() {
-    if (signature) navigate(`/signatures/${signature.id}/flows`);
+    if (signature) navigate(`/signatures/${signature.id}/relationships`);
   }
 
   function onBack() {
@@ -257,7 +257,7 @@ export function InformationalReviewPage() {
                 {save.isPending ? "Saving…" : "Save changes"}
               </BtnGhost>
               <BtnPrimary icon={Icon.arrow()} onClick={onContinue}>
-                Continue to flows
+                Continue to relationships
               </BtnPrimary>
             </div>
           </div>
