@@ -14,6 +14,7 @@ public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContex
     public DbSet<Signature> Signatures => Set<Signature>();
     public DbSet<SignatureElement> SignatureElements => Set<SignatureElement>();
     public DbSet<SignatureDependency> SignatureDependencies => Set<SignatureDependency>();
+    public DbSet<SignatureFunction> SignatureFunctions => Set<SignatureFunction>();
     public DbSet<Generation> Generations => Set<Generation>();
     public DbSet<McpTool> McpTools => Set<McpTool>();
 
@@ -23,6 +24,7 @@ public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContex
         mb.ApplyConfiguration(new SignatureConfig());
         mb.ApplyConfiguration(new SignatureElementConfig());
         mb.ApplyConfiguration(new SignatureDependencyConfig());
+        mb.ApplyConfiguration(new SignatureFunctionConfig());
         mb.ApplyConfiguration(new GenerationConfig());
         mb.ApplyConfiguration(new McpToolConfig());
     }
@@ -81,6 +83,13 @@ internal class SignatureConfig : IEntityTypeConfiguration<Signature>
          .HasForeignKey(d => d.SignatureId).OnDelete(DeleteBehavior.Cascade);
         b.Metadata.FindNavigation(nameof(Signature.Dependencies))!
          .SetPropertyAccessMode(PropertyAccessMode.Field);
+        // Function catalogue rows cascade with the signature — deleting a
+        // signature must not leave orphan function bodies referencing dead
+        // selectors, and repos never load functions independently.
+        b.HasMany(x => x.Functions).WithOne()
+         .HasForeignKey(f => f.SignatureId).OnDelete(DeleteBehavior.Cascade);
+        b.Metadata.FindNavigation(nameof(Signature.Functions))!
+         .SetPropertyAccessMode(PropertyAccessMode.Field);
     }
 }
 
@@ -120,6 +129,44 @@ internal class SignatureElementConfig : IEntityTypeConfiguration<SignatureElemen
     }
 }
 
+internal class SignatureFunctionConfig : IEntityTypeConfiguration<SignatureFunction>
+{
+    public void Configure(EntityTypeBuilder<SignatureFunction> b)
+    {
+        b.ToTable("signature_functions");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.SignatureId).HasColumnName("signature_id").IsRequired();
+        b.Property(x => x.Name).HasColumnName("name").HasMaxLength(120).IsRequired();
+        // Kind serialised as its enum name string ("State" / "Action") — same
+        // pattern as SignatureElement.Category. Keeps DB values grep-friendly
+        // and survives enum-value reordering.
+        b.Property(x => x.Kind).HasColumnName("kind").HasConversion<string>().HasMaxLength(20).IsRequired();
+        // Description and preconditions are intentionally unbounded — the LLM
+        // may produce a multi-sentence description, and preconditions can grow
+        // as we surface more author-authored context to the planner.
+        b.Property(x => x.Description).HasColumnName("description");
+        b.Property(x => x.Preconditions).HasColumnName("preconditions");
+        // Schemas are opaque JSON blobs; storing as `text` (via unbounded
+        // string) matches how relationships_json and user_flows are stored.
+        // Not jsonb — we only ever round-trip them verbatim, never query into
+        // them from SQL.
+        b.Property(x => x.ParametersJsonSchema).HasColumnName("parameters_schema");
+        b.Property(x => x.ReturnsJsonSchema).HasColumnName("returns_schema");
+        // Bodies can be dozens of lines; leave unbounded.
+        b.Property(x => x.Body).HasColumnName("body");
+        // `order` is a SQL reserved word so it gets quoted by EF's identifier
+        // quoting when we override the column name; safe here because HasColumnName
+        // routes through the same quoter.
+        b.Property(x => x.Order).HasColumnName("order");
+        // Uniqueness on (signature, name) — the planner LLM addresses functions
+        // by name in the plan JSON, and duplicate names would silently make one
+        // of them unreachable. Enforce at the DB so the constraint outlives any
+        // application-layer validation drift.
+        b.HasIndex(x => new { x.SignatureId, x.Name }).IsUnique();
+        b.HasIndex(x => new { x.SignatureId, x.Order });
+    }
+}
+
 internal class GenerationConfig : IEntityTypeConfiguration<Generation>
 {
     public void Configure(EntityTypeBuilder<Generation> b)
@@ -129,15 +176,17 @@ internal class GenerationConfig : IEntityTypeConfiguration<Generation>
         b.Property(x => x.Source).HasColumnName("source").HasConversion<string>().HasMaxLength(20);
         b.Property(x => x.McpToolId).HasColumnName("mcp_tool_id");
         b.HasIndex(x => x.McpToolId);
-        b.Property(x => x.SetupPrompt).HasColumnName("setup_prompt");
-        b.Property(x => x.SetupScript).HasColumnName("setup_script");
-        b.Property(x => x.AnalyzeStateScript).HasColumnName("analyze_state_script");
-        b.Property(x => x.AnalyzeStateRawOutput).HasColumnName("analyze_state_raw_output");
-        b.Property(x => x.AnalyzeStateJson).HasColumnName("analyze_state_json");
-        b.Property(x => x.AnalyzeStateScope).HasColumnName("analyze_state_scope").HasMaxLength(500);
-        b.Property(x => x.TestPrompt).HasColumnName("test_prompt");
-        b.Property(x => x.TestScript).HasColumnName("test_script");
-        b.Property(x => x.FinalScript).HasColumnName("final_script");
+        // Runtime artefacts under the function-catalogue architecture. The
+        // legacy columns (setup_prompt / test_prompt / setup_script /
+        // analyze_state_* / test_script / final_script) live on in the DB
+        // for now, but are not mapped here — EF ignores them entirely.
+        // Program.cs's migration drops NOT NULL on the two that were
+        // required so INSERTs from the new mapping succeed with them
+        // absent.
+        b.Property(x => x.Prompt).HasColumnName("prompt");
+        b.Property(x => x.GatheredStateJson).HasColumnName("gathered_state_json");
+        b.Property(x => x.PlanJson).HasColumnName("plan_json");
+        b.Property(x => x.ExecutionEnvelopeJson).HasColumnName("execution_envelope_json");
         b.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
         b.Property(x => x.ExecutionStatus).HasColumnName("execution_status").HasConversion<string>().HasMaxLength(20);
         b.Property(x => x.ExecutionLog).HasColumnName("execution_log");

@@ -133,18 +133,25 @@ export interface McpToolDto {
 export interface GenerationDto {
   id: string;
   signatureId: string;
-  setupPrompt: string;
-  setupScript: string | null;
-  analyzeStateScript: string | null;
-  analyzeStateRawOutput: string | null;
-  analyzeStateJson: string | null;
-  // Optional CSS selector that scopes the analyze-state extraction to a
-  // specific sub-tree of the page (modal, popover, panel, …). Null/empty
-  // means whole-page extraction.
-  analyzeStateScope: string | null;
-  testPrompt: string;
-  testScript: string | null;
-  finalScript: string | null;
+  /** The natural-language prompt the planner LLM saw. */
+  prompt: string;
+  /**
+   * JSON blob produced by the state-gather phase — shape
+   * `{ manifest, capturedAt, state: { <fnName>: <return> } }`. Null until
+   * the gather step completes; set once, never mutated.
+   */
+  gatheredStateJson: string | null;
+  /**
+   * JSON blob produced by the planner LLM — shape
+   * `{ reasoning, steps: [{ id, call, args }, ...] }`. Null until the plan
+   * step completes.
+   */
+  planJson: string | null;
+  /**
+   * JSON blob produced by the interpreter — shape documented in
+   * `ExecutionEnvelope`. Null while executing / never run.
+   */
+  executionEnvelopeJson: string | null;
   status: GenerationStatus;
   failureReason: string | null;
   tokensUsed: number;
@@ -155,4 +162,81 @@ export interface GenerationDto {
   executionEndedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+// ── Signature function catalogue ─────────────────────────────────────
+
+/**
+ * One high-level function on a signature. The runtime pipeline splits into
+ * two kinds:
+ *   - "state"   — read-only observer, no args, returns structured JSON.
+ *                 Runs automatically during gatherInformation.
+ *   - "action"  — parameterised side-effect. Planner LLM composes plans
+ *                 out of these.
+ */
+export interface SignatureFunctionDto {
+  id: string;
+  name: string;
+  kind: "state" | "action";
+  description: string;
+  /** Full JSON Schema doc for the function's parameter object. */
+  parametersJsonSchema: string;
+  /** Full JSON Schema doc for the return value. */
+  returnsJsonSchema: string;
+  /** Optional 1-sentence English precondition. Empty when unconditional. */
+  preconditions: string;
+  /**
+   * TypeScript Playwright snippet — the body of the function, executed at
+   * runtime inside a per-run harness that also exposes the `__mz*` helpers.
+   */
+  body: string;
+  order: number;
+  updatedAt: string;
+}
+
+// ── Runtime pipeline blob shapes ────────────────────────────────────
+// These are the typed views of the JSON blobs on GenerationDto. The wire
+// still carries opaque strings; consumers parse into these when rendering.
+
+export interface GatheredStateBlob {
+  manifest: string;         // e.g. "todo-list@1.2.0"
+  capturedAt: string;
+  state: Record<string, unknown>;
+}
+
+export interface PlanStepBlob {
+  id: string;
+  call: string;
+  args: Record<string, unknown>;
+}
+
+export interface PlanBlob {
+  reasoning: string | null;
+  steps: PlanStepBlob[];
+}
+
+export type StepStatus = "ok" | "failed" | "skipped";
+export type RunOutcome = "ok" | "failed";
+export type StepErrorKind =
+  | "SchemaMismatch"
+  | "FunctionNotFound"
+  | "PreconditionFailed"
+  | "RuntimeError"
+  | "HarnessError";
+
+export interface StepResultBlob {
+  id: string;
+  call: string;
+  status: StepStatus;
+  durationMs: number;
+  error: { kind: StepErrorKind; message: string } | null;
+}
+
+export interface ExecutionEnvelopeBlob {
+  outcome: RunOutcome;
+  stepsTotal: number;
+  stepsExecuted: number;
+  steps: StepResultBlob[];
+  capturedState: GatheredStateBlob;
+  plan: PlanBlob;
 }

@@ -154,7 +154,7 @@ export function StudioPage() {
                           whiteSpace: "nowrap",
                         }}
                       >
-                        {r.testPrompt || r.setupPrompt || "(empty run)"}
+                        {r.prompt || "(empty run)"}
                       </div>
                       <div
                         style={{
@@ -167,7 +167,19 @@ export function StudioPage() {
                           marginTop: 2,
                         }}
                       >
-                        {r.finalScript ? "final ready" : r.testScript ? "test ready" : r.setupScript ? "setup ready" : "draft"}
+                        {/*
+                          Which stage of the gather → plan → execute pipeline
+                          this run has reached. Populated JSON blobs on the
+                          Generation are the source of truth — the trail
+                          matches the run's ordering.
+                        */}
+                        {r.executionEnvelopeJson
+                          ? "executed"
+                          : r.planJson
+                          ? "planned"
+                          : r.gatheredStateJson
+                          ? "gathered"
+                          : "draft"}
                       </div>
                     </div>
                     <Pill

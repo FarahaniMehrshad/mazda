@@ -89,15 +89,37 @@ using (var scope = app.Services.CreateScope())
             ADD COLUMN IF NOT EXISTS last_final_script text NOT NULL DEFAULT '';
         """);
 
-    // Lift the legacy varchar(4000) cap on prompt columns. Non-locking conversion
-    // since text → varchar(4000) was the original direction; widening is a no-op
-    // for existing data. Idempotent — once these are already text, the ALTERs
-    // are no-ops at the Postgres planner level.
+    // Lift the legacy varchar(4000) cap on prompt columns. Non-locking
+    // conversion since text → varchar(4000) was the original direction;
+    // widening is a no-op for existing data.
+    //
+    // Guarded on column existence: the function-catalogue rewrite dropped
+    // setup_prompt / test_prompt from the Generation EF mapping, so on a
+    // FRESH database those columns are never created by EnsureCreated and
+    // an unguarded ALTER blows up with SQLSTATE 42703. The signatures
+    // columns (last_setup_prompt / last_test_prompt) are still mapped
+    // today, but wrapping them too keeps the block symmetric and
+    // future-proof.
     db.Database.ExecuteSqlRaw("""
-        ALTER TABLE signatures        ALTER COLUMN last_setup_prompt TYPE text;
-        ALTER TABLE signatures        ALTER COLUMN last_test_prompt  TYPE text;
-        ALTER TABLE generations       ALTER COLUMN setup_prompt      TYPE text;
-        ALTER TABLE generations       ALTER COLUMN test_prompt       TYPE text;
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='signatures' AND column_name='last_setup_prompt') THEN
+                ALTER TABLE signatures ALTER COLUMN last_setup_prompt TYPE text;
+            END IF;
+            IF EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='signatures' AND column_name='last_test_prompt') THEN
+                ALTER TABLE signatures ALTER COLUMN last_test_prompt TYPE text;
+            END IF;
+            IF EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='generations' AND column_name='setup_prompt') THEN
+                ALTER TABLE generations ALTER COLUMN setup_prompt TYPE text;
+            END IF;
+            IF EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='generations' AND column_name='test_prompt') THEN
+                ALTER TABLE generations ALTER COLUMN test_prompt TYPE text;
+            END IF;
+        END$$;
         """);
 
     // Category discriminator on signature_elements (Interactive vs Informational).
@@ -223,6 +245,84 @@ using (var scope = app.Services.CreateScope())
     db.Database.ExecuteSqlRaw("""
         ALTER TABLE signatures
             ADD COLUMN IF NOT EXISTS relationships_json text NOT NULL DEFAULT '';
+        """);
+
+    // Generation shape shift — the function-catalogue architecture drops
+    // the old per-phase script columns (setup_prompt, test_prompt,
+    // setup_script, analyze_state_*, test_script, final_script) in favour
+    // of three JSON artefacts: gathered_state_json (state functions'
+    // snapshot), plan_json (planner LLM output), execution_envelope_json
+    // (interpreter's terminal result). Plus a single free-text `prompt`
+    // that replaces the old setup+test split.
+    //
+    // Legacy columns are intentionally NOT dropped here — this migration
+    // is additive so historical rows stay legible in the DB even though
+    // the EF mapping ignores them. The NOT NULL constraint is dropped on
+    // the two required legacy prompt columns so INSERTs from the new
+    // mapping (which doesn't populate them) succeed with them absent.
+    // Once the frontend rebuild lands and no reader touches them, a
+    // follow-up migration can DROP COLUMN.
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE generations
+            ADD COLUMN IF NOT EXISTS prompt                   text,
+            ADD COLUMN IF NOT EXISTS gathered_state_json      text,
+            ADD COLUMN IF NOT EXISTS plan_json                text,
+            ADD COLUMN IF NOT EXISTS execution_envelope_json  text;
+
+        -- Legacy prompt columns were NOT NULL from the initial EnsureCreated.
+        -- DROP NOT NULL so new-shape INSERTs (which don't specify them) work.
+        -- Idempotent — a no-op once they're already nullable.
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='generations' AND column_name='setup_prompt' AND is_nullable='NO') THEN
+                ALTER TABLE generations ALTER COLUMN setup_prompt DROP NOT NULL;
+            END IF;
+            IF EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='generations' AND column_name='test_prompt' AND is_nullable='NO') THEN
+                ALTER TABLE generations ALTER COLUMN test_prompt DROP NOT NULL;
+            END IF;
+        END$$;
+        """);
+
+    // High-level function catalogue — the design-time artifact the runtime
+    // planner LLM composes at request time. `kind` splits into 'State'
+    // (readers that fire during gatherInformation) and 'Action' (mutators
+    // the planner sequences into a plan). `body` is a TypeScript Playwright
+    // snippet executed inside a per-run harness that also exposes the
+    // __mz* helpers.
+    //
+    // Casing follows the mcp_tools convention: EF quotes the inherited
+    // Entity properties (Id/CreatedAt/UpdatedAt) verbatim, so those columns
+    // are PascalCase-quoted while everything explicitly mapped via
+    // HasColumnName is snake_case. `order` is a Postgres reserved word so it
+    // needs quoting.
+    // ExecuteSqlRaw passes the SQL through string.Format(sql, params) before
+    // handing it to the provider. Any literal `{` or `}` in the body — like
+    // the JSON DEFAULTs on parameters_schema and returns_schema — has to be
+    // doubled to survive that pass, otherwise Format treats them as
+    // placeholder starts and throws "input string was not in a correct
+    // format". After the Format hop, Postgres receives the single braces
+    // it actually wants.
+    db.Database.ExecuteSqlRaw("""
+        CREATE TABLE IF NOT EXISTS signature_functions (
+            "Id"               uuid          PRIMARY KEY,
+            signature_id       uuid          NOT NULL REFERENCES signatures("Id") ON DELETE CASCADE,
+            name               varchar(120)  NOT NULL,
+            kind               varchar(20)   NOT NULL,
+            description        text          NOT NULL DEFAULT '',
+            parameters_schema  text          NOT NULL DEFAULT '{{"type":"object","properties":{{}},"required":[]}}',
+            returns_schema     text          NOT NULL DEFAULT '{{"type":"null"}}',
+            preconditions      text          NOT NULL DEFAULT '',
+            body               text          NOT NULL DEFAULT '',
+            "order"            integer       NOT NULL DEFAULT 0,
+            "CreatedAt"        timestamptz   NOT NULL DEFAULT NOW(),
+            "UpdatedAt"        timestamptz   NOT NULL DEFAULT NOW()
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_signature_functions_sig_name
+            ON signature_functions(signature_id, name);
+        CREATE INDEX IF NOT EXISTS ix_signature_functions_sig_order
+            ON signature_functions(signature_id, "order");
         """);
 }
 

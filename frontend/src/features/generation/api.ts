@@ -2,33 +2,25 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/shared/api/client";
 import type { GenerationDto } from "@/shared/api/types";
 
+/**
+ * Runtime API under the function-catalogue architecture. Two endpoints do
+ * the real work:
+ *   - plan: synchronous — gather state + LLM plan, returns Ready DTO with
+ *           gatheredStateJson + planJson populated.
+ *   - execute: fire-and-forget — kicks off the interpreter, returns
+ *              immediately with executionStatus=Running.
+ *
+ * Live per-step events are pushed via SSE on
+ * `/api/generations/{id}/execution/stream` — parse `__MZ_EVENT__ {...}`
+ * lines.
+ */
 export const generationApi = {
   recent: (take = 20) => api.get<GenerationDto[]>(`/api/generations/recent?take=${take}`),
   get: (id: string) => api.get<GenerationDto>(`/api/generations/${id}`),
-  create: (signatureId: string) =>
-    api.post<GenerationDto>("/api/generations/", { signatureId }),
-  generateSetup: (id: string, setupPrompt: string) =>
-    api.post<GenerationDto>(`/api/generations/${id}/setup`, { setupPrompt }),
-  saveSetupScript: (id: string, script: string) =>
-    api.put<GenerationDto>(`/api/generations/${id}/setup-script`, { script }),
-  generateTest: (id: string, testPrompt: string) =>
-    api.post<GenerationDto>(`/api/generations/${id}/test`, { testPrompt }),
-  saveTestScript: (id: string, script: string) =>
-    api.put<GenerationDto>(`/api/generations/${id}/test-script`, { script }),
-  merge: (id: string) =>
-    api.post<GenerationDto>(`/api/generations/${id}/merge`, {}),
-  saveFinalScript: (id: string, script: string) =>
-    api.put<GenerationDto>(`/api/generations/${id}/final-script`, { script }),
+  plan: (signatureId: string, prompt: string) =>
+    api.post<GenerationDto>("/api/generations/plan", { signatureId, prompt }),
   execute: (id: string) =>
     api.post<GenerationDto>(`/api/generations/${id}/execute`, {}),
-  generateAnalyzeScript: (id: string) =>
-    api.post<GenerationDto>(`/api/generations/${id}/analyze-state/generate`, {}),
-  saveAnalyzeScript: (id: string, script: string) =>
-    api.put<GenerationDto>(`/api/generations/${id}/analyze-state-script`, { script }),
-  runAnalyze: (id: string) =>
-    api.post<GenerationDto>(`/api/generations/${id}/analyze-state/run`, {}),
-  saveAnalyzeScope: (id: string, scope: string | null) =>
-    api.put<GenerationDto>(`/api/generations/${id}/analyze-state-scope`, { scope }),
 };
 
 export function useRecentGenerations(take = 20) {
@@ -46,112 +38,26 @@ export function useGeneration(id: string | undefined) {
   });
 }
 
-function invalidateOnSuccess(qc: ReturnType<typeof useQueryClient>) {
+function invalidate(qc: ReturnType<typeof useQueryClient>) {
   return (data: GenerationDto) => {
     qc.invalidateQueries({ queryKey: ["generations", "recent"] });
     qc.setQueryData(["generation", data.id], data);
   };
 }
 
-export function useCreateGeneration() {
+export function usePlanRun() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: generationApi.create,
-    onSuccess: invalidateOnSuccess(qc),
+    mutationFn: ({ signatureId, prompt }: { signatureId: string; prompt: string }) =>
+      generationApi.plan(signatureId, prompt),
+    onSuccess: invalidate(qc),
   });
 }
 
-export function useGenerateSetup() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, setupPrompt }: { id: string; setupPrompt: string }) =>
-      generationApi.generateSetup(id, setupPrompt),
-    onSuccess: invalidateOnSuccess(qc),
-  });
-}
-
-export function useSaveSetupScript() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, script }: { id: string; script: string }) =>
-      generationApi.saveSetupScript(id, script),
-    onSuccess: invalidateOnSuccess(qc),
-  });
-}
-
-export function useGenerateTest() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, testPrompt }: { id: string; testPrompt: string }) =>
-      generationApi.generateTest(id, testPrompt),
-    onSuccess: invalidateOnSuccess(qc),
-  });
-}
-
-export function useSaveTestScript() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, script }: { id: string; script: string }) =>
-      generationApi.saveTestScript(id, script),
-    onSuccess: invalidateOnSuccess(qc),
-  });
-}
-
-export function useMergeGeneration() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) => generationApi.merge(id),
-    onSuccess: invalidateOnSuccess(qc),
-  });
-}
-
-export function useSaveFinalScript() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, script }: { id: string; script: string }) =>
-      generationApi.saveFinalScript(id, script),
-    onSuccess: invalidateOnSuccess(qc),
-  });
-}
-
-export function useExecuteGeneration() {
+export function useExecuteRun() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => generationApi.execute(id),
-    onSuccess: invalidateOnSuccess(qc),
-  });
-}
-
-export function useGenerateAnalyzeScript() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) => generationApi.generateAnalyzeScript(id),
-    onSuccess: invalidateOnSuccess(qc),
-  });
-}
-
-export function useSaveAnalyzeScript() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, script }: { id: string; script: string }) =>
-      generationApi.saveAnalyzeScript(id, script),
-    onSuccess: invalidateOnSuccess(qc),
-  });
-}
-
-export function useRunAnalyze() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) => generationApi.runAnalyze(id),
-    onSuccess: invalidateOnSuccess(qc),
-  });
-}
-
-export function useSaveAnalyzeScope() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, scope }: { id: string; scope: string | null }) =>
-      generationApi.saveAnalyzeScope(id, scope),
-    onSuccess: invalidateOnSuccess(qc),
+    onSuccess: invalidate(qc),
   });
 }

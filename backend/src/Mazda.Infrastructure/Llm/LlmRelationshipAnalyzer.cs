@@ -249,7 +249,7 @@ public class LlmRelationshipAnalyzer(IOptions<LlmOptions> options) : IRelationsh
             $"except for new `section` / `container` nodes you derive from source):\n" +
             $"{existingSig}\n\nFile: {signature.Source}\n\n```tsx\n{componentSource}\n```";
 
-        var completion = await chat.CompleteChatAsync(
+        var completion = await chat.CompleteChatSafeAsync(
             new List<ChatMessage>
             {
                 new SystemChatMessage(SystemPrompt),

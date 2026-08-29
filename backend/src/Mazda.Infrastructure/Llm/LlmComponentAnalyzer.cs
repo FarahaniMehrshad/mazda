@@ -537,7 +537,7 @@ public class LlmComponentAnalyzer(IOptions<LlmOptions> options) : IComponentAnal
             ResponseFormat = ChatResponseFormat.CreateJsonObjectFormat()
         };
 
-        var completion = await chat.CompleteChatAsync(
+        var completion = await chat.CompleteChatSafeAsync(
             new List<ChatMessage>
             {
                 new SystemChatMessage(SystemPrompt),

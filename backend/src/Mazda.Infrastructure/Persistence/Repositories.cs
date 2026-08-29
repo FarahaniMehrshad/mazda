@@ -25,12 +25,14 @@ public class SignatureRepository(MazdaDbContext db) : ISignatureRepository
         => db.Signatures
             .Include(s => s.Elements)
             .Include(s => s.Dependencies)
+            .Include(s => s.Functions)
             .FirstOrDefaultAsync(s => s.Id == id && s.OwnerId == ownerId, ct);
 
     public async Task<IReadOnlyList<Signature>> ListAsync(Guid ownerId, CancellationToken ct = default)
         => await db.Signatures
             .Include(s => s.Elements)
             .Include(s => s.Dependencies)
+            .Include(s => s.Functions)
             .Where(s => s.OwnerId == ownerId)
             .OrderByDescending(s => s.UpdatedAt)
             .ToListAsync(ct);
@@ -41,6 +43,7 @@ public class SignatureRepository(MazdaDbContext db) : ISignatureRepository
         return await db.Signatures
             .Include(s => s.Elements)
             .Include(s => s.Dependencies)
+            .Include(s => s.Functions)
             .Where(s => s.OwnerId == ownerId && ids.Contains(s.Id))
             .ToListAsync(ct);
     }
@@ -106,6 +109,49 @@ public class SignatureRepository(MazdaDbContext db) : ISignatureRepository
         db.Entry(signature).State = EntityState.Modified;
         foreach (var child in signature.Elements)
             db.Entry(child).State = EntityState.Added;
+    }
+
+    public async Task RemoveFunctionAsync(Signature signature, Guid functionId, CancellationToken ct = default)
+    {
+        // Hard-delete at the SQL level — bypasses EF orphan-tracking, which is
+        // the same reason ReplaceFunctionsAsync doesn't rely on it either. We
+        // don't need the tracker-clear dance here because we're not going to
+        // re-attach anything.
+        await db.SignatureFunctions
+            .Where(f => f.SignatureId == signature.Id && f.Id == functionId)
+            .ExecuteDeleteAsync(ct);
+
+        // Sync the in-memory aggregate so the caller returning DTOs from the
+        // aggregate sees the deletion immediately without a re-load.
+        signature.RemoveFunction(functionId);
+    }
+
+    public async Task ReplaceFunctionsAsync(Signature signature, IEnumerable<SignatureFunction> newFunctions, CancellationToken ct = default)
+    {
+        var sigId = signature.Id;
+        var newList = newFunctions.ToList();
+
+        // Same reasoning as ReplaceElementsAsync: clear the tracker first so
+        // the parent's navigation snapshot can't hold stale references to
+        // deleted rows and trip the "expected 1 row, affected 0" trap on
+        // SaveChanges.
+        db.ChangeTracker.Clear();
+
+        // Hard-delete existing function rows at the SQL level.
+        await db.SignatureFunctions
+            .Where(f => f.SignatureId == sigId)
+            .ExecuteDeleteAsync(ct);
+
+        // Reset the aggregate's in-memory collection.
+        signature.ReplaceFunctions(newList);
+
+        // Re-attach with explicit states so EF inserts every child instead of
+        // treating them as Unchanged (the entity's non-default Guid Id would
+        // otherwise cause Attach() to default to Unchanged).
+        db.Signatures.Attach(signature);
+        db.Entry(signature).State = EntityState.Modified;
+        foreach (var fn in signature.Functions)
+            db.Entry(fn).State = EntityState.Added;
     }
 
     // Stable content hash of an element collection. Sorting first means

@@ -146,6 +146,207 @@ public interface IRelationshipAnalyzer
 public record RelationshipAnalysisResult(string GraphJson, int TokensUsed);
 
 /// <summary>
+/// Outbound port for the FUNCTION CATALOGUE generator — the design-time step
+/// that turns a fully-analyzed Signature into the set of high-level functions
+/// the runtime planner LLM composes into plans. Runs once per signature (or
+/// whenever the author explicitly regenerates). Output persists as
+/// <c>SignatureFunction</c> rows attached to the signature.
+///
+/// The generator produces TWO KINDS of function:
+///   • state  — no parameters, returns structured JSON. Runs automatically
+///              during gatherInformation to snapshot the UI. The planner LLM
+///              sees the aggregated returned data, not the function calls.
+///   • action — parameterised (typed via JSON Schema), side-effect producing,
+///              returns null. The planner LLM composes plans out of these,
+///              writing literal args grounded in the state snapshot.
+///
+/// The result is validated for shape (unique names, valid kind, non-empty
+/// body) before it comes back — the caller can rely on the invariant that
+/// every emitted <c>GeneratedFunction</c> is safe to persist.
+/// </summary>
+public interface IFunctionCatalogueGenerator
+{
+    Task<FunctionCatalogueResult> GenerateAsync(
+        Signature signature,
+        IReadOnlyList<Signature>? dependencies = null,
+        CancellationToken ct = default);
+}
+
+/// <summary>
+/// One function as returned by the generator, in a shape that maps directly
+/// onto <c>SignatureFunction.Create(...)</c>. <see cref="Kind"/> is the
+/// lowercase wire form ("state" / "action") — the use case parses it into
+/// the domain enum before persisting.
+/// </summary>
+public record GeneratedFunction(
+    string Name,
+    string Kind,
+    string Description,
+    string ParametersJsonSchema,
+    string ReturnsJsonSchema,
+    string Preconditions,
+    string Body);
+
+public record FunctionCatalogueResult(
+    IReadOnlyList<GeneratedFunction> Functions,
+    int TokensUsed);
+
+// ── Runtime: gather → plan → execute ─────────────────────────────────
+// The three ports below are the runtime side of the function-catalogue
+// architecture. At request time the runner:
+//   1. calls IStateGatherer.GatherAsync(sig) → GatheredState (deterministic,
+//      runs every state function once against the connected browser),
+//   2. hands (catalogue, state, userPrompt) to IPlanGenerator.GeneratePlanAsync
+//      → Plan (LLM composes a sequence of action calls with literal args),
+//   3. calls IPlanInterpreter.ExecuteAsync(sig, plan, state) → ExecutionEnvelope
+//      (deterministic, executes each step against the connected browser,
+//      fail-fast on the first step error).
+//
+// Only step 2 involves an LLM. The gatherer and interpreter are pure
+// Playwright execution — the whole point of the catalogue architecture is
+// that runtime is deterministic given a plan.
+
+/// <summary>
+/// A snapshot of the UI captured by running every state function on the
+/// signature (and on its dependencies, if any). Each state function's return
+/// value is keyed by its name into <see cref="StateJson"/>. Individual
+/// function failures during gather do NOT abort the whole gather — they land
+/// in the JSON as <c>{"__mz_error": "..."}</c> so the planner LLM can see
+/// what did and didn't observe.
+/// </summary>
+public record GatheredState(
+    string Manifest,        // "signature-name@version" — for provenance
+    DateTime CapturedAt,    // wall-clock at gather time
+    string StateJson);      // opaque JSON object keyed by state function name
+
+/// <summary>
+/// A plan the LLM composed to fulfil the user prompt. Flat sequence, literal
+/// args, no variables / refs / control flow (per the v1 design). Order matters
+/// — steps execute in list order, fail-fast on the first failure.
+/// </summary>
+public record Plan(string? Reasoning, IReadOnlyList<PlanStep> Steps);
+
+/// <summary>
+/// One step in a <see cref="Plan"/>. <see cref="ArgsJson"/> is the raw JSON
+/// object the LLM produced — the interpreter validates it against the
+/// referenced function's parameters schema before invoking the body.
+/// </summary>
+public record PlanStep(string Id, string Call, string ArgsJson);
+
+public enum StepStatus { Ok, Failed, Skipped }
+public enum RunOutcome { Ok, Failed }
+
+/// <summary>
+/// Typed error categories the interpreter surfaces. Kept small on purpose —
+/// enough to render meaningful UI without inviting bikeshed on subcategories.
+/// </summary>
+public enum StepErrorKind
+{
+    SchemaMismatch,     // step.args failed JSON-schema validation
+    FunctionNotFound,   // step.call not in the catalogue
+    PreconditionFailed, // (reserved — v1 doesn't enforce preconditions)
+    RuntimeError,       // function body threw
+    HarnessError,       // stitching / connect / spawn broke before we could run
+}
+
+public record StepError(StepErrorKind Kind, string Message);
+
+public record StepResult(
+    string Id,
+    string Call,
+    StepStatus Status,
+    long DurationMs,
+    StepError? Error);
+
+/// <summary>
+/// The complete result of a single run — everything the wizard's Run page
+/// needs to render a post-mortem: what state we captured, what plan we
+/// composed, what happened when we executed each step. Serialised onto the
+/// generation row (see slice 4b for the aggregate rewire).
+/// </summary>
+public record ExecutionEnvelope(
+    RunOutcome Outcome,
+    int StepsTotal,
+    int StepsExecuted,
+    IReadOnlyList<StepResult> Steps,
+    GatheredState CapturedState,
+    Plan Plan);
+
+/// <summary>
+/// Runs every state function on the signature (and, when transitive
+/// dependencies are supplied, their state functions too — namespaced by
+/// signature name to prevent collisions). Returns a merged
+/// <see cref="GatheredState"/>. Pure execution — no LLM.
+///
+/// A signature with zero state functions returns a well-formed but empty
+/// state (<c>{}</c>). The gatherer never fails: an individual function's
+/// runtime error is encoded into the returned JSON, and a whole-browser
+/// failure surfaces as a <see cref="HarnessException"/>.
+/// </summary>
+public interface IStateGatherer
+{
+    Task<GatheredState> GatherAsync(
+        Signature signature,
+        IReadOnlyList<Signature>? dependencies = null,
+        CancellationToken ct = default);
+}
+
+/// <summary>
+/// Runtime LLM. Given the catalogue (action functions only — state functions
+/// don't get invoked by the planner), the gathered state snapshot, and the
+/// user's natural-language prompt, produces a <see cref="Plan"/>.
+///
+/// The generator model has one job: pick 1–5 function names from the
+/// catalogue and fill their args with values grounded in the state snapshot.
+/// It never writes Playwright — that's what the catalogue is for.
+/// </summary>
+public interface IPlanGenerator
+{
+    Task<PlanGenerationResult> GeneratePlanAsync(
+        Signature signature,
+        IReadOnlyList<Signature>? dependencies,
+        GatheredState state,
+        string userPrompt,
+        CancellationToken ct = default);
+}
+
+public record PlanGenerationResult(Plan Plan, int TokensUsed);
+
+/// <summary>
+/// Executes a <see cref="Plan"/> against the connected browser. Streams
+/// per-step events into <see cref="IExecutionRegistry"/> keyed by
+/// <paramref name="runId"/> so an SSE subscriber can render the run live,
+/// and also assembles the final <see cref="ExecutionEnvelope"/> for
+/// persistence.
+///
+/// Fail-fast: on the first step failure, execution stops. Later steps
+/// appear in the envelope with <see cref="StepStatus.Skipped"/> — the plan
+/// still shipped, but the runtime declined to keep going.
+/// </summary>
+public interface IPlanInterpreter
+{
+    Task<ExecutionEnvelope> ExecuteAsync(
+        Guid runId,
+        Signature signature,
+        IReadOnlyList<Signature>? dependencies,
+        Plan plan,
+        GatheredState state,
+        CancellationToken ct = default);
+}
+
+/// <summary>
+/// Thrown when the runner harness itself cannot execute — Playwright failed
+/// to spawn, the CDP endpoint was unreachable, the stitched script wouldn't
+/// compile. Distinct from a step-level RuntimeError, which means the browser
+/// was reachable and Playwright ran but the function body threw.
+/// </summary>
+public class HarnessException : Exception
+{
+    public HarnessException(string message) : base(message) { }
+    public HarnessException(string message, Exception inner) : base(message, inner) { }
+}
+
+/// <summary>
 /// Outbound port: given the raw extraction JSON produced by the analyze-state
 /// Playwright script (an opaque per-selector key→value blob) and the signature
 /// (descriptions / logic for each selector), produce a clean semantic JSON

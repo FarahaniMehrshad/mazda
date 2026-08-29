@@ -91,7 +91,56 @@ public static class Endpoints
         sigs.MapDelete("/{id:guid}/dependencies/{depId:guid}", async (Guid id, Guid depId, ISender s) =>
             (await s.Send(new RemoveSignatureDependencyCommand(id, depId))).ToHttp());
 
-        // ── Generations (auth) ────────────────────────────────────
+        // ── High-level function catalogue (design-time) ───────────
+        // The runtime planner LLM composes plans out of these — see
+        // SignatureFunctionUseCases. GET returns the current catalogue for
+        // the Functions wizard page; POST /generate hands the fully-analyzed
+        // signature to the catalogue-generator LLM and wholesale-replaces the
+        // stored catalogue with the result.
+        sigs.MapGet("/{id:guid}/functions", async (Guid id, ISender s) =>
+            (await s.Send(new ListSignatureFunctionsQuery(id))).ToHttp());
+
+        sigs.MapPost("/{id:guid}/functions/generate", async (Guid id, ISender s) =>
+            (await s.Send(new GenerateFunctionCatalogueCommand(id))).ToHttp());
+
+        // Hand-authored / hand-tuned function CRUD. Sits alongside the
+        // generator so authors can add a helper the LLM missed, tweak a
+        // body, or delete a spurious function without regenerating the
+        // whole catalogue and losing every other manual edit.
+        //
+        // POST rebinds the SignatureId from the route (the client sends
+        // the rest of the payload in the body).
+        sigs.MapPost("/{id:guid}/functions",
+            async (Guid id, [FromBody] CreateSignatureFunctionCommand cmd, ISender s) =>
+                (await s.Send(cmd with { SignatureId = id })).ToHttp());
+
+        // PUT rebinds BOTH the SignatureId and FunctionId from the route so
+        // the client cannot accidentally cross-write onto a different
+        // signature or function by sending the wrong id in the body.
+        sigs.MapPut("/{id:guid}/functions/{fid:guid}",
+            async (Guid id, Guid fid, [FromBody] UpdateSignatureFunctionCommand cmd, ISender s) =>
+                (await s.Send(cmd with { SignatureId = id, FunctionId = fid })).ToHttp());
+
+        sigs.MapDelete("/{id:guid}/functions/{fid:guid}",
+            async (Guid id, Guid fid, ISender s) =>
+                (await s.Send(new DeleteSignatureFunctionCommand(id, fid))).ToHttp());
+
+        // ── Runs / Generations (auth) ─────────────────────────────
+        // Under the function-catalogue architecture a "run" is one pass
+        // through gather → plan → execute. Two endpoints do the work:
+        //
+        //   POST /plan          — synchronous: create the Generation, run
+        //                          gather (Playwright) + plan (LLM), return
+        //                          a Ready DTO with GatheredStateJson +
+        //                          PlanJson populated. This is where the
+        //                          user gets to review the plan before it
+        //                          runs.
+        //
+        //   POST /{id}/execute  — fire-and-forget: kicks off the
+        //                          interpreter on a background task. The
+        //                          SSE stream at .../execution/stream
+        //                          carries __MZ_EVENT__ lines per step.
+        //                          Returns the running DTO immediately.
         var gens = app.MapGroup("/api/generations").RequireAuthorization().WithTags("Generations");
 
         gens.MapGet("/recent", async ([FromQuery] int? take, ISender s) =>
@@ -100,49 +149,11 @@ public static class Endpoints
         gens.MapGet("/{id:guid}", async (Guid id, ISender s) =>
             (await s.Send(new GetGenerationQuery(id))).ToHttp());
 
-        // Create empty generation tied to a signature.
-        gens.MapPost("/", async (CreateGenerationCommand cmd, ISender s) =>
+        gens.MapPost("/plan", async (PlanRunCommand cmd, ISender s) =>
             (await s.Send(cmd)).ToHttp());
 
-        // Wizard step 3 — setup.
-        gens.MapPost("/{id:guid}/setup", async (Guid id, [FromBody] GenerateSetupBody body, ISender s) =>
-            (await s.Send(new GenerateSetupCommand(id, body.SetupPrompt))).ToHttp());
-
-        gens.MapPut("/{id:guid}/setup-script", async (Guid id, [FromBody] ScriptBody body, ISender s) =>
-            (await s.Send(new UpdateScriptCommand(id, ScriptSlot.Setup, body.Script))).ToHttp());
-
-        // Wizard step 6 — analyze state.
-        gens.MapPost("/{id:guid}/analyze-state/generate", async (Guid id, ISender s) =>
-            (await s.Send(new GenerateAnalyzeScriptCommand(id))).ToHttp());
-
-        gens.MapPut("/{id:guid}/analyze-state-script", async (Guid id, [FromBody] ScriptBody body, ISender s) =>
-            (await s.Send(new UpdateAnalyzeScriptCommand(id, body.Script))).ToHttp());
-
-        // Update the scope selector that the analyze script roots its
-        // lookups in. Body shape: { "scope": "<selector or null>" }.
-        gens.MapPut("/{id:guid}/analyze-state-scope", async (Guid id, [FromBody] AnalyzeScopeBody body, ISender s) =>
-            (await s.Send(new UpdateAnalyzeScopeCommand(id, body.Scope))).ToHttp());
-
-        gens.MapPost("/{id:guid}/analyze-state/run", async (Guid id, ISender s) =>
-            (await s.Send(new RunAnalyzeCommand(id))).ToHttp());
-
-        // Wizard step 7 — test.
-        gens.MapPost("/{id:guid}/test", async (Guid id, [FromBody] GenerateTestBody body, ISender s) =>
-            (await s.Send(new GenerateTestCommand(id, body.TestPrompt))).ToHttp());
-
-        gens.MapPut("/{id:guid}/test-script", async (Guid id, [FromBody] ScriptBody body, ISender s) =>
-            (await s.Send(new UpdateScriptCommand(id, ScriptSlot.Test, body.Script))).ToHttp());
-
-        // Wizard step 5 — merge & finalize.
-        gens.MapPost("/{id:guid}/merge", async (Guid id, ISender s) =>
-            (await s.Send(new GenerateMergedCommand(id))).ToHttp());
-
-        gens.MapPut("/{id:guid}/final-script", async (Guid id, [FromBody] ScriptBody body, ISender s) =>
-            (await s.Send(new UpdateScriptCommand(id, ScriptSlot.Final, body.Script))).ToHttp());
-
-        // Wizard step 6 — execution.
         gens.MapPost("/{id:guid}/execute", async (Guid id, ISender s) =>
-            (await s.Send(new StartExecutionCommand(id))).ToHttp());
+            (await s.Send(new ExecuteRunCommand(id))).ToHttp());
 
         // ── MCP tools (auth) — REST CRUD ──────────────────────────
         var mcp = app.MapGroup("/api/mcp-tools").RequireAuthorization().WithTags("McpTools");
@@ -189,11 +200,9 @@ public static class Endpoints
             }).WithTags("Generations");
     }
 
-    public record GenerateSetupBody(string SetupPrompt);
-    public record GenerateTestBody(string TestPrompt);
-    public record ScriptBody(string Script);
+    // Body records for endpoints whose model-binder needs a shaped payload.
+    // Command records defined in Application handle the rest.
     public record GenerateFlowsBody(string? CypressSource);
-    public record AnalyzeScopeBody(string? Scope);
     public record FlowsBody(string FlowsJson);
     public record RelationshipsBody(string GraphJson);
     public record AddDependencyBody(Guid DependsOnId);

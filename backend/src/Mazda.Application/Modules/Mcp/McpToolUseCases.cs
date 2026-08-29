@@ -222,23 +222,27 @@ public class DeleteMcpToolHandler(
 }
 
 // ── Invoke (the big one) ──────────────────────────────────────────
-// Runs the full pipeline (setup gen → analyze script → analyze run → test gen
-// → merge → execute) synchronously on behalf of an MCP tool call. Persists a
-// fresh Generation row attributed to MCP so the user can audit the run from
-// the Runs page.
+// Under the function-catalogue architecture this runs the whole pipeline
+// (gather → plan → execute) synchronously on behalf of an MCP tool call.
+// MCP is a request/response protocol — the caller stays blocked until the
+// plan finishes executing, so we bypass the fire-and-forget ExecuteRun
+// path and call the runtime services directly.
 //
-// We deliberately bypass `StartExecutionCommand` (which is fire-and-forget)
-// and call IScriptRunner.RunOnceAsync directly — MCP tool calls are
-// request/response, so the caller is blocked until the script terminates.
+// The Generation row is attributed to the MCP tool so the Runs page can
+// surface which agent invoked which plan.
 
 public record McpInvocationResult(
     Guid GenerationId,
     bool IsError,
-    string Status,         // "Passed" / "FailedTest" / "Errored" / "Cancelled" / "Failed"
+    string Status,         // "Passed" / "FailedTest" / "Errored" / "Failed"
     int? ExitCode,
     string Summary,        // 1-2 line human summary
-    string FullLog);
+    string FullLog);       // Full envelope + optional error stack — the transport surfaces this to the agent.
 
+// Kept for wire compatibility with existing MCP clients: SetupPrompt and
+// TestPrompt are joined into a single planner prompt (setup first, then
+// blank line, then test). Most tools set only DefaultTestPrompt; the
+// concatenation degrades gracefully when either side is empty.
 public record InvokeMcpToolCommand(
     Guid ToolId,
     string? SetupPrompt,
@@ -248,10 +252,10 @@ public class InvokeMcpToolHandler(
     IMcpToolRepository tools,
     ISignatureRepository signatures,
     IGenerationRepository generations,
-    IScriptGenerator generator,
-    IStateBuilder stateBuilder,
-    IScriptRunner runner,
     IEffectiveSignatureResolver effective,
+    IStateGatherer gatherer,
+    IPlanGenerator planner,
+    IPlanInterpreter interpreter,
     ICurrentUser me,
     IUnitOfWork uow) : IRequestHandler<InvokeMcpToolCommand, Result<McpInvocationResult>>
 {
@@ -265,108 +269,82 @@ public class InvokeMcpToolHandler(
 
         var sig = await signatures.FindByIdAsync(tool.SignatureId, me.UserId.Value, ct);
         if (sig is null) return Result.Failure<McpInvocationResult>(Error.NotFound("Signature"));
+        if (sig.Functions.Count == 0)
+            return Result.Failure<McpInvocationResult>(Error.Validation(
+                "Signature has no function catalogue. Generate one first."));
 
-        // MCP invocations run the same effective-signature view as wizard
-        // generations — every transitive dep flows into setup / analyze /
-        // test prompts. Resolved once here and threaded through the pipeline.
         var effectiveSigs = await effective.ResolveAsync(sig.Id, me.UserId.Value, ct);
         var deps = effectiveSigs?.Where(s => s.Id != sig.Id).ToList();
 
-        // Resolve the prompts: caller-provided wins, fall back to tool defaults.
-        var setupPrompt = !string.IsNullOrWhiteSpace(cmd.SetupPrompt) ? cmd.SetupPrompt!.Trim() : tool.DefaultSetupPrompt;
-        var testPrompt  = !string.IsNullOrWhiteSpace(cmd.TestPrompt)  ? cmd.TestPrompt!.Trim()  : tool.DefaultTestPrompt;
-        if (string.IsNullOrWhiteSpace(setupPrompt))
-            return Result.Failure<McpInvocationResult>(Error.Validation("setup_prompt is required (no default configured for this tool)."));
-        if (string.IsNullOrWhiteSpace(testPrompt))
-            return Result.Failure<McpInvocationResult>(Error.Validation("test_prompt is required (no default configured for this tool)."));
+        // Resolve the effective prompt. The wire still carries setup +
+        // test for compatibility — join them (with fallbacks to the tool's
+        // defaults) into the single natural-language prompt the planner
+        // sees. Both empty is a validation error.
+        var setup = !string.IsNullOrWhiteSpace(cmd.SetupPrompt) ? cmd.SetupPrompt!.Trim() : tool.DefaultSetupPrompt;
+        var testPrompt = !string.IsNullOrWhiteSpace(cmd.TestPrompt) ? cmd.TestPrompt!.Trim() : tool.DefaultTestPrompt;
+        var prompt = string.Join(
+            "\n\n",
+            new[] { setup, testPrompt }.Where(p => !string.IsNullOrWhiteSpace(p)));
+        if (string.IsNullOrWhiteSpace(prompt))
+            return Result.Failure<McpInvocationResult>(Error.Validation(
+                "Provide setup_prompt and/or test_prompt (no default configured for this tool)."));
 
-        // Materialize a Generation row up front. Source = Mcp, McpToolId = tool.Id.
-        // Pre-fill scripts from the signature's "Last used" buffers so we can
-        // reuse cached setup / analyze / test outputs when the user hasn't
-        // changed anything — same behavior as CreateGenerationHandler.
-        var gen = Generation.Create(me.UserId.Value, sig.Id);
+        // Materialise the Generation row up front so the run is visible on
+        // the Runs page even if the pipeline fails mid-way.
+        var gen = Generation.Create(me.UserId.Value, sig.Id, prompt);
         gen.AttributeToMcp(tool.Id);
-        if (!string.IsNullOrWhiteSpace(sig.LastSetupScript)) gen.SetSetupScript(sig.LastSetupScript);
-        if (!string.IsNullOrWhiteSpace(sig.LastTestScript))  gen.SetTestScript(sig.LastTestScript);
-        if (!string.IsNullOrWhiteSpace(sig.LastFinalScript)) gen.SetFinalScript(sig.LastFinalScript);
-        if (!string.IsNullOrWhiteSpace(sig.LastAnalyzeStateScript)) gen.SetAnalyzeStateScript(sig.LastAnalyzeStateScript);
-        if (!string.IsNullOrWhiteSpace(sig.LastAnalyzeStateJson) || !string.IsNullOrWhiteSpace(sig.LastAnalyzeStateRawOutput))
-            gen.SetAnalyzeStateOutput(sig.LastAnalyzeStateRawOutput, sig.LastAnalyzeStateJson);
+        gen.MarkGenerating();
         await generations.AddAsync(gen, ct);
         await uow.SaveChangesAsync(ct);
 
         try
         {
-            // 1 — Generate setup script.
-            gen.SetSetupPrompt(setupPrompt);
-            sig.SetLastSetupPrompt(setupPrompt);
-            var setup = await generator.GenerateSetupAsync(sig, setupPrompt, deps, ct);
-            gen.SetSetupScript(setup.Script);
-            sig.SetLastSetupScript(setup.Script);
+            // 1 — Gather state.
+            var state = await gatherer.GatherAsync(sig, deps, ct);
+            gen.RecordGatheredState(GenerationMapper.SerializeGatheredState(state));
             await uow.SaveChangesAsync(ct);
 
-            // 2 — Build deterministic analyze script.
-            var analyzeScript = AnalyzeScriptBuilder.Build(sig, gen, deps);
-            gen.SetAnalyzeStateScript(analyzeScript);
-            sig.SetLastAnalyzeStateScript(analyzeScript);
+            // 2 — Ask the planner.
+            var planResult = await planner.GeneratePlanAsync(sig, deps, state, prompt, ct);
+            gen.RecordPlan(GenerationMapper.SerializePlan(planResult.Plan));
+            gen.MarkReady(planResult.TokensUsed);
             await uow.SaveChangesAsync(ct);
 
-            // 3 — Run the analyze script and parse the captured state.
-            var analyzeRun = await runner.RunOnceAsync(analyzeScript, ct);
-            var rawJson = AnalyzeScriptBuilder.ExtractStateJson(analyzeRun.FullLog) ?? "{}";
-            string stateJson;
-            try
-            {
-                var built = await stateBuilder.BuildStateAsync(sig, rawJson, deps, ct);
-                stateJson = built.StateJson;
-            }
-            catch (Exception ex)
-            {
-                stateJson = $"{{\"error\":\"state builder failed: {ex.Message.Replace("\"","\\\"")}\",\"rawExtraction\":{rawJson}}}";
-            }
-            gen.SetAnalyzeStateOutput(analyzeRun.FullLog, stateJson);
-            sig.SetLastAnalyzeStateOutput(analyzeRun.FullLog, stateJson);
-            await uow.SaveChangesAsync(ct);
-
-            // 4 — Generate the test body.
-            gen.SetTestPrompt(testPrompt);
-            sig.SetLastTestPrompt(testPrompt);
-            var test = await generator.GenerateTestAsync(sig, testPrompt, gen.SetupScript, stateJson, deps, ct);
-            gen.SetTestScript(test.Script);
-            sig.SetLastTestScript(test.Script);
-            await uow.SaveChangesAsync(ct);
-
-            // 5 — Merge setup + test into a single spec.
-            var merged = await generator.MergeAsync(setup.Script, test.Script, ct);
-            gen.SetFinalScript(merged.Script);
-            sig.SetLastFinalScript(merged.Script);
-            gen.MarkReady(setup.TokensUsed + test.TokensUsed + merged.TokensUsed);
-            await uow.SaveChangesAsync(ct);
-
-            // 6 — Execute the merged script and persist the terminal status.
+            // 3 — Execute. Synchronous by design (MCP is request/response).
             gen.MarkExecutionStarted();
             await uow.SaveChangesAsync(ct);
-            var exec = await runner.RunAsync(gen.Id, merged.Script, ct);
-            var terminal = exec.Kind switch
+            var envelope = await interpreter.ExecuteAsync(gen.Id, sig, deps, planResult.Plan, state, ct);
+
+            var envelopeJson = GenerationMapper.SerializeEnvelope(envelope);
+            gen.RecordExecutionEnvelope(envelopeJson);
+            var terminal = envelope.Outcome switch
             {
-                RunnerExitKind.Passed     => ExecutionStatus.Passed,
-                RunnerExitKind.FailedTest => ExecutionStatus.FailedTest,
-                RunnerExitKind.Cancelled  => ExecutionStatus.Cancelled,
-                _                         => ExecutionStatus.Errored,
+                RunOutcome.Ok => ExecutionStatus.Passed,
+                _ => ExecutionStatus.FailedTest,
             };
-            gen.MarkExecutionFinished(terminal, exec.ExitCode, exec.FullLog);
+            gen.MarkExecutionFinished(terminal, terminal == ExecutionStatus.Passed ? 0 : 1, string.Empty);
             await uow.SaveChangesAsync(ct);
 
             var isError = terminal != ExecutionStatus.Passed;
-            var summary = terminal switch
-            {
-                ExecutionStatus.Passed     => "All assertions passed.",
-                ExecutionStatus.FailedTest => "Test ran but at least one assertion failed.",
-                ExecutionStatus.Errored    => $"Runner errored (exit code {exec.ExitCode}).",
-                ExecutionStatus.Cancelled  => "Run was cancelled.",
-                _                          => $"Terminated with status {terminal}.",
-            };
-            return Result.Success(new McpInvocationResult(gen.Id, isError, terminal.ToString(), exec.ExitCode, summary, exec.FullLog));
+            var summary = terminal == ExecutionStatus.Passed
+                ? $"Plan succeeded: {envelope.StepsExecuted}/{envelope.StepsTotal} steps."
+                : $"Plan failed after {envelope.StepsExecuted}/{envelope.StepsTotal} steps.";
+            // FullLog carries the envelope JSON so the MCP client surface
+            // (which just prints it back to the agent) has the structured
+            // per-step data available. Not human-friendly, but it IS the
+            // audit record.
+            return Result.Success(new McpInvocationResult(
+                gen.Id, isError, terminal.ToString(),
+                terminal == ExecutionStatus.Passed ? 0 : 1,
+                summary, envelopeJson));
+        }
+        catch (HarnessException ex)
+        {
+            gen.MarkFailed($"Runner harness failed: {ex.Message}");
+            await uow.SaveChangesAsync(ct);
+            return Result.Success(new McpInvocationResult(
+                gen.Id, true, "Errored", -1,
+                $"Runner harness failed: {ex.Message}", ex.ToString()));
         }
         catch (Exception ex)
         {
@@ -374,8 +352,7 @@ public class InvokeMcpToolHandler(
             await uow.SaveChangesAsync(ct);
             return Result.Success(new McpInvocationResult(
                 gen.Id, true, "Failed", null,
-                $"Pipeline failed before execution: {ex.Message}",
-                ex.ToString()));
+                $"Pipeline failed: {ex.Message}", ex.ToString()));
         }
     }
 }

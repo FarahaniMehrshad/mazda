@@ -60,7 +60,7 @@ export function RunsPage() {
                     whiteSpace: "nowrap",
                   }}
                 >
-                  {r.testPrompt || r.setupPrompt || "(empty run)"}
+                  {r.prompt || "(empty run)"}
                 </div>
                 <div
                   style={{
@@ -73,7 +73,18 @@ export function RunsPage() {
                     marginTop: 2,
                   }}
                 >
-                  {r.finalScript ? "final ready" : r.testScript ? "test ready" : r.setupScript ? "setup ready" : "draft"}
+                  {/*
+                    Runtime stage under the function-catalogue architecture.
+                    Each blob populates in order — the trail below tells the
+                    user how far the pipeline got.
+                  */}
+                  {r.executionEnvelopeJson
+                    ? "executed"
+                    : r.planJson
+                    ? "planned"
+                    : r.gatheredStateJson
+                    ? "gathered"
+                    : "draft"}
                 </div>
               </div>
               <div style={{ fontFamily: "var(--f-mono)", fontSize: 11, color: "var(--text-3)" }}>

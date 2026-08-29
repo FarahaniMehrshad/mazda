@@ -73,6 +73,19 @@ public class Signature : Entity
     public IReadOnlyList<Guid> DependencyIds =>
         _dependencies.Select(d => d.DependsOnSignatureId).ToList();
 
+    /// <summary>
+    /// High-level FUNCTION CATALOGUE authored during the Functions wizard step.
+    /// Two kinds live in this list (see <see cref="FunctionKind"/>): state
+    /// readers that run automatically during gatherInformation, and actions
+    /// the planner LLM composes at runtime. Kept sorted by <c>Order</c> for
+    /// stable display and a deterministic gatherInformation call sequence.
+    /// Cleared by <see cref="InvalidateDerivedCaches"/> because every body
+    /// hard-references signature selectors — an element rename or removal
+    /// would silently break bodies otherwise.
+    /// </summary>
+    private readonly List<SignatureFunction> _functions = new();
+    public IReadOnlyList<SignatureFunction> Functions => _functions;
+
     private Signature() { }
 
     public static Signature Create(Guid ownerId, string name, string? source, string? type, string? humanDescription = null)
@@ -127,6 +140,12 @@ public class Signature : Entity
         // element edit (rename / add / remove) makes the persisted graph stale
         // the same way it makes flows / analyze-state stale.
         RelationshipsJson = string.Empty;
+        // Function bodies hard-reference signature selectors verbatim. A
+        // selector rename or removal invalidates them the same way it does
+        // the relationship graph and analyze-state cache — safer to clear
+        // and force a regenerate than to ship stale bodies that fail at
+        // runtime with cryptic Playwright errors.
+        _functions.Clear();
         Touch();
     }
     public void SetLastAnalyzeStateOutput(string? raw, string? json)
@@ -146,6 +165,33 @@ public class Signature : Entity
     public void AddElement(SignatureElement element)
     {
         _elements.Add(element);
+        Touch();
+    }
+
+    /// <summary>
+    /// Replace the entire function catalogue in one go. Used by both the
+    /// generator (fresh LLM output → wholesale replacement) and manual
+    /// re-orderings from the editor. Individual edits go through the
+    /// <see cref="SignatureFunction"/> mutators directly.
+    /// </summary>
+    public void ReplaceFunctions(IEnumerable<SignatureFunction> functions)
+    {
+        _functions.Clear();
+        _functions.AddRange(functions);
+        Touch();
+    }
+
+    public void AddFunction(SignatureFunction function)
+    {
+        _functions.Add(function);
+        Touch();
+    }
+
+    public void RemoveFunction(Guid functionId)
+    {
+        var existing = _functions.FirstOrDefault(f => f.Id == functionId);
+        if (existing is null) return;
+        _functions.Remove(existing);
         Touch();
     }
 

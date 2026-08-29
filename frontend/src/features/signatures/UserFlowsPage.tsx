@@ -207,7 +207,11 @@ export function UserFlowsPage() {
   }
 
   function onContinue() {
-    if (id) navigate(`/runs/new?signature=${id}`);
+    // Step 5 (User flows) → Step 6 (Functions). The old wizard jumped
+    // straight to `/runs/new` because Setup was step 6; under the
+    // function-catalogue architecture the LLM composes plans from a
+    // pre-built catalogue, and authoring that catalogue is the next step.
+    if (id) navigate(`/signatures/${id}/functions`);
   }
 
   if (isLoading || !signature) {
@@ -339,7 +343,7 @@ export function UserFlowsPage() {
                 onClick={onContinue}
                 disabled={!hasFlows}
               >
-                Continue to setup
+                Continue to functions
               </BtnPrimary>
             </div>
           </div>

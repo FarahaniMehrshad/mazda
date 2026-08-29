@@ -1541,7 +1541,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         var opts = options.Value;
         var chat = ChatClientFactory.ForModel(opts, modelPicker(opts));
 
-        var completion = await chat.CompleteChatAsync(
+        var completion = await chat.CompleteChatSafeAsync(
             new List<ChatMessage>
             {
                 new SystemChatMessage(systemPrompt),

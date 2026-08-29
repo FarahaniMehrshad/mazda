@@ -241,7 +241,7 @@ public class LlmInformationalAnalyzer(IOptions<LlmOptions> options) : IInformati
 
         var userMsg = $"Existing signature (DO NOT re-emit interactive entries):\n{existingSig}\n\nFile: {signature.Source}\n\n```tsx\n{componentSource}\n```";
 
-        var completion = await chat.CompleteChatAsync(
+        var completion = await chat.CompleteChatSafeAsync(
             new List<ChatMessage>
             {
                 new SystemChatMessage(SystemPrompt),

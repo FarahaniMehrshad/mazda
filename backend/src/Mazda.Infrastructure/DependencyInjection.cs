@@ -36,10 +36,18 @@ public static class DependencyInjection
         services.AddSingleton<IFlowAnalyzer, LlmFlowAnalyzer>();
         services.AddSingleton<IScriptGenerator, LlmScriptGenerator>();
         services.AddSingleton<IStateBuilder, LlmStateBuilder>();
+        services.AddSingleton<IFunctionCatalogueGenerator, LlmFunctionCatalogueGenerator>();
+        services.AddSingleton<IPlanGenerator, LlmPlanGenerator>();
 
         // Script execution (Playwright via Node inside the API container).
         services.AddSingleton<IExecutionRegistry, Runner.InMemoryExecutionRegistry>();
         services.AddSingleton<IScriptRunner, Runner.LocalProcessScriptRunner>();
+
+        // Runtime pipeline for the function-catalogue architecture:
+        // gather (deterministic Playwright) → plan (LLM) → execute
+        // (deterministic Playwright, streams events into IExecutionRegistry).
+        services.AddSingleton<IStateGatherer, Runner.StateGatherer>();
+        services.AddSingleton<IPlanInterpreter, Runner.PlanInterpreter>();
 
         return services;
     }

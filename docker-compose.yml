@@ -31,6 +31,7 @@ services:
       Llm__ApiKey: "${LLM_API_KEY:-}"
       Llm__AnalyzerModel: "${LLM_ANALYZER_MODEL:-gpt-4o-mini}"
       Llm__GeneratorModel: "${LLM_GENERATOR_MODEL:-gpt-4o}"
+      Llm__TimeoutSeconds: "${LLM_TIMEOUT_SECONDS:-600}"
       Cors__AllowedOrigin: "http://localhost:5173"
       ASPNETCORE_ENVIRONMENT: "Development"
     extra_hosts:

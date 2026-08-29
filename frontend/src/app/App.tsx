@@ -11,12 +11,8 @@ import { EditorPage } from "@/features/signatures/EditorPage";
 import { InformationalReviewPage } from "@/features/signatures/InformationalReviewPage";
 import { RelationshipsPage } from "@/features/signatures/RelationshipsPage";
 import { UserFlowsPage } from "@/features/signatures/UserFlowsPage";
-import { NewRunPage } from "@/features/generation/NewRunPage";
-import { SetupPage } from "@/features/generation/SetupPage";
-import { AnalyzeStatePage } from "@/features/generation/AnalyzeStatePage";
-import { TestPromptPage } from "@/features/generation/TestPromptPage";
-import { MergePage } from "@/features/generation/MergePage";
-import { ExecutionPage } from "@/features/generation/ExecutionPage";
+import { FunctionsPage } from "@/features/signatures/FunctionsPage";
+import { RunPage } from "@/features/generation/RunPage";
 import { RunsPage } from "@/features/generation/RunsPage";
 import { McpServerPage } from "@/features/mcp/McpServerPage";
 
@@ -37,134 +33,24 @@ export function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<AuthPage />} />
-          <Route
-            path="/"
-            element={
-              <RequireAuth>
-                <StudioPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/signatures"
-            element={
-              <RequireAuth>
-                <LibraryPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/signatures/new"
-            element={
-              <RequireAuth>
-                <UploadPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/signatures/:id"
-            element={
-              <RequireAuth>
-                <EditorPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/signatures/:id/informational"
-            element={
-              <RequireAuth>
-                <InformationalReviewPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/signatures/:id/relationships"
-            element={
-              <RequireAuth>
-                <RelationshipsPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/signatures/:id/flows"
-            element={
-              <RequireAuth>
-                <UserFlowsPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/runs"
-            element={
-              <RequireAuth>
-                <RunsPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/mcp"
-            element={
-              <RequireAuth>
-                <McpServerPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/runs/new"
-            element={
-              <RequireAuth>
-                <NewRunPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/runs/:id/setup"
-            element={
-              <RequireAuth>
-                <SetupPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/runs/:id/analyze-state"
-            element={
-              <RequireAuth>
-                <AnalyzeStatePage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/runs/:id/test"
-            element={
-              <RequireAuth>
-                <TestPromptPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/runs/:id/merge"
-            element={
-              <RequireAuth>
-                <MergePage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/runs/:id/execute"
-            element={
-              <RequireAuth>
-                <ExecutionPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/runs/:id"
-            element={
-              <RequireAuth>
-                <ExecutionPage />
-              </RequireAuth>
-            }
-          />
+          <Route path="/" element={<RequireAuth><StudioPage /></RequireAuth>} />
+          <Route path="/signatures" element={<RequireAuth><LibraryPage /></RequireAuth>} />
+          <Route path="/signatures/new" element={<RequireAuth><UploadPage /></RequireAuth>} />
+          <Route path="/signatures/:id" element={<RequireAuth><EditorPage /></RequireAuth>} />
+          <Route path="/signatures/:id/informational" element={<RequireAuth><InformationalReviewPage /></RequireAuth>} />
+          <Route path="/signatures/:id/relationships" element={<RequireAuth><RelationshipsPage /></RequireAuth>} />
+          <Route path="/signatures/:id/flows" element={<RequireAuth><UserFlowsPage /></RequireAuth>} />
+          <Route path="/signatures/:id/functions" element={<RequireAuth><FunctionsPage /></RequireAuth>} />
+          {/*
+            RunPage handles both entry paths — from a signature (fresh run,
+            :sigId in the route) and from an existing run (:id in the route).
+            The component reads whichever param is present and behaves
+            accordingly.
+          */}
+          <Route path="/signatures/:sigId/run" element={<RequireAuth><RunPage /></RequireAuth>} />
+          <Route path="/runs/:id" element={<RequireAuth><RunPage /></RequireAuth>} />
+          <Route path="/runs" element={<RequireAuth><RunsPage /></RequireAuth>} />
+          <Route path="/mcp" element={<RequireAuth><McpServerPage /></RequireAuth>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

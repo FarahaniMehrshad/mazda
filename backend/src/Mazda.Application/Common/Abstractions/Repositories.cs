@@ -40,6 +40,25 @@ public interface ISignatureRepository
     /// then attaches the new collection through the aggregate.
     /// </summary>
     Task ReplaceElementsAsync(Signature signature, IEnumerable<SignatureElement> newElements, CancellationToken ct = default);
+
+    /// <summary>
+    /// Hard-replace the function catalogue of an existing signature. Uses the same
+    /// tracker-clear + hard-delete + re-attach dance as <see cref="ReplaceElementsAsync"/>
+    /// for the same reasons — EF orphan-tracking on field-backed WithOne collections
+    /// silently drops inserts in half the cases we've hit. This method is authoritative
+    /// for regeneration: the LLM produces a fresh catalogue, we wholesale-replace.
+    /// </summary>
+    Task ReplaceFunctionsAsync(Signature signature, IEnumerable<SignatureFunction> newFunctions, CancellationToken ct = default);
+
+    /// <summary>
+    /// Hard-delete a single function by id. Executes at the SQL level (bypasses
+    /// EF orphan-tracking entirely) and also removes the row from the passed
+    /// aggregate's in-memory collection so the caller can return a fresh DTO
+    /// without a re-load. Silent no-op when the function isn't found on the
+    /// aggregate — the caller (delete handler) is the one that decides whether
+    /// that's a 404 or not.
+    /// </summary>
+    Task RemoveFunctionAsync(Signature signature, Guid functionId, CancellationToken ct = default);
 }
 
 public interface IGenerationRepository

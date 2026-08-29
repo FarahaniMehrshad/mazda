@@ -40,14 +40,46 @@ async function request<T>(path: string, opts: RequestOpts = {}): Promise<T> {
   const data = text ? safeJson(text) : null;
 
   if (!res.ok) {
-    const message =
-      (data && typeof data === "object" && "error" in data && typeof data.error === "string"
-        ? data.error
-        : `Request failed (${res.status})`);
-    throw new ApiError(message, res.status, data);
+    throw new ApiError(errorMessage(data, res.status), res.status, data);
   }
 
   return data as T;
+}
+
+/**
+ * Pulls the human-readable message out of whatever the API returned.
+ * The backend speaks two shapes: `{ error, details? }` for NotFound /
+ * Validation / Conflict, and RFC-7807 ProblemDetails (`detail` + `title`) for
+ * External (502) and unhandled (500) failures — which is exactly where LLM
+ * failures land ("LLM rate limit or quota/budget exceeded (429): ..."). Only
+ * reading `error` turned every one of those into "Request failed (502)".
+ */
+function errorMessage(data: unknown, status: number): string {
+  const fallback = `Request failed (${status})`;
+  if (typeof data === "string") return data.trim() || fallback;
+  if (!data || typeof data !== "object") return fallback;
+
+  const d = data as Record<string, unknown>;
+  const base = [d.error, d.detail, d.title, d.message].find(
+    (v): v is string => typeof v === "string" && v.trim().length > 0
+  );
+
+  // FluentValidation failures ship the per-field errors alongside a generic
+  // "Validation failed" — append them so the alert names the actual field.
+  if (Array.isArray(d.details)) {
+    const fields = d.details
+      .map((e) =>
+        e && typeof e === "object" && "errorMessage" in e
+          ? String((e as { errorMessage: unknown }).errorMessage)
+          : typeof e === "string"
+            ? e
+            : null
+      )
+      .filter((v): v is string => !!v);
+    if (fields.length) return `${base ?? fallback}: ${fields.join("; ")}`;
+  }
+
+  return base ?? fallback;
 }
 
 function safeJson(text: string): unknown {

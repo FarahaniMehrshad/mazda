@@ -2,24 +2,49 @@ using Mazda.Domain.Common;
 
 namespace Mazda.Domain.Modules.Generations;
 
+/// <summary>
+/// Lifecycle of the design-time-into-plan side of a run:
+///   • Pending    — freshly created, nothing done yet.
+///   • Generating — mid-gather or mid-plan.
+///   • Ready      — gather + plan complete; execution can start.
+///   • Failed     — gather or plan blew up (see <c>FailureReason</c>).
+/// The runtime side is tracked separately in <see cref="ExecutionStatus"/>.
+/// </summary>
 public enum GenerationStatus { Pending, Generating, Ready, Failed }
 
+/// <summary>
+/// Lifecycle of the actual browser execution phase. <c>Passed</c> maps to
+/// <c>ExecutionEnvelope.Outcome == Ok</c>; <c>FailedTest</c> to
+/// <c>Outcome == Failed</c> (a step body threw); <c>Errored</c> to a
+/// harness-level failure (couldn't spawn Playwright, CDP unreachable, ...);
+/// <c>Cancelled</c> to a user-abort during streaming.
+/// </summary>
 public enum ExecutionStatus { Idle, Running, Passed, FailedTest, Errored, Cancelled }
 
 /// <summary>
-/// How a generation was created. Wizard = the user drove the UI wizard step by
-/// step. Mcp = the entire pipeline was kicked off in one shot by an MCP tool
-/// invocation. The Runs page surfaces both; the badge/source is useful for
-/// audit ("which of my runs were driven by an MCP client?").
+/// How the run was initiated. Wizard = the user pressed Run in the app;
+/// Mcp = an external agent invoked the signature's MCP tool. Both flow
+/// through the same gather → plan → execute pipeline.
 /// </summary>
 public enum GenerationSource { Wizard, Mcp }
 
 /// <summary>
-/// A multi-step request to turn (Signature + setup instructions + test prompt) into
-/// a single Playwright .spec.ts file. The user drives the wizard:
-///   1. SetupPrompt  → LLM → SetupScript  (user can edit)
-///   2. TestPrompt   → LLM → TestScript   (user can edit)
-///   3. (Setup + Test) → LLM merge → FinalScript (user can edit)
+/// A single "the user asked, Mazda did" record. Under the function-catalogue
+/// runtime, one Generation represents a natural-language prompt turned into
+/// a gathered UI state, then into a plan, then into an execution envelope.
+///
+/// Populated in order:
+///   1. <see cref="Prompt"/> — supplied at creation.
+///   2. <see cref="GatheredStateJson"/> — filled by IStateGatherer during
+///      the plan phase.
+///   3. <see cref="PlanJson"/> — filled by IPlanGenerator (only LLM call
+///      on the request path).
+///   4. <see cref="ExecutionEnvelopeJson"/> — filled by IPlanInterpreter
+///      after execution.
+///
+/// Every serialised blob is opaque JSON; the domain doesn't parse them.
+/// The application layer serialises records into these slots and the API
+/// hands the strings straight back to the frontend, which renders them.
 /// </summary>
 public class Generation : Entity
 {
@@ -32,34 +57,37 @@ public class Generation : Entity
     /// <summary>When Source == Mcp, the tool that triggered the run.</summary>
     public Guid? McpToolId { get; private set; }
 
-    public string SetupPrompt { get; private set; } = string.Empty;
-    public string? SetupScript { get; private set; }
-
-    // Analyze-state phase: a deterministic Playwright script that reads informational
-    // elements off the live UI, captured raw output from running it, and an
-    // LLM-built semantic JSON describing the current component state.
-    public string? AnalyzeStateScript { get; private set; }
-    public string? AnalyzeStateRawOutput { get; private set; }
-    public string? AnalyzeStateJson { get; private set; }
+    /// <summary>
+    /// The user's plain-English prompt. This is what the planner LLM saw.
+    /// Persisted verbatim (trimmed) so the Runs page can display it and so
+    /// re-planning is auditable ("we ran <em>this</em> plan for <em>this</em>
+    /// prompt").
+    /// </summary>
+    public string Prompt { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Optional CSS selector that scopes the analyze-state extraction to a
-    /// SPECIFIC sub-tree of the page. Empty / null means the script queries
-    /// the whole document (default). When set, every signature selector is
-    /// evaluated as <c>page.locator(scope).locator(sel)</c> — so the extract
-    /// only sees elements INSIDE the named container.
-    ///
-    /// Useful when the component under test lives inside a modal / popover /
-    /// portal that shares ids/classes with other regions of the page; without
-    /// scoping, generic selectors like <c>[data-testid="title"]</c> can
-    /// resolve to dozens of unrelated nodes elsewhere on the page.
+    /// Snapshot of the UI at plan time — the merged state functions' returns,
+    /// serialised as
+    /// <c>{ manifest, capturedAt, state: { GetTasks: [...], ... } }</c>.
+    /// Null before the gather phase completes; set once, never mutated.
     /// </summary>
-    public string? AnalyzeStateScope { get; private set; }
+    public string? GatheredStateJson { get; private set; }
 
-    public string TestPrompt { get; private set; } = string.Empty;
-    public string? TestScript { get; private set; }
+    /// <summary>
+    /// The plan the planner LLM produced — serialised as
+    /// <c>{ reasoning, steps: [{ id, call, args }, ...] }</c>. Same
+    /// write-once semantics as <see cref="GatheredStateJson"/>.
+    /// </summary>
+    public string? PlanJson { get; private set; }
 
-    public string? FinalScript { get; private set; }
+    /// <summary>
+    /// The <see cref="ExecutionEnvelope"/> the interpreter produced after
+    /// running the plan — serialised as
+    /// <c>{ outcome, stepsTotal, stepsExecuted, steps: [...], capturedState, plan }</c>.
+    /// Null while execution is running / hasn't started; set once at the
+    /// end of the execute phase.
+    /// </summary>
+    public string? ExecutionEnvelopeJson { get; private set; }
 
     public GenerationStatus Status { get; private set; } = GenerationStatus.Pending;
     public string? FailureReason { get; private set; }
@@ -73,13 +101,14 @@ public class Generation : Entity
 
     private Generation() { }
 
-    public static Generation Create(Guid ownerId, Guid signatureId)
+    public static Generation Create(Guid ownerId, Guid signatureId, string prompt)
     {
-        if (signatureId == Guid.Empty) throw new ArgumentException("Signature required.");
+        if (signatureId == Guid.Empty) throw new ArgumentException("Signature required.", nameof(signatureId));
         return new Generation
         {
             OwnerId = ownerId,
             SignatureId = signatureId,
+            Prompt = (prompt ?? string.Empty).Trim(),
         };
     }
 
@@ -92,59 +121,29 @@ public class Generation : Entity
         Touch();
     }
 
-    public void SetSetupPrompt(string prompt) { SetupPrompt = (prompt ?? string.Empty).Trim(); Touch(); }
-    public void SetSetupScript(string script) { SetupScript = script ?? string.Empty; Touch(); }
-
-    /// <summary>
-    /// Wipe every script / output cache derived from the parent signature's
-    /// elements + dependency graph. Called when the underlying signature
-    /// changes shape (deps added/removed, elements replaced) so the user
-    /// doesn't keep running a stale analyze script that doesn't know about
-    /// the new dep selectors. The cleared columns are exactly the ones a
-    /// fresh wizard pass would regenerate from sig+deps:
-    ///   • AnalyzeStateScript  — built from sig+deps informational elements
-    ///   • AnalyzeStateRawOutput, AnalyzeStateJson — captured by running it
-    ///   • TestScript          — uses the captured state as context
-    ///   • FinalScript         — merges setup + test
-    /// Setup script and prompts are user-authored and stay.
-    /// </summary>
-    public void InvalidateAnalyzeAndDownstreamCaches()
+    public void SetPrompt(string prompt)
     {
-        AnalyzeStateScript = null;
-        AnalyzeStateRawOutput = null;
-        AnalyzeStateJson = null;
-        TestScript = null;
-        FinalScript = null;
+        Prompt = (prompt ?? string.Empty).Trim();
         Touch();
     }
 
-    public void SetAnalyzeStateScript(string script) { AnalyzeStateScript = script ?? string.Empty; Touch(); }
-    public void SetAnalyzeStateOutput(string raw, string json) { AnalyzeStateRawOutput = raw ?? string.Empty; AnalyzeStateJson = json ?? string.Empty; Touch(); }
-
-    /// <summary>
-    /// Set the scope selector. Null/empty/whitespace all collapse to "no
-    /// scope" (the script queries the whole page). When the scope changes
-    /// the cached AnalyzeStateScript is wiped so the user can't accidentally
-    /// run the OLD scope's script — they must click "Generate analyze
-    /// script" again to get one rebuilt against the new scope. The
-    /// downstream caches (raw output, state JSON) go too because they were
-    /// captured by the old script and would mislead the test generation
-    /// step that reads them next.
-    /// </summary>
-    public void SetAnalyzeStateScope(string? scope)
+    public void RecordGatheredState(string json)
     {
-        var trimmed = string.IsNullOrWhiteSpace(scope) ? null : scope.Trim();
-        if (string.Equals(AnalyzeStateScope, trimmed, StringComparison.Ordinal)) return;
-        AnalyzeStateScope = trimmed;
-        // Scope is a structural input to the analyze script — anything
-        // built against the old value is stale.
-        InvalidateAnalyzeAndDownstreamCaches();
+        GatheredStateJson = json ?? string.Empty;
+        Touch();
     }
 
-    public void SetTestPrompt(string prompt) { TestPrompt = (prompt ?? string.Empty).Trim(); Touch(); }
-    public void SetTestScript(string script) { TestScript = script ?? string.Empty; Touch(); }
+    public void RecordPlan(string json)
+    {
+        PlanJson = json ?? string.Empty;
+        Touch();
+    }
 
-    public void SetFinalScript(string script) { FinalScript = script ?? string.Empty; Touch(); }
+    public void RecordExecutionEnvelope(string json)
+    {
+        ExecutionEnvelopeJson = json ?? string.Empty;
+        Touch();
+    }
 
     public void MarkGenerating() { Status = GenerationStatus.Generating; FailureReason = null; Touch(); }
     public void MarkReady(int additionalTokens = 0) { Status = GenerationStatus.Ready; TokensUsed += additionalTokens; Touch(); }

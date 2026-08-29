@@ -196,7 +196,7 @@ public class AnalyzeComponentHandler(
 
         ComponentAnalysisResult analysis;
         try { analysis = await analyzer.AnalyzeAsync(cmd.Source, cmd.FileName, cmd.Description, ct); }
-        catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Analyzer failed: {ex.Message}")); }
+        catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Analyzer failed: {ExceptionMessage.Describe(ex)}")); }
 
         // User-supplied name wins. Falls back to the LLM's SuggestedName, which
         // itself falls back to "Component" inside the analyzer when the model
@@ -244,7 +244,7 @@ public class GenerateUserFlowsHandler(
 
         FlowAnalysisResult result;
         try { result = await analyzer.InferFlowsAsync(sig, cmd.CypressSource, ct); }
-        catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Flow analyzer failed: {ex.Message}")); }
+        catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Flow analyzer failed: {ExceptionMessage.Describe(ex)}")); }
 
         sig.SetUserFlows(result.FlowsJson);
         await uow.SaveChangesAsync(ct);
@@ -317,7 +317,7 @@ public class ReanalyzeInteractiveHandler(
 
         ComponentAnalysisResult analysis;
         try { analysis = await analyzer.AnalyzeAsync(sig.SourceCode, sig.Source, sig.HumanDescription, ct); }
-        catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Analyzer failed: {ex.Message}")); }
+        catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Analyzer failed: {ExceptionMessage.Describe(ex)}")); }
 
         // Replace ONLY the interactive elements; preserve everything informational.
         var informational = sig.Elements
@@ -390,7 +390,7 @@ public class AnalyzeInformationalHandler(
 
         InformationalAnalysisResult result;
         try { result = await analyzer.AnalyzeInformationalAsync(sig, sig.SourceCode, ct); }
-        catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Informational analyzer failed: {ex.Message}")); }
+        catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Informational analyzer failed: {ExceptionMessage.Describe(ex)}")); }
 
         // Preserve all existing INTERACTIVE elements. Replace the INFORMATIONAL
         // subset entirely with the deeper analysis. Reorder so interactive
@@ -470,7 +470,7 @@ public class AnalyzeRelationshipsHandler(
 
         RelationshipAnalysisResult result;
         try { result = await analyzer.AnalyzeRelationshipsAsync(sig, sig.SourceCode, ct); }
-        catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Relationship analyzer failed: {ex.Message}")); }
+        catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Relationship analyzer failed: {ExceptionMessage.Describe(ex)}")); }
 
         sig.SetRelationships(result.GraphJson);
         await uow.SaveChangesAsync(ct);

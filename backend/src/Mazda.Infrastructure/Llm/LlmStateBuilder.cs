@@ -302,7 +302,7 @@ public class LlmStateBuilder(IOptions<LlmOptions> options) : IStateBuilder
 
         var userMsg = $"Signature:\n{sigJson}\n\nRaw extraction JSON:\n{rawExtractionJson}";
 
-        var completion = await chat.CompleteChatAsync(
+        var completion = await chat.CompleteChatSafeAsync(
             new List<ChatMessage>
             {
                 new SystemChatMessage(SystemPrompt),

@@ -34,6 +34,13 @@ public class LlmOptions
 
     /// <summary>Model name used for the Playwright script-generation call.</summary>
     public string GeneratorModel { get; set; } = "gpt-4o";
+
+    /// <summary>
+    /// How long to wait for a single completion before giving up. The SDK's own
+    /// default is 100s, which is well short of what a large source bundle takes
+    /// on a slower or self-hosted model.
+    /// </summary>
+    public int TimeoutSeconds { get; set; } = 600;
 }
 
 internal static class ChatClientFactory
@@ -47,7 +54,11 @@ internal static class ChatClientFactory
         if (!Uri.TryCreate(opts.BaseUrl, UriKind.Absolute, out var endpoint))
             throw new InvalidOperationException($"Llm:BaseUrl is not a valid absolute URL: '{opts.BaseUrl}'.");
 
-        var clientOptions = new OpenAIClientOptions { Endpoint = endpoint };
+        var clientOptions = new OpenAIClientOptions
+        {
+            Endpoint = endpoint,
+            NetworkTimeout = TimeSpan.FromSeconds(Math.Max(1, opts.TimeoutSeconds)),
+        };
         return new ChatClient(
             model: model,
             credential: new ApiKeyCredential(opts.ApiKey),

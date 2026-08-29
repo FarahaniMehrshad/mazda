@@ -133,7 +133,7 @@ export function ScreenShell({ children }: ScreenShellProps) {
 }
 
 interface StepIndicatorProps {
-  step: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
+  step: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   /**
    * Optional click handler. When provided, each step becomes a button-like
    * clickable target — cursor pointer, hover affordance, keyboard-focusable.
@@ -144,17 +144,19 @@ interface StepIndicatorProps {
   onStepClick?: (step: number) => void;
 }
 
+// The 7-step wizard under the function-catalogue architecture. Steps 1–5
+// operate on a Signature; steps 6–7 turn that signature into runnable
+// operations. The legacy Setup / Analyze / Test / Merge / Execute split
+// collapsed into a single Run page (step 7) because gather+plan+execute is
+// now one coherent flow rather than four hand-driven substeps.
 const STEPS = [
   { n: "01", t: "Upload" },
   { n: "02", t: "Interactable" },
   { n: "03", t: "Informational" },
   { n: "04", t: "Relationships" },
   { n: "05", t: "User flows" },
-  { n: "06", t: "Setup" },
-  { n: "07", t: "Analyze state" },
-  { n: "08", t: "Test prompt" },
-  { n: "09", t: "Merge & finalize" },
-  { n: "10", t: "Execution" },
+  { n: "06", t: "Functions" },
+  { n: "07", t: "Run" },
 ];
 
 export function StepIndicator({ step, onStepClick }: StepIndicatorProps) {

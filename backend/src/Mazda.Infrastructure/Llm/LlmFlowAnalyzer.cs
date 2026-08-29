@@ -115,7 +115,7 @@ public class LlmFlowAnalyzer(IOptions<LlmOptions> options) : IFlowAnalyzer
 
         var userMsg = $"Signature:\n{sigJson}{cypressBlock}";
 
-        var completion = await chat.CompleteChatAsync(
+        var completion = await chat.CompleteChatSafeAsync(
             new List<ChatMessage>
             {
                 new SystemChatMessage(SystemPrompt),
