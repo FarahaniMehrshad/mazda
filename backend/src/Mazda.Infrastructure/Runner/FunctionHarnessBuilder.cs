@@ -48,6 +48,11 @@ internal static class FunctionHarnessBuilder
     /// <summary>Prefix for every per-step JSON event emitted by the execute harness.</summary>
     public const string EventLinePrefix = "__MZ_EVENT__ ";
 
+    /// <summary>Sentinel the single-function test harness prints just before its result payload.</summary>
+    public const string TestBeginSentinel = "__MZ_FNTEST_BEGIN__";
+    /// <summary>Sentinel the single-function test harness prints just after its result payload.</summary>
+    public const string TestEndSentinel = "__MZ_FNTEST_END__";
+
     /// <summary>
     /// One function unpacked from a signature and ready for stitching. The
     /// namespaced <see cref="QualifiedName"/> is what the planner LLM writes
@@ -65,14 +70,15 @@ internal static class FunctionHarnessBuilder
 
     public static string BuildGatherHarness(
         Signature signature,
-        IReadOnlyList<Signature>? dependencies)
+        IReadOnlyList<Signature>? dependencies,
+        CdpTarget target)
     {
         var stateFunctions = Enumerate(signature, dependencies)
             .Where(f => f.Kind == FunctionKind.State)
             .ToList();
 
         var sb = new StringBuilder();
-        AppendPreamble(sb, testName: "mazda gather");
+        AppendPreamble(sb, testName: "mazda gather", target);
         AppendFunctionDeclarations(sb, stateFunctions, prefix: "__mz_state_");
 
         // Gather loop: iterate every state function in declaration order,
@@ -112,14 +118,15 @@ internal static class FunctionHarnessBuilder
     public static string BuildExecuteHarness(
         Signature signature,
         IReadOnlyList<Signature>? dependencies,
-        Plan plan)
+        Plan plan,
+        CdpTarget target)
     {
         var actionFunctions = Enumerate(signature, dependencies)
             .Where(f => f.Kind == FunctionKind.Action)
             .ToList();
 
         var sb = new StringBuilder();
-        AppendPreamble(sb, testName: "mazda execute");
+        AppendPreamble(sb, testName: "mazda execute", target);
         AppendFunctionDeclarations(sb, actionFunctions, prefix: "__mz_action_");
 
         // Dispatch table: qualified name → handler. The planner LLM writes
@@ -179,6 +186,111 @@ internal static class FunctionHarnessBuilder
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Harness for the design-time "test this function" affordance: invoke ONE
+    /// function with caller-supplied args and report what it returned or threw.
+    ///
+    /// Unlike gather and execute, this shape declares the WHOLE catalogue (state
+    /// and action, root and dependencies) and calls only the target. Declaring
+    /// everything costs a bigger file but means a body that leans on a sibling
+    /// helper still runs, and there's one code path rather than a
+    /// kind-and-dependency special case.
+    ///
+    /// The try/catch lives inside the harness on purpose: a throwing body is a
+    /// legitimate test RESULT (<c>ok:false</c> with the message), not a harness
+    /// failure. Only an unreachable browser or a spec that won't compile should
+    /// surface as an error to the caller.
+    /// </summary>
+    public static string BuildTestHarness(
+        Signature signature,
+        IReadOnlyList<Signature>? dependencies,
+        string qualifiedFunctionName,
+        string argsJson,
+        CdpTarget target)
+    {
+        var all = Enumerate(signature, dependencies).ToList();
+
+        var sb = new StringBuilder();
+        AppendPreamble(sb, testName: "mazda fn-test", target);
+        AppendFunctionDeclarations(sb, all, prefix: "__mz_fn_");
+
+        // Dispatch through a table keyed by qualified name rather than emitting
+        // a direct call, so an unknown name produces the same structured
+        // FunctionNotFound payload the execute harness gives instead of a
+        // TypeScript compile error the user would have to read out of a log.
+        sb.AppendLine("  const __mz_fns: Record<string, (page: Page, args: any) => Promise<any>> = {");
+        foreach (var fn in all)
+            sb.AppendLine($"    {JsString(fn.QualifiedName)}: __mz_fn_{Slug(fn.QualifiedName)},");
+        sb.AppendLine("  };");
+        sb.AppendLine();
+
+        sb.AppendLine($"  const __mz_target = {JsString(qualifiedFunctionName)};");
+        sb.AppendLine($"  const __mz_args = {NormalizeArgsLiteral(argsJson)};");
+        sb.AppendLine("  const __mz_handler = __mz_fns[__mz_target];");
+        sb.AppendLine("  const __mz_t0 = Date.now();");
+        sb.AppendLine("  let __mz_result: any;");
+        sb.AppendLine("  if (!__mz_handler) {");
+        sb.AppendLine("    __mz_result = { ok: false, durationMs: 0, error: { kind: 'FunctionNotFound',");
+        sb.AppendLine("      message: `No function named \"${__mz_target}\" in this catalogue.`, stack: '' } };");
+        sb.AppendLine("  } else {");
+        sb.AppendLine("    try {");
+        sb.AppendLine("      const __mz_returned = await __mz_handler(page, __mz_args);");
+        sb.AppendLine("      __mz_result = { ok: true, durationMs: Date.now() - __mz_t0,");
+        sb.AppendLine("        returned: __mz_returned === undefined ? null : __mz_returned };");
+        sb.AppendLine("    } catch (__mz_err: any) {");
+        sb.AppendLine("      __mz_result = { ok: false, durationMs: Date.now() - __mz_t0,");
+        sb.AppendLine("        error: { kind: 'RuntimeError', message: String(__mz_err?.message ?? __mz_err),");
+        sb.AppendLine("                 stack: String(__mz_err?.stack ?? '') } };");
+        sb.AppendLine("    }");
+        sb.AppendLine("  }");
+        sb.AppendLine();
+
+        // Page context alongside the result: a body that assumes the wrong view
+        // fails in a way that only makes sense once you know where the browser
+        // actually was. Cheap to capture, and it turns "click timed out" into
+        // "click timed out, and you were on /settings".
+        sb.AppendLine("  try {");
+        sb.AppendLine("    __mz_result.pageUrl = page.url();");
+        sb.AppendLine("    __mz_result.pageTitle = await page.title();");
+        sb.AppendLine("  } catch { /* page may be gone; the result still stands */ }");
+        sb.AppendLine();
+
+        sb.AppendLine($"  console.log({JsString(TestBeginSentinel)});");
+        sb.AppendLine("  console.log(JSON.stringify(__mz_result));");
+        sb.AppendLine($"  console.log({JsString(TestEndSentinel)});");
+        sb.AppendLine();
+
+        AppendPostamble(sb);
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Emit the caller's args as a JS object literal. Reuses the raw JSON text
+    /// when it parses to an object (same reasoning as
+    /// <see cref="BuildPlanLiteral"/> — preserve the shape as given); anything
+    /// else degrades to <c>{}</c> so a malformed payload can't produce a spec
+    /// that won't compile. The use case validates args before we get here, so
+    /// this is belt-and-braces.
+    /// </summary>
+    private static string NormalizeArgsLiteral(string argsJson)
+    {
+        if (string.IsNullOrWhiteSpace(argsJson)) return "{}";
+        try
+        {
+            using var doc = JsonDocument.Parse(argsJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return "{}";
+            return JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions
+            {
+                WriteIndented = false,
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+            });
+        }
+        catch (JsonException)
+        {
+            return "{}";
+        }
+    }
+
     // ── Building blocks ──────────────────────────────────────────────
 
     /// <summary>
@@ -190,17 +302,59 @@ internal static class FunctionHarnessBuilder
     /// analyze-state script uses today, so it works out of the box on the
     /// existing runner without a special flag.
     /// </summary>
-    private static void AppendPreamble(StringBuilder sb, string testName)
+    private static void AppendPreamble(StringBuilder sb, string testName, CdpTarget target)
     {
         sb.AppendLine("import { test, chromium } from '@playwright/test';");
         sb.AppendLine("import type { Page } from '@playwright/test';");
         sb.AppendLine();
-        sb.AppendLine($"test({JsString(testName)}, async () => {{");
-        sb.AppendLine("  const browser = await chromium.connectOverCDP('http://localhost:9222');");
+
+        // Resolve the attached tab by CDP targetId. Matching on URL would be
+        // ambiguous the moment two tabs share one (a second window on the same
+        // app, an SPA where routes share an origin), and `pages()[0]` — what
+        // every harness used before attachment existed — is simply whichever
+        // target Chrome reports first, which is not the focused tab.
+        //
+        // Scans every context, not just contexts()[0]: normal tabs share one
+        // default context, but incognito windows and other profiles get their
+        // own, and a user can legitimately attach to one of those.
+        sb.AppendLine("async function __mzPickPage(browser: any, targetId: string | null): Promise<Page> {");
+        sb.AppendLine("  const found: Array<{ ctx: any; page: any }> = [];");
+        sb.AppendLine("  for (const c of browser.contexts()) for (const p of c.pages()) found.push({ ctx: c, page: p });");
+        sb.AppendLine("  if (targetId) {");
+        sb.AppendLine("    for (const { ctx, page } of found) {");
+        sb.AppendLine("      try {");
+        sb.AppendLine("        const session = await ctx.newCDPSession(page);");
+        sb.AppendLine("        const info = await session.send('Target.getTargetInfo');");
+        sb.AppendLine("        await session.detach().catch(() => {});");
+        sb.AppendLine("        if (info?.targetInfo?.targetId === targetId) return page;");
+        sb.AppendLine("      } catch { /* target vanished mid-scan; keep looking */ }");
+        sb.AppendLine("    }");
+        // Deliberately throw rather than fall back to the first page: silently
+        // driving a different tab than the one the user attached is worse than
+        // a clear failure telling them to re-pick.
+        sb.AppendLine("    throw new Error(");
+        sb.AppendLine("      'The attached browser tab is no longer open (CDP targetId ' + targetId + '). ' +");
+        sb.AppendLine("      'Pick a tab again from the CDP panel.');");
+        sb.AppendLine("  }");
+        sb.AppendLine("  if (found.length > 0) return found[0].page;");
         sb.AppendLine("  const ctx = browser.contexts()[0] ?? await browser.newContext();");
-        sb.AppendLine("  const page = ctx.pages()[0] ?? await ctx.newPage();");
+        sb.AppendLine("  return await ctx.newPage();");
+        sb.AppendLine("}");
+        sb.AppendLine();
+
+        sb.AppendLine($"test({JsString(testName)}, async () => {{");
+        // Emitted as localhost:<port> on purpose — LocalProcessScriptRunner's
+        // RewriteHosts matches that shape and swaps in the __mzConnectViaHost
+        // helper (which spoofs the Host header Chrome insists on). Its regex
+        // captures the port, so a non-default port survives the rewrite.
+        sb.AppendLine($"  const browser = await chromium.connectOverCDP('http://localhost:{target.Port}');");
+        sb.AppendLine($"  const page = await __mzPickPage(browser, {JsNullableString(target.TargetId)});");
         sb.AppendLine();
     }
+
+    /// <summary>JS string literal, or bare <c>null</c> for a missing value.</summary>
+    private static string JsNullableString(string? s)
+        => string.IsNullOrWhiteSpace(s) ? "null" : JsString(s);
 
     /// <summary>
     /// Shared footer: close the CDP session (does NOT close the user's

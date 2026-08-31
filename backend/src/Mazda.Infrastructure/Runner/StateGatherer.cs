@@ -19,7 +19,8 @@ public sealed class StateGatherer(IScriptRunner runner) : IStateGatherer
 {
     public async Task<GatheredState> GatherAsync(
         Signature signature,
-        IReadOnlyList<Signature>? dependencies = null,
+        IReadOnlyList<Signature>? dependencies,
+        CdpTarget target,
         CancellationToken ct = default)
     {
         // Fast path: no state functions anywhere → empty snapshot. Nothing
@@ -31,12 +32,12 @@ public sealed class StateGatherer(IScriptRunner runner) : IStateGatherer
         if (!hasAnyStateFn)
         {
             return new GatheredState(
-                Manifest: ManifestLabel(signature),
+                SignatureLabel: Label(signature),
                 CapturedAt: DateTime.UtcNow,
                 StateJson: "{}");
         }
 
-        var harness = FunctionHarnessBuilder.BuildGatherHarness(signature, dependencies);
+        var harness = FunctionHarnessBuilder.BuildGatherHarness(signature, dependencies, target);
 
         RunnerCompletion completion;
         try
@@ -54,7 +55,10 @@ public sealed class StateGatherer(IScriptRunner runner) : IStateGatherer
         // etc.) still lets Playwright emit stdout — but the sentinel pair
         // may not appear at all. Distinguish that from "ran fine, printed
         // JSON" up-front so the caller sees the real reason for the miss.
-        var stateJson = TryExtractSentinelPayload(completion.FullLog);
+        var stateJson = HarnessOutput.ExtractFenced(
+            completion.FullLog,
+            FunctionHarnessBuilder.StateBeginSentinel,
+            FunctionHarnessBuilder.StateEndSentinel);
         if (stateJson is null)
         {
             if (completion.Kind is RunnerExitKind.Errored or RunnerExitKind.Cancelled)
@@ -62,7 +66,7 @@ public sealed class StateGatherer(IScriptRunner runner) : IStateGatherer
                 throw new HarnessException(
                     $"State gatherer terminated with kind={completion.Kind} " +
                     $"(exit code {completion.ExitCode}) before emitting a state payload. " +
-                    $"Last 500 chars of runner log:\n{Tail(completion.FullLog, 500)}");
+                    $"Last 500 chars of runner log:\n{HarnessOutput.Tail(completion.FullLog, 500)}");
             }
             // Playwright ran to a "passed" or "failed test" exit code but our
             // sentinels are absent — usually means a body threw during the
@@ -72,7 +76,7 @@ public sealed class StateGatherer(IScriptRunner runner) : IStateGatherer
                 "State gatherer completed but did not emit a state payload. " +
                 "This usually means a state-function body threw before the " +
                 "harness could reach the emit step. Last 500 chars of runner log:\n" +
-                Tail(completion.FullLog, 500));
+                HarnessOutput.Tail(completion.FullLog, 500));
         }
 
         // Validate the payload is JSON-well-formed before we hand it on —
@@ -90,43 +94,13 @@ public sealed class StateGatherer(IScriptRunner runner) : IStateGatherer
         }
 
         return new GatheredState(
-            Manifest: ManifestLabel(signature),
+            SignatureLabel: Label(signature),
             CapturedAt: DateTime.UtcNow,
             StateJson: stateJson);
     }
 
-    /// <summary>
-    /// Grep the runner's captured stdout for the sentinel pair the harness
-    /// writes around the state JSON. Both sentinels must appear on their own
-    /// lines. Everything between them (concatenated) is the payload.
-    ///
-    /// We match on line boundaries because Playwright's list reporter may
-    /// print other content in between (it usually doesn't between two
-    /// console.log calls on the same test, but robustness costs nothing).
-    /// </summary>
-    private static string? TryExtractSentinelPayload(string fullLog)
-    {
-        var lines = fullLog.Split('\n');
-        int beginIdx = -1, endIdx = -1;
-        for (var i = 0; i < lines.Length; i++)
-        {
-            var line = lines[i].Trim();
-            if (beginIdx < 0 && line == FunctionHarnessBuilder.StateBeginSentinel) beginIdx = i;
-            else if (beginIdx >= 0 && line == FunctionHarnessBuilder.StateEndSentinel) { endIdx = i; break; }
-        }
-        if (beginIdx < 0 || endIdx <= beginIdx) return null;
-        // Rejoin the interior with no separator — the harness prints the
-        // JSON in a single console.log so there's no ambiguity.
-        var interior = string.Concat(lines.Skip(beginIdx + 1).Take(endIdx - beginIdx - 1)
-            .Select(l => l.TrimEnd('\r')));
-        return interior.Trim();
-    }
-
-    private static string ManifestLabel(Signature s)
+    private static string Label(Signature s)
         => string.IsNullOrWhiteSpace(s.Version)
             ? s.Name
             : $"{s.Name}@{s.Version}";
-
-    private static string Tail(string s, int chars)
-        => s.Length <= chars ? s : s[^chars..];
 }

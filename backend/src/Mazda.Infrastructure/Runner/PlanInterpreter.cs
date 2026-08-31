@@ -30,6 +30,7 @@ public sealed class PlanInterpreter(IScriptRunner runner) : IPlanInterpreter
         IReadOnlyList<Signature>? dependencies,
         Plan plan,
         GatheredState state,
+        CdpTarget target,
         CancellationToken ct = default)
     {
         // Empty plan is a legitimate outcome — the planner explicitly emits
@@ -46,7 +47,7 @@ public sealed class PlanInterpreter(IScriptRunner runner) : IPlanInterpreter
                 Plan: plan);
         }
 
-        var harness = FunctionHarnessBuilder.BuildExecuteHarness(signature, dependencies, plan);
+        var harness = FunctionHarnessBuilder.BuildExecuteHarness(signature, dependencies, plan, target);
 
         RunnerCompletion completion;
         try

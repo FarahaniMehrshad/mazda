@@ -14,6 +14,13 @@ import {
   type FunctionInput,
 } from "./functionsApi";
 import type { SignatureFunctionDto } from "@/shared/api/types";
+import { FunctionTestPanel } from "./FunctionTestPanel";
+import {
+  LabeledInput,
+  LabeledSelect,
+  extractParamPreview,
+  prettifyJson,
+} from "./functionForm";
 import { ApiError } from "@/shared/api/client";
 
 /**
@@ -37,6 +44,7 @@ export function FunctionsPage() {
   const remove = useDeleteFunction(id);
 
   const [editing, setEditing] = useState<SignatureFunctionDto | "new" | null>(null);
+  const [testing, setTesting] = useState<SignatureFunctionDto | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const navigator = useStepNavigator(id ? { mode: "signature", signatureId: id } : null);
@@ -135,6 +143,7 @@ export function FunctionsPage() {
           list={states}
           onEdit={setEditing}
           onDelete={onDelete}
+          onTest={setTesting}
         />
         <FunctionPane
           title="Action functions"
@@ -143,6 +152,7 @@ export function FunctionsPage() {
           list={actions}
           onEdit={setEditing}
           onDelete={onDelete}
+          onTest={setTesting}
         />
 
         {fns.data && fns.data.length > 0 && (
@@ -161,6 +171,10 @@ export function FunctionsPage() {
           onClose={() => setEditing(null)}
         />
       )}
+
+      {testing && (
+        <FunctionTestPanel fn={testing} sigId={id!} onClose={() => setTesting(null)} />
+      )}
     </ScreenShell>
   );
 }
@@ -174,6 +188,7 @@ function FunctionPane({
   list,
   onEdit,
   onDelete,
+  onTest,
 }: {
   title: string;
   badge: string;
@@ -181,6 +196,7 @@ function FunctionPane({
   list: SignatureFunctionDto[];
   onEdit: (fn: SignatureFunctionDto) => void;
   onDelete: (fn: SignatureFunctionDto) => void;
+  onTest: (fn: SignatureFunctionDto) => void;
 }) {
   return (
     <div style={{ marginTop: 32 }}>
@@ -195,7 +211,13 @@ function FunctionPane({
 
       <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
         {list.map((fn) => (
-          <FunctionRow key={fn.id} fn={fn} onEdit={() => onEdit(fn)} onDelete={() => onDelete(fn)} />
+          <FunctionRow
+            key={fn.id}
+            fn={fn}
+            onEdit={() => onEdit(fn)}
+            onDelete={() => onDelete(fn)}
+            onTest={() => onTest(fn)}
+          />
         ))}
         {list.length === 0 && (
           <div
@@ -219,10 +241,12 @@ function FunctionRow({
   fn,
   onEdit,
   onDelete,
+  onTest,
 }: {
   fn: SignatureFunctionDto;
   onEdit: () => void;
   onDelete: () => void;
+  onTest: () => void;
 }) {
   // Extract parameter names + types from the schema for a one-line preview
   // — spares the user from opening the editor to see the signature.
@@ -252,28 +276,12 @@ function FunctionRow({
         )}
       </div>
       <div style={{ display: "flex", gap: 8 }}>
+        <BtnGhost onClick={onTest}>Test</BtnGhost>
         <BtnGhost onClick={onEdit}>Edit</BtnGhost>
         <BtnGhost onClick={onDelete}>Delete</BtnGhost>
       </div>
     </div>
   );
-}
-
-function extractParamPreview(schemaJson: string): string {
-  try {
-    const doc = JSON.parse(schemaJson);
-    const props = doc?.properties ?? {};
-    const names = Object.keys(props);
-    if (names.length === 0) return "";
-    return names
-      .map((n) => {
-        const t = (props[n]?.type as string | undefined) ?? "any";
-        return `${n}: ${t}`;
-      })
-      .join(", ");
-  } catch {
-    return "";
-  }
 }
 
 // ── Editor modal ─────────────────────────────────────────────────────
@@ -460,85 +468,6 @@ function FunctionEditor({
 
 // ── Small inputs ─────────────────────────────────────────────────────
 
-function LabeledInput({
-  label,
-  value,
-  onChange,
-  placeholder,
-  multiline,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-  multiline?: boolean;
-}) {
-  const Tag = multiline ? "textarea" : "input";
-  return (
-    <div style={{ marginTop: 12 }}>
-      <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 6, fontFamily: "var(--f-mono)" }}>
-        {label}
-      </div>
-      <Tag
-        value={value}
-        onChange={(e) => onChange((e.target as HTMLInputElement | HTMLTextAreaElement).value)}
-        placeholder={placeholder}
-        rows={multiline ? 2 : undefined}
-        style={{
-          width: "100%",
-          padding: "10px 12px",
-          background: "var(--glass-1)",
-          border: "1px solid var(--glass-stroke-2)",
-          borderRadius: 8,
-          color: "var(--text-1)",
-          fontSize: 13,
-          fontFamily: multiline ? "inherit" : "inherit",
-          resize: multiline ? "vertical" : undefined,
-        }}
-      />
-    </div>
-  );
-}
-
-function LabeledSelect({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: { value: string; label: string }[];
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div style={{ marginTop: 12 }}>
-      <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 6, fontFamily: "var(--f-mono)" }}>
-        {label}
-      </div>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        style={{
-          width: "100%",
-          padding: "10px 12px",
-          background: "var(--glass-1)",
-          border: "1px solid var(--glass-stroke-2)",
-          borderRadius: 8,
-          color: "var(--text-1)",
-          fontSize: 13,
-        }}
-      >
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
 function SchemaEditor({
   label,
   value,
@@ -572,12 +501,4 @@ function SchemaEditor({
       </div>
     </div>
   );
-}
-
-function prettifyJson(s: string): string {
-  try {
-    return JSON.stringify(JSON.parse(s), null, 2);
-  } catch {
-    return s;
-  }
 }

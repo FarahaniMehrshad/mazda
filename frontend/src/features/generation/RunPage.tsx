@@ -231,7 +231,7 @@ function PromptPane({
 
 function StatePane({ state }: { state: GatheredStateBlob }) {
   return (
-    <Section title="Gathered state" badge={state.manifest} subtitle={`captured ${new Date(state.capturedAt).toLocaleString()}`}>
+    <Section title="Gathered state" badge={state.signature} subtitle={`captured ${new Date(state.capturedAt).toLocaleString()}`}>
       <pre
         style={{
           margin: 0,

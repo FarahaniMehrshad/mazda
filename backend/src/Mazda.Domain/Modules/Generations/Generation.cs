@@ -68,7 +68,7 @@ public class Generation : Entity
     /// <summary>
     /// Snapshot of the UI at plan time — the merged state functions' returns,
     /// serialised as
-    /// <c>{ manifest, capturedAt, state: { GetTasks: [...], ... } }</c>.
+    /// <c>{ signature, capturedAt, state: { GetTasks: [...], ... } }</c>.
     /// Null before the gather phase completes; set once, never mutated.
     /// </summary>
     public string? GatheredStateJson { get; private set; }

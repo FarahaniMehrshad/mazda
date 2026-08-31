@@ -215,7 +215,7 @@ public record FunctionCatalogueResult(
 /// what did and didn't observe.
 /// </summary>
 public record GatheredState(
-    string Manifest,        // "signature-name@version" — for provenance
+    string SignatureLabel,  // "name@version" — for provenance
     DateTime CapturedAt,    // wall-clock at gather time
     string StateJson);      // opaque JSON object keyed by state function name
 
@@ -283,11 +283,81 @@ public record ExecutionEnvelope(
 /// runtime error is encoded into the returned JSON, and a whole-browser
 /// failure surfaces as a <see cref="HarnessException"/>.
 /// </summary>
+// ── CDP attachment ───────────────────────────────────────────────────
+// Which Chrome tab MAZDA drives. Every harness used to take the first page
+// Chrome reported, which is arbitrary once more than one tab is open.
+
+/// <summary>
+/// Where a harness should connect, and which tab it should drive.
+/// <see cref="TargetId"/> empty means "first page found" — the behaviour
+/// before tab attachment existed, kept as the no-preference default.
+/// </summary>
+public sealed record CdpTarget(int Port, string? TargetId)
+{
+    public static CdpTarget Default { get; } = new(9222, null);
+}
+
+/// <summary>One driveable tab, as reported by Chrome's <c>/json/list</c>.</summary>
+public sealed record CdpTab(string TargetId, string Title, string Url);
+
+public sealed record CdpStatus(bool Available, string? BrowserVersion, string? Reason)
+{
+    public static CdpStatus Reachable(string version) => new(true, version, null);
+    public static CdpStatus Unavailable(string reason) => new(false, null, reason);
+}
+
+/// <summary>
+/// Reads Chrome's HTTP debugging endpoints. Implementations must spoof the
+/// <c>Host</c> header to <c>localhost:&lt;port&gt;</c> — Chrome 111+ rejects
+/// anything else, and from inside the container we necessarily connect by a
+/// different hostname.
+/// </summary>
+public interface ICdpClient
+{
+    Task<CdpStatus> ProbeAsync(int port, CancellationToken ct = default);
+    Task<IReadOnlyList<CdpTab>> ListTabsAsync(int port, CancellationToken ct = default);
+}
+
 public interface IStateGatherer
 {
     Task<GatheredState> GatherAsync(
         Signature signature,
-        IReadOnlyList<Signature>? dependencies = null,
+        IReadOnlyList<Signature>? dependencies,
+        CdpTarget target,
+        CancellationToken ct = default);
+}
+
+/// <summary>
+/// Result of running ONE catalogue function against the live browser.
+///
+/// A body that throws is a successful test with <c>Ok == false</c> — the whole
+/// point of the affordance is to see that message. Only an unreachable CDP
+/// browser or a spec that won't compile raises <see cref="HarnessException"/>.
+/// </summary>
+public sealed record FunctionTestOutcome(
+    bool Ok,
+    string? ReturnedJson,   // state functions return data; actions return null
+    string? ErrorKind,      // "RuntimeError" | "FunctionNotFound" — null when Ok
+    string? ErrorMessage,
+    string? ErrorStack,
+    int DurationMs,
+    string? PageUrl,        // where the browser actually was, for context
+    string? PageTitle,
+    string LogTail);        // tail of runner stdout, for when the payload isn't enough
+
+/// <summary>
+/// Design-time debugging port: run a single function from a signature's
+/// catalogue, with caller-supplied arguments, against the CDP-attached browser.
+/// Not part of the runtime gather → plan → execute path.
+/// </summary>
+public interface IFunctionTester
+{
+    Task<FunctionTestOutcome> TestAsync(
+        Signature signature,
+        IReadOnlyList<Signature>? dependencies,
+        string qualifiedFunctionName,
+        string argsJson,
+        CdpTarget target,
         CancellationToken ct = default);
 }
 
@@ -331,6 +401,7 @@ public interface IPlanInterpreter
         IReadOnlyList<Signature>? dependencies,
         Plan plan,
         GatheredState state,
+        CdpTarget target,
         CancellationToken ct = default);
 }
 

@@ -22,6 +22,7 @@ public static class DependencyInjection
         services.AddScoped<ISignatureRepository, SignatureRepository>();
         services.AddScoped<IGenerationRepository, GenerationRepository>();
         services.AddScoped<IMcpToolRepository, McpToolRepository>();
+        services.AddScoped<IUserSettingsRepository, UserSettingsRepository>();
 
         // Security
         services.Configure<JwtOptions>(cfg.GetSection("Jwt"));
@@ -30,6 +31,7 @@ public static class DependencyInjection
 
         // LLM (any OpenAI-compatible provider: OpenAI, Ollama, vLLM, OpenRouter, …)
         services.Configure<LlmOptions>(cfg.GetSection("Llm"));
+        services.Configure<Cdp.CdpOptions>(cfg.GetSection("Cdp"));
         services.AddSingleton<IComponentAnalyzer, LlmComponentAnalyzer>();
         services.AddSingleton<IInformationalAnalyzer, LlmInformationalAnalyzer>();
         services.AddSingleton<IRelationshipAnalyzer, LlmRelationshipAnalyzer>();
@@ -48,6 +50,9 @@ public static class DependencyInjection
         // (deterministic Playwright, streams events into IExecutionRegistry).
         services.AddSingleton<IStateGatherer, Runner.StateGatherer>();
         services.AddSingleton<IPlanInterpreter, Runner.PlanInterpreter>();
+        services.AddSingleton<IFunctionTester, Runner.FunctionTester>();
+        services.AddHttpClient("cdp");
+        services.AddSingleton<ICdpClient, Cdp.CdpClient>();
 
         return services;
     }

@@ -11,6 +11,7 @@ namespace Mazda.Infrastructure.Persistence;
 public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContext(options), IUnitOfWork
 {
     public DbSet<User> Users => Set<User>();
+    public DbSet<UserSettings> UserSettings => Set<UserSettings>();
     public DbSet<Signature> Signatures => Set<Signature>();
     public DbSet<SignatureElement> SignatureElements => Set<SignatureElement>();
     public DbSet<SignatureDependency> SignatureDependencies => Set<SignatureDependency>();
@@ -21,6 +22,7 @@ public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContex
     protected override void OnModelCreating(ModelBuilder mb)
     {
         mb.ApplyConfiguration(new UserConfig());
+        mb.ApplyConfiguration(new UserSettingsConfig());
         mb.ApplyConfiguration(new SignatureConfig());
         mb.ApplyConfiguration(new SignatureElementConfig());
         mb.ApplyConfiguration(new SignatureDependencyConfig());
@@ -30,6 +32,23 @@ public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContex
     }
 
     Task<int> IUnitOfWork.SaveChangesAsync(CancellationToken ct) => base.SaveChangesAsync(ct);
+}
+
+internal class UserSettingsConfig : IEntityTypeConfiguration<UserSettings>
+{
+    public void Configure(EntityTypeBuilder<UserSettings> b)
+    {
+        b.ToTable("user_settings");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.UserId).HasColumnName("user_id");
+        // One settings row per user; the unique index is what makes
+        // GetOrCreate safe against a double-create race.
+        b.HasIndex(x => x.UserId).IsUnique();
+        b.Property(x => x.CdpPort).HasColumnName("cdp_port");
+        b.Property(x => x.AttachedTargetId).HasColumnName("attached_target_id").HasMaxLength(200);
+        b.Property(x => x.AttachedTitle).HasColumnName("attached_title").HasMaxLength(500);
+        b.Property(x => x.AttachedUrl).HasColumnName("attached_url").HasMaxLength(2000);
+    }
 }
 
 internal class UserConfig : IEntityTypeConfiguration<User>
@@ -59,17 +78,6 @@ internal class SignatureConfig : IEntityTypeConfiguration<Signature>
         b.Property(x => x.HumanDescription).HasColumnName("human_description").HasMaxLength(50_000);
         b.Property(x => x.UserFlowsJson).HasColumnName("user_flows").HasMaxLength(200_000);
         b.Property(x => x.RelationshipsJson).HasColumnName("relationships_json").HasMaxLength(500_000);
-        // Prompts are intentionally unbounded so the user can paste arbitrarily
-        // large context (long English instructions, copied logs, etc.).
-        b.Property(x => x.LastSetupPrompt).HasColumnName("last_setup_prompt");
-        b.Property(x => x.LastTestPrompt).HasColumnName("last_test_prompt");
-        b.Property(x => x.LastSetupScript).HasColumnName("last_setup_script");
-        b.Property(x => x.LastTestScript).HasColumnName("last_test_script");
-        b.Property(x => x.LastFinalScript).HasColumnName("last_final_script");
-        b.Property(x => x.LastAnalyzeStateScript).HasColumnName("last_analyze_state_script");
-        b.Property(x => x.LastAnalyzeStateRawOutput).HasColumnName("last_analyze_state_raw_output");
-        b.Property(x => x.LastAnalyzeStateJson).HasColumnName("last_analyze_state_json");
-        b.Property(x => x.LastAnalyzeStateScope).HasColumnName("last_analyze_state_scope").HasMaxLength(500);
         b.HasIndex(x => new { x.OwnerId, x.Name });
         b.HasMany(x => x.Elements).WithOne()
          .HasForeignKey(e => e.SignatureId).OnDelete(DeleteBehavior.Cascade);

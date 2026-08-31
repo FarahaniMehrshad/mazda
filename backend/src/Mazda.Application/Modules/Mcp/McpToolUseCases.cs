@@ -3,6 +3,7 @@ using System.Text.Json;
 using FluentValidation;
 using MediatR;
 using Mazda.Application.Common.Abstractions;
+using Mazda.Application.Modules.Cdp;
 using Mazda.Application.Modules.Generations;
 using Mazda.Domain.Common;
 using Mazda.Domain.Modules.Generations;
@@ -256,6 +257,7 @@ public class InvokeMcpToolHandler(
     IStateGatherer gatherer,
     IPlanGenerator planner,
     IPlanInterpreter interpreter,
+    IUserSettingsRepository userSettings,
     ICurrentUser me,
     IUnitOfWork uow) : IRequestHandler<InvokeMcpToolCommand, Result<McpInvocationResult>>
 {
@@ -300,7 +302,8 @@ public class InvokeMcpToolHandler(
         try
         {
             // 1 — Gather state.
-            var state = await gatherer.GatherAsync(sig, deps, ct);
+            var target = await CdpTargetResolver.ResolveAsync(userSettings, me.UserId.Value, ct);
+            var state = await gatherer.GatherAsync(sig, deps, target, ct);
             gen.RecordGatheredState(GenerationMapper.SerializeGatheredState(state));
             await uow.SaveChangesAsync(ct);
 
@@ -313,7 +316,7 @@ public class InvokeMcpToolHandler(
             // 3 — Execute. Synchronous by design (MCP is request/response).
             gen.MarkExecutionStarted();
             await uow.SaveChangesAsync(ct);
-            var envelope = await interpreter.ExecuteAsync(gen.Id, sig, deps, planResult.Plan, state, ct);
+            var envelope = await interpreter.ExecuteAsync(gen.Id, sig, deps, planResult.Plan, state, target, ct);
 
             var envelopeJson = GenerationMapper.SerializeEnvelope(envelope);
             gen.RecordExecutionEnvelope(envelopeJson);

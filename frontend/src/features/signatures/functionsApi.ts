@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/shared/api/client";
-import type { SignatureFunctionDto } from "@/shared/api/types";
+import type { FunctionTestResultDto, SignatureFunctionDto } from "@/shared/api/types";
 
 /**
  * Payload shape for POST / PUT on a single function. Server rebinds
@@ -32,6 +32,16 @@ export const functionsApi = {
     }),
   remove: (sigId: string, fnId: string) =>
     api.del<void>(`/api/signatures/${sigId}/functions/${fnId}`),
+  /**
+   * Run one function against the live CDP browser. Slow — a Playwright spawn
+   * plus real interaction — so callers should show a pending state rather
+   * than assume this returns quickly.
+   */
+  test: (sigId: string, fnId: string, argsJson: string) =>
+    api.post<FunctionTestResultDto>(
+      `/api/signatures/${sigId}/functions/${fnId}/test`,
+      { argsJson }
+    ),
 };
 
 export function useSignatureFunctions(sigId: string | undefined) {
@@ -74,5 +84,17 @@ export function useDeleteFunction(sigId: string | undefined) {
   return useMutation({
     mutationFn: (fnId: string) => functionsApi.remove(sigId!, fnId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["signature-functions", sigId] }),
+  });
+}
+
+/**
+ * A function test mutates the live page but no server state, so there is
+ * nothing to invalidate — the result is returned to the caller and rendered
+ * in place.
+ */
+export function useTestFunction(sigId: string | undefined) {
+  return useMutation({
+    mutationFn: ({ fnId, argsJson }: { fnId: string; argsJson: string }) =>
+      functionsApi.test(sigId!, fnId, argsJson),
   });
 }

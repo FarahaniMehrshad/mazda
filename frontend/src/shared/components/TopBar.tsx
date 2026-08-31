@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { MazdaWordmark } from "./Brand";
 import { useAuth } from "@/features/auth/useAuth";
 import { api } from "@/shared/api/client";
+import { CdpStatusChip } from "@/features/cdp/CdpPanel";
 
 interface MetaResponse {
   analyzerModel: string;
@@ -95,6 +96,9 @@ export function TopBar({ crumb }: TopBarProps) {
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        {/* Which Chrome tab MAZDA drives — sits beside the model chip because
+            both answer "what is this about to run against?". */}
+        <CdpStatusChip />
         <div
           style={{
             display: "flex",

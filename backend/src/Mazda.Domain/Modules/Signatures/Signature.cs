@@ -32,30 +32,6 @@ public class Signature : Entity
     /// Generation pipelines feed it to the test LLM as additional grounding.
     /// </summary>
     public string RelationshipsJson { get; private set; } = string.Empty;
-    // Most-recent setup / test prompts used against this signature. New
-    // generations created off the signature pre-fill from these.
-    public string LastSetupPrompt { get; private set; } = string.Empty;
-    public string LastTestPrompt { get; private set; } = string.Empty;
-    // Most-recent generated setup / test SCRIPTS for this signature. Same
-    // pre-fill story — restored onto fresh generations so the wizard isn't
-    // empty after a reload.
-    public string LastSetupScript { get; private set; } = string.Empty;
-    public string LastTestScript { get; private set; } = string.Empty;
-    public string LastFinalScript { get; private set; } = string.Empty;
-    public string LastAnalyzeStateScript { get; private set; } = string.Empty;
-    // Most-recent analyze-state RUN OUTPUT for this signature. The script alone
-    // isn't useful on a fresh generation — the captured raw output + the LLM-built
-    // semantic JSON are the actual ground-truth payload the test-generation step
-    // consumes. Persisting them across generations means a user can keep coming
-    // back without having to re-Run after every minor edit elsewhere.
-    public string LastAnalyzeStateRawOutput { get; private set; } = string.Empty;
-    public string LastAnalyzeStateJson { get; private set; } = string.Empty;
-    // Most recently used analyze-state scope selector. New generations
-    // pre-fill from this so the user doesn't have to re-type the scope per
-    // run; persisted on signature because the scope is almost always a
-    // property of the COMPONENT (a modal selector, a card root) not the
-    // run.
-    public string LastAnalyzeStateScope { get; private set; } = string.Empty;
 
     private readonly List<SignatureElement> _elements = new();
     public IReadOnlyList<SignatureElement> Elements => _elements;
@@ -108,33 +84,16 @@ public class Signature : Entity
     public void SetHumanDescription(string? description) { HumanDescription = description?.Trim() ?? string.Empty; Touch(); }
     public void SetUserFlows(string? json) { UserFlowsJson = json ?? string.Empty; Touch(); }
     public void SetRelationships(string? json) { RelationshipsJson = json ?? string.Empty; Touch(); }
-    public void SetLastSetupPrompt(string? prompt) { LastSetupPrompt = prompt?.Trim() ?? string.Empty; Touch(); }
-    public void SetLastTestPrompt(string? prompt) { LastTestPrompt = prompt?.Trim() ?? string.Empty; Touch(); }
-    public void SetLastSetupScript(string? script) { LastSetupScript = script ?? string.Empty; Touch(); }
-    public void SetLastTestScript(string? script) { LastTestScript = script ?? string.Empty; Touch(); }
-    public void SetLastFinalScript(string? script) { LastFinalScript = script ?? string.Empty; Touch(); }
-    public void SetLastAnalyzeStateScript(string? script) { LastAnalyzeStateScript = script ?? string.Empty; Touch(); }
-    public void SetLastAnalyzeStateScope(string? scope) { LastAnalyzeStateScope = scope?.Trim() ?? string.Empty; Touch(); }
 
     /// <summary>
     /// Wipe every signature-level cache that was derived from the element set.
     /// Called when the elements meaningfully change (selector renames, adds,
-    /// removes, description rewrites). Without this, future generations
-    /// pre-fill from these "Last used" buffers and the user sees scripts /
-    /// state JSON / user flows that reference selectors that no longer exist
-    /// — or worse, runs them.
-    ///
-    /// Kept narrow: prompts (LastSetupPrompt, LastTestPrompt) are user-authored
-    /// and stay; LastSetupScript is usually just "navigate to URL" and is left
-    /// alone for the same reason. Everything else that mentions selectors goes.
+    /// removes, description rewrites). Without this the user sees flows, a
+    /// relationship graph and function bodies that reference selectors which no
+    /// longer exist — or worse, runs them.
     /// </summary>
     public void InvalidateDerivedCaches()
     {
-        LastTestScript = string.Empty;
-        LastFinalScript = string.Empty;
-        LastAnalyzeStateScript = string.Empty;
-        LastAnalyzeStateRawOutput = string.Empty;
-        LastAnalyzeStateJson = string.Empty;
         UserFlowsJson = string.Empty;
         // The relationship graph is BUILT from selectors + descriptions, so an
         // element edit (rename / add / remove) makes the persisted graph stale
@@ -146,12 +105,6 @@ public class Signature : Entity
         // and force a regenerate than to ship stale bodies that fail at
         // runtime with cryptic Playwright errors.
         _functions.Clear();
-        Touch();
-    }
-    public void SetLastAnalyzeStateOutput(string? raw, string? json)
-    {
-        LastAnalyzeStateRawOutput = raw ?? string.Empty;
-        LastAnalyzeStateJson = json ?? string.Empty;
         Touch();
     }
 

@@ -1,6 +1,8 @@
 # MAZDA
 
-> A UI-driven assistant pipeline. Given a frontend component and a plain-English instruction, MAZDA synthesizes and executes a Playwright script that drives the real UI on a real browser — so an LLM agent can "use" an app the same way a human does, without going through an API.
+> A UI-driven assistant pipeline. Given a frontend component and a plain-English
+> instruction, MAZDA drives the real UI in a real browser — so an LLM agent can
+> "use" an app the same way a human does, without going through an API.
 
 ---
 
@@ -8,25 +10,22 @@
 
 1. [What MAZDA is, and why it exists](#what-mazda-is-and-why-it-exists)
 2. [Mental model of the system](#mental-model-of-the-system)
-3. [Current implementation (today's codebase)](#current-implementation-todays-codebase)
-   - [Backend layout](#backend-layout)
-   - [The Signature aggregate](#the-signature-aggregate)
-   - [The wizard pipeline (10 steps)](#the-wizard-pipeline-10-steps)
-   - [LLM ports and analyzers](#llm-ports-and-analyzers)
-   - [Runtime helpers injected into generated tests](#runtime-helpers-injected-into-generated-tests)
-   - [MCP server](#mcp-server)
-   - [Frontend](#frontend)
-   - [Persistence](#persistence)
-   - [Deployment](#deployment)
-4. [Proposed new architecture](#proposed-new-architecture)
-   - [Why a redesign](#why-a-redesign)
-   - [Front-driven vs API-driven assistants](#front-driven-vs-api-driven-assistants)
-   - [Two environments: Design and Operational](#two-environments-design-and-operational)
-   - [The Page Manifest DSL](#the-page-manifest-dsl)
-   - [Services in the new architecture](#services-in-the-new-architecture)
-   - [Lifecycle and versioning](#lifecycle-and-versioning)
-5. [Mapping today's code → the proposed services](#mapping-todays-code--the-proposed-services)
-6. [Glossary](#glossary)
+3. [The Signature aggregate](#the-signature-aggregate)
+4. [The function catalogue](#the-function-catalogue)
+5. [The wizard pipeline (7 steps)](#the-wizard-pipeline-7-steps)
+6. [Runtime: gather → plan → execute](#runtime-gather--plan--execute)
+7. [Backend layout](#backend-layout)
+8. [LLM ports and implementations](#llm-ports-and-implementations)
+9. [Runtime helpers injected into generated code](#runtime-helpers-injected-into-generated-code)
+10. [Playwright authoring rules](#playwright-authoring-rules) — *hard-won, read before writing a body*
+11. [CDP attach: the three-problem stack](#cdp-attach-the-three-problem-stack)
+12. [MCP server](#mcp-server)
+13. [Frontend](#frontend)
+14. [Persistence](#persistence)
+15. [Deployment](#deployment)
+16. [Running and operating the stack](#running-and-operating-the-stack)
+17. [Quirks and gotchas](#quirks-and-gotchas)
+18. [Glossary](#glossary)
 
 ---
 
@@ -39,9 +38,26 @@ There are two ways an LLM agent can drive an application:
 | **API-driven** | Agent calls the backend API directly. | APIs are often undocumented, scattered across many endpoints, require client-side logic to produce valid input/output shapes, and don't compose well across services. |
 | **Front-driven (UI-driven)** | Agent drives the frontend just like a human user. | Some UI elements (canvases, custom widgets) aren't selectable from the DOM; interactions can require many clicks; selectors are unstable. |
 
-MAZDA is a **front-driven** assistant pipeline. Its bet is that for many products — especially complex ones with weak API docs and rich client-side logic — driving the UI is the more tractable problem. To make UI-driving robust, MAZDA shifts the cost: it does heavy LLM work **once per component** (at design time) to produce a structured description of every UI surface, then uses that description at **runtime** to generate and execute Playwright scripts cheaply and reliably.
+MAZDA is a **front-driven** assistant pipeline. Its bet is that for many
+products — especially complex ones with weak API docs and rich client-side
+logic — driving the UI is the more tractable problem.
 
-The core thesis: **a stable, semantic description of the UI is a better contract for an LLM than the raw DOM**.
+When you build an assistant for a product, pick the entry point based on which
+surface has lower complexity for *that* product: well-documented,
+single-service APIs that don't hide logic in the client favour API-driven;
+tangled or undocumented APIs, or a client that carries meaningful logic,
+favour front-driven. MAZDA's contribution is making the front-driven path
+tractable, so teams that would otherwise be forced into API-driven work despite
+the pain have a real alternative.
+
+To make UI-driving robust, MAZDA shifts the cost: it does heavy LLM work
+**once per component** (at design time) to produce a structured description of
+every UI surface *and a catalogue of executable operations over it*, then uses
+that catalogue at **runtime** to fulfil requests cheaply and reliably.
+
+The core thesis: **a stable, semantic description of the UI — plus a
+pre-built set of operations over it — is a far better contract for an LLM than
+the raw DOM.**
 
 ---
 
@@ -51,66 +67,46 @@ The core thesis: **a stable, semantic description of the UI is a better contract
 DESIGN-TIME (per component, per change)
     Component source code  ─┐
     DOM snapshots          ─┤
-    Documentation          ─┼─►  LLM analysis  ─►  Signature / Manifest  ─►  Storage
-    Manual hints           ─┤                      (stable JSON DSL)
-    Live browser session   ─┘
+    Documentation          ─┼─►  LLM analysis  ─►  Signature  ─►  Storage
+    Manual hints           ─┘                      + function catalogue
 
 RUNTIME (per agent request)
-    User prompt           ─┐
-    Current page state    ─┼─►  LLM script-gen  ─►  Playwright script  ─►  Browser execution
-    Signature / Manifest  ─┘
+    state functions  ─►  gather()  ─►  state snapshot ─┐
+                                                       ├─►  LLM  ─►  Plan
+    user prompt  ──────────────────────────────────────┘             │
+                                                                     ▼
+                                                          interpreter executes
+                                                          action functions in
+                                                          the real browser
 ```
 
-Two cost centers, deliberately separated:
-- **Design-time** is LLM-heavy and slow, but happens once.
-- **Runtime** is fast and predictable because the LLM has a rich, stable context (the signature/manifest) instead of raw DOM.
+Two cost centres, deliberately separated:
+
+- **Design-time** is LLM-heavy and slow, but happens once per component.
+- **Runtime** is fast and predictable because the LLM never writes browser code.
+  It picks function names from a catalogue and fills in arguments grounded in a
+  freshly-captured state snapshot. Everything it emits is schema-validated
+  before a browser is touched.
 
 ---
 
-## Current implementation (today's codebase)
+## The Signature aggregate
 
-Today's MAZDA is a Mazda.Api backend + React frontend living in `C:\codes\mazda-app`. It implements the design + runtime split as a **wizard** rather than as two separate environments — both phases run side-by-side in the same app.
-
-### Backend layout
-
-Clean-architecture .NET 8 solution:
-
-```
-backend/
-  Mazda.sln
-  src/
-    Mazda.Domain/         ─ Pure domain entities + value objects
-    Mazda.Application/    ─ CQRS use cases (MediatR), validators, ports
-    Mazda.Infrastructure/ ─ EF Core, LLM clients, script runner, MCP host
-    Mazda.Api/            ─ Minimal-API endpoints, DI, auth, Program.cs
-```
-
-Key cross-cutting tech:
-- **MediatR** for CQRS dispatch (every use case is `IRequest<Result<TDto>>`).
-- **FluentValidation** for command validation.
-- **EF Core 8 + Npgsql** for persistence; schema is provisioned by `EnsureCreated` plus a sequence of idempotent `ADD COLUMN IF NOT EXISTS` blocks in `Program.cs` — no migrations folder.
-- **OpenAI SDK** with an `OpenAI-compatible` endpoint pattern (works with OpenAI, OpenRouter, vLLM, Ollama, etc.).
-- **JWT bearer auth** for the REST API; MCP traffic also uses Mazda bearer tokens.
-
-### The Signature aggregate
-
-A **Signature** is MAZDA's structured description of one component. It lives in `Mazda.Domain.Modules.Signatures`:
+A **Signature** is MAZDA's structured description of one component. It lives in
+`Mazda.Domain.Modules.Signatures`:
 
 ```csharp
 class Signature
 {
     Guid    OwnerId, Id;
-    string  Name, Version, Source, SourceCode;   // SourceCode = the actual bundled component text
+    string  Name, Version, Source, SourceCode;   // SourceCode = the bundled component text
     string  Type;                                // form | wizard | grid | modal | …
     string  HumanDescription;
     string  UserFlowsJson;                       // step 5 output
-    string  RelationshipsJson;                   // step 4 output (NEW)
-    string  LastSetupPrompt, LastTestPrompt;
-    string  LastSetupScript, LastTestScript, LastFinalScript;
-    string  LastAnalyzeStateScript, LastAnalyzeStateRawOutput, LastAnalyzeStateJson;
-    string  LastAnalyzeStateScope;
+    string  RelationshipsJson;                   // step 4 output
     List<SignatureElement>     Elements;
     List<SignatureDependency>  Dependencies;
+    List<SignatureFunction>    Functions;        // step 6 output — the catalogue
 }
 
 class SignatureElement
@@ -129,32 +125,231 @@ class SignatureDependency
 }
 ```
 
-`InvalidateDerivedCaches()` clears `UserFlowsJson`, `RelationshipsJson`, analyze-state caches, and last-test/final-script buffers whenever the element set meaningfully changes — so a downstream wizard step never operates on selectors that no longer exist.
+`InvalidateDerivedCaches()` clears `UserFlowsJson`, `RelationshipsJson`, **and
+the entire function catalogue** whenever the element set meaningfully changes —
+function bodies hard-reference selectors, so an element rename or removal makes
+them stale in exactly the way it makes the relationship graph stale.
 
-### The wizard pipeline (10 steps)
+**Effective-signature resolver** (`IEffectiveSignatureResolver`): when a
+signature has dependencies, the resolver returns the transitive closure in
+topological order (deepest dep first, root last). Every design-time and runtime
+step unions the dependency graph's elements, relationships and functions into
+one context so a prompt can reference embedded components transparently.
 
-Each step is addressable by URL via `useStepNavigator`:
+---
+
+## The function catalogue
+
+Each signature carries a catalogue of **high-level functions** — the operations
+an agent can perform on the component. This is what makes runtime cheap: the
+planner LLM composes these by name instead of writing Playwright.
+
+```csharp
+class SignatureFunction
+{
+    string        Name;                  // PascalCase, unique per signature
+    FunctionKind  Kind;                  // State | Action
+    string        Description;           // what the planner reads
+    string        ParametersJsonSchema;  // always a type:"object" schema
+    string        ReturnsJsonSchema;     // {"type":"null"} for actions
+    string        Preconditions;         // advisory English, not enforced
+    string        Body;                  // TypeScript Playwright snippet
+    int           Order;
+}
+```
+
+**Two kinds, and the split matters:**
+
+- **`State`** — read-only observer. No parameters. Returns structured JSON.
+  Runs automatically during gather. The planner **never calls these** — it
+  consumes their aggregated output. Named as queries: `GetTasks`,
+  `GetActiveFilter`, `GetPagination`.
+- **`Action`** — parameterised, side-effect producing, returns nothing. These
+  are what the planner sequences into a plan. Named as commands: `AddTask`,
+  `RemoveTask`, `ChangePriority`.
+
+A body executes as `async (page, args) => { ... }` with every declared
+parameter destructured into scope and the `__mz*` helpers available.
+
+**Worked example — a to-do list component:**
+
+```
+state:   GetTasks()  → Task[]
+         GetFilters() → { view, sortBy }
+action:  AddTask(name, priority)
+         RemoveTask(index)
+         DoneTask(index)
+         ChangePriority(index, priority)
+```
+
+Given that catalogue, *"mark buy-milk done and add buy-bread as high priority"*
+becomes a two-step plan with literal arguments — no DOM reasoning, no
+Playwright authored at request time.
+
+**Granularity rules** the generator's prompt enforces: names convey user
+intent, not click transcripts (`AddTask(name, priority)`, never
+`ClickAddButton()`); no giant catch-alls that swallow a 40-field form; no
+trivial single-click wrappers; row-targeting actions take a numeric `index`,
+never a raw selector.
+
+---
+
+## The wizard pipeline (7 steps)
+
+Each step is addressable by URL via `useStepNavigator`.
 
 | # | Step | URL | What runs | Outputs |
 |---|---|---|---|---|
 | 1 | Upload | `/signatures/new` | First-pass analyzer over uploaded source | Signature created with `elements[]` |
 | 2 | Interactable | `/signatures/:id` | Hand-review + optional re-analyze (LLM) | Edited interactive subset |
 | 3 | Informational | `/signatures/:id/informational` | Deep informational pass (LLM) | Read-target selectors |
-| 4 | **Relationships** | `/signatures/:id/relationships` | Relationship graph analyzer (LLM) | `{nodes, edges}` semantic graph |
+| 4 | Relationships | `/signatures/:id/relationships` | Relationship graph analyzer (LLM) | `{nodes, edges}` semantic graph |
 | 5 | User flows | `/signatures/:id/flows` | Flow analyzer (LLM) | DFA-shaped flow graph JSON |
-| 6 | Setup | `/runs/:id/setup` | LLM generates Playwright fixtures | Setup script |
-| 7 | Analyze state | `/runs/:id/analyze-state` | Generates + runs an extraction script | Raw extract + semantic state JSON |
-| 8 | Test prompt | `/runs/:id/test` | LLM generates the test body | Test script |
-| 9 | Merge & finalize | `/runs/:id/merge` | LLM reconciles setup + test | Final `.spec.ts` |
-| 10 | Execution | `/runs/:id/execute` | Spawns Playwright, streams logs via SSE | Run report |
+| 6 | **Functions** | `/signatures/:id/functions` | Catalogue generator (LLM) + hand-editing | State + action functions |
+| 7 | **Run** | `/signatures/:id/run` or `/runs/:id` | gather → plan → execute | State snapshot, plan, execution envelope |
 
-Steps 1–5 are **signature-scoped** (per component). Steps 6–10 are **run-scoped** (per agent request) and pre-fill from the signature's `Last*` buffers.
+Steps 1–6 are **signature-scoped** (per component, done once). Step 7 is
+**run-scoped** — one pass per user request.
 
-### LLM ports and analyzers
+---
 
-The Application layer defines the LLM contract; Infrastructure implements it.
+## Runtime: gather → plan → execute
 
-**Ports** (in `Mazda.Application.Common.Abstractions.Services`):
+Three phases per request. Only the middle one involves an LLM.
+
+### 1. Gather (deterministic)
+
+`IStateGatherer` stitches every state function into an ephemeral spec, runs it
+once against the connected browser, and collects the returns:
+
+```json
+{
+  "signature": "todo-list@1.2.0",
+  "capturedAt": "2026-08-09T13:22:04Z",
+  "state": {
+    "GetTasks": [{ "index": 0, "name": "buy milk", "priority": "med", "done": false }],
+    "GetFilters": { "view": "all", "sortBy": "created" }
+  }
+}
+```
+
+Keys are function names; dependency-owned functions are namespaced
+(`Cart.GetItems`). A function that throws lands as `{"__mz_error": "..."}`
+rather than aborting the snapshot — the planner sees what was and wasn't
+observed. Signatures with no state functions skip the browser round-trip
+entirely.
+
+### 2. Plan (the only runtime LLM call)
+
+`IPlanGenerator` sees the **action** functions, the state snapshot, and the
+user's prompt. State functions are deliberately hidden from it — showing them
+would tempt it into reading state mid-plan, which the contract doesn't support.
+
+```json
+{
+  "reasoning": "buy milk is index 0 (not done). Mark it, then append the new task.",
+  "steps": [
+    { "id": "s1", "call": "DoneTask", "args": { "index": 0 } },
+    { "id": "s2", "call": "AddTask",  "args": { "name": "buy bread", "priority": "high" } }
+  ]
+}
+```
+
+Flat sequence. **Literal arguments only** — no variables, no `$refs`, no
+interpolation. **No control flow** — acting on N items means N explicit steps.
+Every `call` is cross-checked against the catalogue at parse time; an unknown
+name rejects the whole plan before anything runs.
+
+Because gather already produced concrete state, the planner can resolve fuzzy
+references itself ("the groceries task" → read the names, pick the index) and
+write literals. That single design choice is what lets the plan format stay
+this small.
+
+### 3. Execute (deterministic)
+
+`IPlanInterpreter` builds a second ephemeral spec — a dispatch table over the
+action functions plus the plan as a JSON literal — and runs it. Each step emits
+a structured `__MZ_EVENT__` line that streams through the existing
+`IExecutionRegistry` to the SSE endpoint, so the UI renders per-step progress
+live.
+
+**Fail-fast:** the first failed step stops the run. Everything after it is
+reported as `skipped`.
+
+The terminal result is an **execution envelope**:
+
+```json
+{
+  "outcome": "failed",
+  "stepsTotal": 2,
+  "stepsExecuted": 1,
+  "steps": [
+    { "id": "s1", "call": "DoneTask", "status": "ok",     "durationMs": 340, "error": null },
+    { "id": "s2", "call": "AddTask",  "status": "failed", "durationMs": 120,
+      "error": { "kind": "RuntimeError", "message": "..." } }
+  ],
+  "capturedState": { ... },
+  "plan": { ... }
+}
+```
+
+Envelopes embed the state and plan, so a historical run renders without a
+second fetch. Error kinds: `SchemaMismatch`, `FunctionNotFound`,
+`PreconditionFailed`, `RuntimeError`, `HarnessError`.
+
+### Accepted limits of this design
+
+- All state functions run on every request — no lazy/on-demand state.
+- A plan can't observe between action steps; if the world shifts mid-plan
+  (a modal opens, indices move), later steps hold stale assumptions and fail.
+- Return values don't flow between steps. A workflow needing
+  `CreateProject() → id` then `AddTaskTo(id, …)` is modelled as one compound
+  action.
+
+These are deliberate. Each keeps the contract small enough that the runtime
+stays predictable.
+
+---
+
+## Backend layout
+
+Clean-architecture .NET 8 solution:
+
+```
+backend/
+  Mazda.sln
+  src/
+    Mazda.Domain/         ─ Pure domain entities + value objects
+    Mazda.Application/    ─ CQRS use cases (MediatR), validators, ports
+    Mazda.Infrastructure/ ─ EF Core, LLM clients, runner, harness builder
+    Mazda.Api/            ─ Minimal-API endpoints, DI, auth, Program.cs
+```
+
+Key cross-cutting tech:
+
+- **MediatR** for CQRS dispatch (every use case is `IRequest<Result<TDto>>`).
+- **FluentValidation** for command validation.
+- **EF Core 8 + Npgsql** for persistence; schema is provisioned by
+  `EnsureCreated` plus a sequence of idempotent `ADD COLUMN IF NOT EXISTS` /
+  guarded `ALTER` blocks in `Program.cs` — no migrations folder.
+- **OpenAI SDK** against any OpenAI-compatible endpoint (OpenAI, OpenRouter,
+  vLLM, Ollama, …).
+- **JWT bearer auth** for the REST API; MCP traffic uses the same tokens.
+
+> ⚠️ Two traps this layout keeps setting. **(1)** `ExecuteSqlRaw` passes SQL
+> through `string.Format`, so every literal `{` or `}` in raw SQL must be
+> doubled. **(2)** Under `EnsureCreated`, removing a column from an EF mapping
+> means fresh databases never create it — so every unrelated `ALTER` touching
+> that column must be guarded on `information_schema`. Real EF migrations would
+> retire both traps.
+
+---
+
+## LLM ports and implementations
+
+The Application layer defines the contracts; Infrastructure implements them.
+
+**Design-time** (`Mazda.Application.Common.Abstractions`):
 
 | Port | Used by step | Output |
 |---|---|---|
@@ -162,53 +357,270 @@ The Application layer defines the LLM contract; Infrastructure implements it.
 | `IInformationalAnalyzer` | 3 | Deep read-target extraction |
 | `IRelationshipAnalyzer` | 4 | Semantic graph `{nodes, edges}` |
 | `IFlowAnalyzer` | 5 | User-flow DFA JSON |
-| `IScriptGenerator` | 6, 8, 9 | Playwright code |
-| `IStateBuilder` | 7 | Semantic state JSON from raw extract |
+| `IFunctionCatalogueGenerator` | 6 | State + action functions |
 
-**Implementations** (`Mazda.Infrastructure.Llm`):
-`LlmComponentAnalyzer`, `LlmInformationalAnalyzer`, `LlmRelationshipAnalyzer`, `LlmFlowAnalyzer`, `LlmScriptGenerator`, `LlmStateBuilder`. Each is a thin class around the OpenAI Chat client with a carefully-engineered system prompt and strict JSON output validation.
+**Runtime:**
 
-**Relationship vocabulary** (step 4, the most recent addition):
-`labels`, `grouped-under`, `controls`, `submits`, `opens`, `closes`, `mutually-exclusive`, `depends-on`, `refers-to`, `sibling-of`, `list-item-of`, `value-of`, `related`. Direction matters — labelers/controllers/members are always the `from` side.
+| Port | Phase | LLM? |
+|---|---|---|
+| `IStateGatherer` | gather | No |
+| `IPlanGenerator` | plan | **Yes** — the only one |
+| `IPlanInterpreter` | execute | No |
 
-**Effective-signature resolver** (`IEffectiveSignatureResolver`): when a signature has dependencies, the resolver returns the transitive closure in topological order (deepest dep first, root last). The generator unions every component's elements + flows + relationships into one labeled context block so test prompts can reference embedded components transparently.
+**Implementations** live in `Mazda.Infrastructure.Llm` (`LlmComponentAnalyzer`,
+`LlmInformationalAnalyzer`, `LlmRelationshipAnalyzer`, `LlmFlowAnalyzer`,
+`LlmFunctionCatalogueGenerator`, `LlmPlanGenerator`) and
+`Mazda.Infrastructure.Runner` (`FunctionHarnessBuilder`, `StateGatherer`,
+`PlanInterpreter`, `LocalProcessScriptRunner`).
 
-### Runtime helpers injected into generated tests
+Each LLM class is a thin wrapper around the OpenAI chat client with a
+carefully-engineered system prompt and strict JSON output validation. The
+catalogue generator and the plan generator both use the **generator** model
+rather than the analyzer model — one writes real Playwright, the other needs
+solid instruction-following to ground arguments in observed state.
 
-Generated tests are not pure raw Playwright. `LocalProcessScriptRunner` injects a set of TypeScript helpers into every `.spec.ts` before execution, but only those the script actually uses:
+**Relationship vocabulary** (step 4): `labels`, `grouped-under`, `controls`,
+`submits`, `opens`, `closes`, `mutually-exclusive`, `depends-on`, `refers-to`,
+`sibling-of`, `list-item-of`, `value-of`, `related`. Direction matters —
+labellers, controllers and members are always the `from` side.
 
-- `__mzClick(locator)` — robust click that retries past detached nodes and intercept-overlay issues.
-- `__mzSelectOption(page, trigger, text)` — framework-agnostic combobox / tree-select / nz-tree-select picker. Pre-baselines visible popups, observes which one opened, types the filter text, finds the option scoped to the popup container, clicks it, then clicks the trigger's parent to dismiss any lingering popover. Includes Persian/Arabic-Indic digit normalization, ZWNJ stripping, bidi-mark cleanup.
-- `__mzPointerDrag` / `__mzPointerSwap` — pointer-event-based DnD that works with @dnd-kit, react-beautiful-dnd, Angular CDK, etc.
-- `__mzConnectViaHost` — rewrites `chromium.connectOverCDP('http://localhost:9222')` to `host.docker.internal` automatically.
+---
 
-This injection is gated by regex detection — the runner only adds what the script references.
+## Runtime helpers injected into generated code
 
-### MCP server
+Function bodies are not pure raw Playwright. `LocalProcessScriptRunner` injects
+a set of TypeScript helpers into every spec before execution, but only those the
+code actually references (regex-gated detection):
 
-A first-class Streamable-HTTP MCP endpoint at `/api/mcp`, authenticated with the user's Mazda JWT. Each `McpTool` row in the DB:
-- targets a specific Signature,
-- carries a default setup-prompt and default test-prompt,
-- when called by an external agent, kicks off a generation (same use-cases as the wizard) with the agent's prompt grafted on top.
+- `__mzClick(locator)` — robust click that retries past detached nodes and
+  intercept-overlay issues, falling back to `dispatchEvent`.
+- `__mzSelectOption(page, trigger, text)` — framework-agnostic combobox /
+  tree-select picker. Pre-baselines visible popups, observes which one opened,
+  types the filter text, finds the option scoped to that popup, clicks it, then
+  dismisses any lingering popover. Includes Persian/Arabic-Indic digit
+  normalisation, ZWNJ stripping, and bidi-mark cleanup.
+- `__mzPointerDrag` / `__mzPointerSwap` — pointer-event DnD that works with
+  @dnd-kit, react-beautiful-dnd, Angular CDK, etc.
+- `__mzConnectViaHost` — rewrites `chromium.connectOverCDP('http://localhost:9222')`
+  to `host.docker.internal` automatically.
 
-So an external LLM can use MAZDA as a tool: "drive this UI to accomplish X."
+Function bodies use these freely with no declaration — `FunctionHarnessBuilder`
+emits `connectOverCDP('http://localhost:9222')` in every harness preamble and
+the runner's existing rewrite + injection path handles the rest.
 
-### Frontend
+Two further runner behaviours worth knowing:
+
+- **ANSI stripping.** `StripAnsi` removes CSI/OSC/two-byte escape sequences —
+  and bare CSI bodies whose `ESC` was eaten upstream — from every captured line
+  before it reaches the registry or the persisted log. Without it the browser
+  renders `[33m` / `[7m` garbage inside `<pre>` blocks. Only `NO_COLOR=1` is set
+  in the spawn env; setting `FORCE_COLOR` to *any* value (even `0`) makes Node
+  ignore `NO_COLOR` and emit a warning to stderr.
+- **Trace hand-off.** After a failed run the runner prints the path of
+  `test-results/.../trace.zip` plus the `npx playwright show-trace` command to
+  run on the host.
+
+---
+
+## Playwright authoring rules
+
+These are the accumulated lessons from watching generated browser code fail.
+They were originally hard rules in the old test-generator prompt; they now
+govern **function bodies** — whether written by `LlmFunctionCatalogueGenerator`
+or edited by hand on the Functions page. Every one exists because a specific
+run broke.
+
+**Selectors and indexing**
+
+- **Selector ladder.** Signature selector → Playwright accessibility locator
+  (`getByRole` / `getByLabel` / `getByPlaceholder` / `getByText` / `getByTitle`)
+  → attribute selector. Never invent a selector that appears in neither the
+  signature nor the source.
+- **Don't re-scope.** Pass signature selectors to `page.locator` directly; never
+  chain them onto unrelated containers. Disambiguate with `.nth(i)`, not by
+  adding a parent.
+- **Never positional CSS.** No `:nth-of-type(n)`, `:nth-child(n)`,
+  `:first-of-type`, `:last-child` for "the n-th of the matched set" — always
+  `.nth(i)` / `.first()` / `.last()`. This rewrite obligation holds even when
+  the signature itself emitted the pseudo-selector.
+- **Read `elementLogic` first.** Before picking an index or assuming an element
+  exists, check its logic note — it carries lifecycle, conditional rendering,
+  and cardinality relationships that the selector alone doesn't express.
+
+**Element categories**
+
+- `interactive` → an action target. `informational` → read, assert, sort or
+  filter by, to identify *which* interactive target to hit.
+- Don't click an informational element; don't read a button's label as data.
+
+**Interactions**
+
+- **Clicks** go through `__mzClick`. A raw `.click()` hard-fails on the things
+  real UIs are full of: hover-revealed icons, `pointer-events: none` ancestors,
+  absolutely-positioned overlays, the screen-reader-only file input behind a
+  styled uploader.
+- **Dropdowns.** Never `locator.selectOption(...)` for a custom widget — use
+  `__mzSelectOption`, which scopes the option search to a popup that became
+  visible *after* the trigger click. Plain HTML `<select>` is the only exception.
+- **Drag** defaults to `__mzPointerDrag(page, source, target)`. `dragTo` only
+  when the source is HTML5-native (`draggable="true"` or a natively draggable
+  tag). When a `draggable`-typed interactive element exists whose description
+  references reordering the same entity as another element, *that handle* is the
+  drag source — not the parent card.
+- **Swaps** use `__mzPointerSwap(page, items, i, j)`. Writing the two-drag
+  sequence by hand is banned, and a single drag is a *reorder*, not a swap, in
+  most sortable libraries.
+
+**Reading and asserting**
+
+- **Swap assertions test identity, not position.** `boundingBox().y` does not
+  change when two items swap — slot positions are fixed. Compare `innerText`,
+  `data-testid`, `data-id`, or a stable child instead.
+- **Don't mix text APIs.** `.innerText()` inserts `\n` between block children;
+  `toHaveText` reads `textContent`, which doesn't. Either capture both sides
+  the same way and use `expect(x).toBe(y)`, or capture with `.textContent()` to
+  match `toHaveText`.
+- **Guard attribute reads.** Never pass a possibly-`null` `getAttribute(...)`
+  result into `toHaveAttribute(...)` — Playwright throws a TypeError, and
+  TypeScript's `!` is compile-time only. Null-check explicitly or fall back to
+  text-based identity.
+
+**Hygiene**
+
+- No `TODO` / `FIXME` / placeholder comments in a body.
+- No `page.pause()`, `page.screenshot()`, or `console.log` — the harness owns
+  observability.
+- No hard-coded test data: `AddTask` takes `name` as a parameter; it never
+  bakes in `"buy milk"`.
+- No network, clock, or LLM calls — runtime determinism is the whole point.
+
+> The catalogue generator's system prompt currently enforces the naming,
+> parameter, return, selector-discipline, coverage and anti-pattern rules, plus
+> the `__mz*` helper contract. The finer interaction and assertion rules above
+> are **not all encoded in it yet** — they are the natural next additions when a
+> generated body gets one of them wrong.
+
+`LlmComponentAnalyzer`'s prompt carries its own accumulated rules: CSS
+combinator semantics, drag-handle detection across Angular CDK / @dnd-kit /
+react-dnd / react-beautiful-dnd / generic markers, and the requirement that
+conditionally-rendered elements get an explicit logic note.
+
+---
+
+## CDP attach: the three-problem stack
+
+The user's Chrome runs on their Windows host with
+`--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0`. The runner
+lives in a Linux container. Three problems stack up, and the rewrite +
+`__mzConnectViaHost` injection solves all three:
+
+1. **TCP reach.** The container can't hit `127.0.0.1:9222`. The rewriter swaps
+   loopback hosts in `connectOverCDP` URLs to `host.docker.internal`.
+2. **HTTP `Host:` check.** Chrome v111+ rejects any `Host:` other than
+   `localhost` on `/json/version`. The helper fetches the version probe via raw
+   `node:http` with `Host: localhost:<port>`.
+3. **WS `Host:` check and a wrong echoed URL.** Chrome's `webSocketDebuggerUrl`
+   reflects the `Host:` we sent — so it advertises `ws://localhost:9222/…`,
+   which from inside the container resolves to the container's own loopback
+   where nothing listens. The helper rewrites that host back to
+   `host.docker.internal`, then connects with
+   `connectOverCDP({ endpointURL, headers: { Host: 'localhost:9222' } })` so the
+   WS upgrade spoofs `Host` too.
+
+### Which tab it drives
+
+Connecting is only half the problem: a Chrome with five tabs open has five
+candidate pages. Harnesses used to take `contexts()[0].pages()[0]` — the first
+target Chrome reports, which is neither the focused tab nor tab order.
+
+MAZDA now carries a **per-user browser attachment**: a CDP `targetId` stored on
+`user_settings`, picked from the panel behind the TopBar chip, and applied
+identically by gather, execute and function tests. The harness resolves it by
+scanning every context and matching `Target.getTargetInfo`, and throws — rather
+than falling back to the first page — when the attached tab is gone.
+
+Listing tabs from the API needs the same `Host: localhost:<port>` spoof as
+problem 2 above; `CdpClient` applies it. `FUNCTION_CATALOGUE.md` §12 has the
+full design.
+
+**The rewriter only touches `connectOverCDP` calls.** Everything else in a spec
+— `page.goto` arguments, URL-prefix matchers, comments — is left verbatim. An
+earlier blanket rewrite mangled a `TARGET_PREFIX` string the script compared
+against the live page URL; that is no longer the behaviour and must not be
+reintroduced.
+
+---
+
+## MCP server
+
+A first-class Streamable-HTTP MCP endpoint at `/api/mcp`, authenticated with the
+user's MAZDA JWT. Each `McpTool` row targets a specific Signature and carries
+default prompts.
+
+When an external agent invokes a tool, the handler runs the same
+gather → plan → execute pipeline the wizard uses, **synchronously** (MCP is
+request/response, so the caller blocks until the plan finishes). The result
+carries the execution envelope so the agent gets structured per-step data, and
+the run appears on the Runs page attributed to the tool.
+
+So an external LLM can use MAZDA as a tool: *"drive this UI to accomplish X."*
+
+---
+
+## Frontend
 
 React + TypeScript + Vite, served by nginx in production.
 
 Stack:
+
 - React Router, Zustand for auth state, React Query for fetching.
-- `@monaco-editor/react` for JSON / TS editors throughout the wizard.
-- `@xyflow/react` + `@dagrejs/dagre` for the User-flow page and the Relationships page — same graph-rendering kit, different node/edge styling.
+- `@monaco-editor/react` for JSON / TypeScript editing.
+- `@xyflow/react` + `@dagrejs/dagre` for the User-flow and Relationships pages.
 
 Pages:
-- `LibraryPage`, `UploadPage`, `EditorPage` (step 2), `InformationalReviewPage` (step 3), `RelationshipsPage` (step 4, **NEW**), `UserFlowsPage` (step 5).
-- `NewRunPage`, `SetupPage`, `AnalyzeStatePage`, `TestPromptPage`, `MergePage`, `ExecutionPage`, `RunsPage`.
-- `McpServerPage` for managing tool exposures.
-- `StudioPage`, `AuthPage`, `LibraryPage`.
 
-### Persistence
+- **Signature-scoped:** `LibraryPage`, `UploadPage`, `EditorPage` (step 2),
+  `InformationalReviewPage` (step 3), `RelationshipsPage` (step 4),
+  `UserFlowsPage` (step 5), `FunctionsPage` (step 6).
+- **Run-scoped:** `RunPage` (step 7), `RunsPage` (history).
+- `McpServerPage`, `StudioPage`, `AuthPage`.
+
+`FunctionsPage` shows two panes — state functions above, action functions
+below — with a per-row parameter preview parsed from the schema, a
+regenerate-all action, and an editor modal carrying Monaco for both JSON
+schemas and the body.
+
+`RunPage` walks the whole runtime in one screen: prompt → Plan → review the
+state snapshot and the plan → Execute → live step cards driven by the SSE
+`__MZ_EVENT__` stream → terminal envelope. It handles both the fresh-run
+(`/signatures/:id/run`) and resume (`/runs/:id`) URL shapes.
+
+### Notable design choices
+
+- **Monaco is bundled locally**, not loaded from the CDN — `monaco-editor` is an
+  explicit npm dependency and Vite's `?worker` imports wire the workers. Google
+  Fonts were likewise dropped from `index.html`; typography falls back through
+  the CSS variable chain in `tokens.css`. Both because the network was slow.
+- **Zustand v5 needs `useShallow`.** The naive selector pattern (returning a
+  fresh object every render) causes an infinite re-render loop → React error
+  \#185. `useShallow` from `zustand/react/shallow` is the fix, and the auth
+  store uses it.
+- **TanStack Query owns all server state.** Mutations call
+  `qc.setQueryData(["signature"|"generation", id], data)` on success so the UI
+  updates without a refetch round-trip.
+- **`.mz-stage` is a flex column.** Any page whose content can grow must claim
+  `flex: 1; overflow: auto` on its scroll wrapper, or it silently clips at the
+  viewport bottom with no scrollbar. Same reason `.mz-hero` needs
+  `flex-shrink: 0` — default shrinking squashes it and clips its own content
+  under `overflow: hidden`.
+- **The SSE consumer lives in `RunPage`.** It opens an `EventSource` only while
+  `executionStatus === "Running"`, parses `__MZ_EVENT__` lines into step cards,
+  closes on the `end` event, and refetches the generation to pull the terminal
+  envelope.
+
+---
+
+## Persistence
 
 PostgreSQL via Npgsql. Tables:
 
@@ -218,167 +630,170 @@ PostgreSQL via Npgsql. Tables:
 | `signatures` | one row per component analysis |
 | `signature_elements` | child rows (interactive + informational) |
 | `signature_dependencies` | composite PK `(signature_id, depends_on_signature_id)` |
-| `generations` | one row per run (setup + analyze + test + final + execution) |
+| `signature_functions` | the catalogue — unique on `(signature_id, name)` |
+| `user_settings` | per-user CDP attachment (port + tab `targetId`) |
+| `generations` | one row per run |
 | `mcp_tools` | external-agent tool exposures |
 
-No EF migrations folder; schema is created by `EnsureCreated` and incrementally patched by `ALTER TABLE … ADD COLUMN IF NOT EXISTS` blocks in `Program.cs`. New columns this session: `relationships_json` on `signatures`.
+A `generations` row is a single-shot record of one request, filled in order:
+`prompt` → `gathered_state_json` → `plan_json` → `execution_envelope_json`.
+Nothing re-executes an old generation, so historical rows stay accurate to what
+happened at the time.
 
-### Deployment
+### Schema evolution rule
+
+No EF migrations folder; schema is created by `EnsureCreated` and incrementally
+patched by idempotent blocks in `Program.cs`. The rule that keeps this working:
+
+> **Never change the EF model and expect a volume drop to fix it.** Always add a
+> matching `ADD COLUMN IF NOT EXISTS` (or guarded `ALTER`) so existing databases
+> upgrade cleanly *and* fresh ones land in the same shape.
+
+Several `generations` columns from earlier architectures (`setup_prompt`,
+`test_prompt`, `setup_script`, `analyze_state_*`, `test_script`, `final_script`)
+still exist in the database but are no longer mapped by EF; a follow-up
+migration can drop them.
+
+### Replacing a child collection — the only approach that works
+
+`Elements` and `Functions` are field-backed collections mapped with
+`HasMany().WithOne()` + `PropertyAccessMode.Field`. With that combination, the
+naive `sig.ReplaceElements(newList)` (Clear + AddRange on the backing field)
+does **not** reliably trigger EF Core's orphan-cascade DELETEs. It produces
+`DbUpdateConcurrencyException` — *"expected 1 row, affected 0"* — because the
+parent's navigation snapshot still points at rows that were deleted or are
+about to be.
+
+`SignatureRepository.ReplaceElementsAsync` / `ReplaceFunctionsAsync` do this
+instead, and any future child collection must follow the same five steps:
+
+1. `db.ChangeTracker.Clear()` — wipe every snapshot so `SaveChanges` can't diff
+   against phantom rows.
+2. `db.Set<TChild>().Where(x => x.SignatureId == sigId).ExecuteDeleteAsync()` —
+   bulk-delete in one SQL statement, bypassing the tracker entirely.
+3. `signature.ReplaceX(newChildren)` — rebuild the in-memory navigation.
+4. `db.Signatures.Attach(signature)` and set `State = Modified`.
+5. `foreach (var child in signature.X) db.Entry(child).State = Added` — force
+   `Added`; `Attach` alone would mark them `Unchanged` because their Guid PKs
+   are already non-default, and EF would silently skip the inserts.
+
+Anything else is a known dead end.
+
+`ReplaceElementsAsync` additionally content-hashes the collection before and
+after, and only calls `InvalidateDerivedCaches()` when something actually
+changed — so a rename-and-resave doesn't wipe the relationship graph, flows and
+function catalogue for no reason.
+
+---
+
+## Deployment
 
 Docker Compose with three services:
-- `api` (.NET 8 SDK build → ASP.NET runtime, with Node + Playwright installed for the runner).
+
+- `api` (.NET 8 SDK build → ASP.NET runtime, with Node + Playwright installed
+  for the runner).
 - `web` (Node 20 build → nginx serving the SPA bundle).
 - `db` (PostgreSQL).
 
-Build tricks:
-- BuildKit `--mount=type=cache,id=mazda-nuget,target=/root/.nuget/packages` so package downloads survive across builds.
-- `.dockerignore` excludes host-side `bin/` / `obj/` to avoid `NETSDK1064` (host's `project.assets.json` referencing Windows paths overlaying the container's restored one).
-- `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`: the API doesn't bundle Chromium; it connects to the user's existing browser via CDP using `__mzConnectViaHost`.
+Build notes:
+
+- BuildKit `--mount=type=cache,id=mazda-nuget,target=/root/.nuget/packages` so
+  package downloads survive across builds.
+- `.dockerignore` excludes host-side `bin/` / `obj/` to avoid `NETSDK1064`.
+- `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`: the API doesn't bundle Chromium; it
+  connects to the user's existing browser over CDP via `__mzConnectViaHost`.
+- `docker compose down -v` removes the `mazda-pgdata` volume for a clean
+  schema rebuild.
 
 ---
 
-## Proposed new architecture
+## Running and operating the stack
 
-The document the team circulated proposes a deeper restructuring. The wizard becomes **two distinct environments** with **five distinct services**, instead of one monolithic app.
-
-### Why a redesign
-
-The wizard works well for development but mixes concerns that should be separable:
-- Design-time LLM work and runtime execution share the same database and the same backend process.
-- There's no first-class "ship a manifest to the customer" boundary — customers get the same image developers run.
-- The browser pool is implicit, scoped to the runner; it can't be reused for design-time observation or for parallel agent traffic.
-- The MCP server is bolted onto the API rather than a peer service.
-
-The new design treats each concern as a deployable unit with its own contract.
-
-### Front-driven vs API-driven assistants
-
-The proposal calls out an important up-front decision: when building an assistant for a product, pick the entry point based on which surface has lower complexity for THAT product:
-
-- If APIs are well-documented, single-service, and don't hide logic in the client → **API-driven** wins.
-- If APIs are tangled, undocumented, or the client carries meaningful logic → **front-driven** wins.
-
-MAZDA's contribution is making the front-driven path tractable, so teams that would otherwise be forced into API-driven work despite the pain have a real alternative.
-
-### Two environments: Design and Operational
-
-| Environment | Purpose | LLM usage | Where it runs |
-|---|---|---|---|
-| **Design Environment** (محیط طراحی) | Author and refine manifests | Heavy — many tokens per manifest, but once per component | Internal (dev team) |
-| **Operational Environment** (محیط عملیاتی) | Serve agent traffic at the customer site | Moderate — per agent request | Deployed at customer |
-
-The manifests produced by Design are **shipped** to Operational as versioned artifacts, piggy-backing on the regular customer release cycle. In dev installations, both environments live side-by-side so authors can debug a freshly-built manifest immediately.
-
-### The Page Manifest DSL
-
-Every manifest is a JSON document with these sections:
-
-1. **Informational elements** — selectors the test reads (status, counts, dynamic values, list cells). The selectors a test would use to ASSERT, SORT BY, FILTER BY, or PICK a row.
-2. **Interactional elements** — selectors the agent acts on (buttons, inputs, drag handles, dropzones). Templated for repeated rows (`row-{i}-edit`).
-3. **Dependencies on other manifests** — a manifest can declare it embeds another. Runner's `gatherInformation` recurses; the LLM generator unions everyone's elements into one labeled context.
-4. **User Flow (DFA / state graph)** — nodes = canonical UI states, edges = element-anchored transitions. JSON-serializable. Used as a reachability oracle for the script generator.
-5. **High-level functions** — pre-baked Playwright abstractions like `moveItemFromList1To2(itemName)`, `selectOption(trigger, label)`. The LLM composes these instead of writing low-level DOM code, which dramatically improves reliability for complex compound actions.
-6. **`gatherInformation()`** — a per-manifest function that captures the current state of the component. Knows to open modals/popovers first if needed, then reads every informational selector. Output is JSON consumed by the runner-LLM before script generation.
-
-This DSL is the proposal's "stable LLM contract" — the thing every service operates on.
-
-### Services in the new architecture
-
-```
-DESIGN ENVIRONMENT                          OPERATIONAL ENVIRONMENT
-  Inputs → Manifest Studio → Storage(D)       External Agent
-              ↓                                   ↓
-        Browser Manager(D)                    MCP Server → Runner ← Storage(O)
-                                                                ↓
-                                                          Browser Manager(O)
-                ↓ ship version
-              [vertical sync between the two storages]
+```bash
+docker compose up -d --build
 ```
 
-#### Manifest Studio
-- **Shape:** Backend service + Frontend client + LLM client.
-- **Auth:** None (internal authoring surface, not in the customer's AM/SSO).
-- **Inputs:** zip / folder / loose component files / DOM snapshots / Markdown / product specs / manual hints / live browser observation (via Browser Manager).
-- **Responsibilities:**
-  - Filter inputs by type and size before sending to LLM.
-  - Call LLM with a tuned system prompt to produce a draft manifest.
-  - Round-trip with the author: add files, re-prompt, edit fields, re-validate.
-  - Validate shape (no extra keys, key ordering, dependency-edge integrity).
-  - Publish the validated manifest to Storage with a version bump.
-  - Read existing manifests from Storage for iterative refinement.
-- **In dev:** can drive the Runner directly to preview/debug a freshly-built manifest (the "preview / debug" bridge in the diagram).
+Frontend at <http://localhost:5173>, API at <http://localhost:5080/swagger>,
+Postgres on host port **5434** (not 5432 — external tools like pgAdmin must use
+the exposed port).
 
-#### Manifest Storage
-- **Shape:** Backend service + DB. **No LLM.**
-- **Responsibilities:**
-  - Persist manifests + versions + dependency edges.
-  - Serve fast reads (it's on the hot path of every agent request).
-  - Identical software on both sides of the design / operational boundary — only the contents differ (Operational is a subset shipped at release time).
+Rebuild only what changed — the two images are independent:
 
-#### Browser Manager
-- **Shape:** Backend service + Frontend client. **No LLM.**
-- **Responsibilities:**
-  - Spin up headless browser instances on demand.
-  - Open tabs per caller request.
-  - Inject per-tab cookies / session state.
-  - Return stable `browserId` handles other services use to attach.
-- **Exists in both environments** (design copy used by Studio for live observation; ops copy driven by Runner during execution).
+```bash
+docker compose up -d --build web    # frontend changes
+docker compose up -d --build api    # backend changes
+```
 
-#### Manifest Runner
-- **Shape:** Backend service + Frontend client + LLM client.
-- **Inputs:** `(manifestId, prompt, browserId)`.
-- **Recipe:**
-  1. Connect to the browser via `browserId`.
-  2. Call the manifest's `gatherInformation`. If the manifest declares dependencies, recurse into theirs and merge the captured state.
-  3. Send the merged state + the manifest + the user prompt to the LLM. Get back a Playwright script (possibly using the manifest's high-level functions).
-  4. Execute the script in the connected browser.
-  5. Persist a run report — screenshots + logs + scripts — to a run-reports DB.
-- This is the runtime hot path. Every agent request ultimately flows through here.
+Rotating a value in `.env` (an LLM key, the JWT secret) needs the api container
+recreated, not just restarted:
 
-#### MCP Server
-- **Shape:** Backend service only.
-- **Responsibilities:**
-  - Expose every manifest as an MCP tool.
-  - Each tool's input schema is `(browserId, prompt)`.
-  - On invocation, delegate to Runner.
-  - Capture screenshots + logs for audit.
-- **Auth:** the agent-facing surface; this is what external LLM clients connect to.
+```bash
+docker compose up -d --build --force-recreate api
+```
 
-### Lifecycle and versioning
+For fast frontend iteration, skip the container entirely — Vite watches the
+filesystem and hot-reloads, while the backend keeps running in Docker:
 
-Manifests evolve as the client UI evolves. The proposal acknowledges this and explicitly accepts a **human-in-the-loop** model:
+```bash
+cd frontend && npm install && npm run dev     # http://localhost:5173
+```
 
-- Client changes happen at a manageable rate; manual review of the resulting manifest changes is feasible.
-- Each manifest carries a version. Storage tracks versions per manifest.
-- Shipping an updated manifest to a customer is part of the customer's regular update cycle — not a separate "manifest deploy" pipeline.
-- The goal is to keep this lag short, ideally with concurrent updates so the manifest never lags the UI in practice.
+**Introspection recipes**
+
+```bash
+docker compose logs api --tail 80
+```
+
+```sql
+-- What a run captured, planned, and did
+SELECT prompt, gathered_state_json, plan_json, execution_envelope_json
+FROM generations WHERE "Id" = '<uuid>';
+
+-- A signature's element inventory
+SELECT element_selector, category, "ElementType", "ElementDescription",
+       element_logic
+FROM signature_elements
+WHERE "SignatureId" = '<uuid>'
+ORDER BY "Order";
+
+-- A signature's function catalogue
+SELECT name, kind, description, "order"
+FROM signature_functions
+WHERE signature_id = '<uuid>'
+ORDER BY "order";
+```
+
+> Column casing is mixed by design: properties inherited from `Entity`
+> (`Id`, `CreatedAt`, `UpdatedAt`) are never explicitly mapped, so EF emits them
+> quoted in PascalCase, while everything mapped via `HasColumnName` is
+> snake_case. Hand-written SQL must match — and `"order"` needs quoting anyway,
+> being a reserved word.
 
 ---
 
-## Mapping today's code → the proposed services
+## Quirks and gotchas
 
-For anyone navigating from the implemented wizard to the proposed services, here's the rough correspondence:
-
-| Proposed service | Today's code closest to it |
-|---|---|
-| **Manifest Studio** | The wizard steps 1–5: `UploadPage`, `EditorPage`, `InformationalReviewPage`, `RelationshipsPage`, `UserFlowsPage` + the analyzers (`LlmComponentAnalyzer`, `LlmInformationalAnalyzer`, `LlmRelationshipAnalyzer`, `LlmFlowAnalyzer`). |
-| **Manifest Storage** | `Mazda.Infrastructure.Persistence` — `signatures`, `signature_elements`, `signature_dependencies`, and the new `relationships_json` column. |
-| **Browser Manager** | Not yet a first-class service. Today the runner spawns Playwright directly; CDP connection is via `__mzConnectViaHost`. Would need to be extracted. |
-| **Manifest Runner** | `Mazda.Infrastructure.Runner.LocalProcessScriptRunner` + `LlmScriptGenerator` + `LlmStateBuilder` + the wizard steps 6–10. |
-| **MCP Server** | `/api/mcp` Streamable-HTTP endpoint and the `mcp_tools` table. Already a peer in spirit; would become its own deployable. |
-
-The **manifest concept** in the proposal is a rename + enrichment of today's **Signature**:
-
-| Today's Signature has | Proposal's Manifest adds |
-|---|---|
-| `elements[]` (interactive + informational) | unchanged |
-| `Dependencies` | unchanged |
-| `UserFlowsJson` | unchanged |
-| `RelationshipsJson` (NEW) | unchanged |
-| — | first-class `gatherInformation` function |
-| — | first-class catalogue of **high-level Playwright functions** the LLM composes |
-
-Today the runtime helpers (`__mzClick`, `__mzSelectOption`, `__mzPointerDrag`, …) are a **shared** library injected into every script. The proposal generalizes this idea: each manifest carries its OWN catalogue of high-level functions tuned to the component, so the LLM has even less invention to do at runtime.
+- **`ExecuteSqlRaw` runs SQL through `string.Format`.** Every literal `{` or `}`
+  must be doubled. This bit the JSON `DEFAULT` values on `signature_functions`
+  and surfaces as `FormatException: Expected an ASCII digit`.
+- **`EnsureCreated` + removed columns.** Dropping a column from an EF mapping
+  means fresh databases never create it, so any unrelated `ALTER` still touching
+  it fails with `42703`. Guard on `information_schema` — or move to real EF
+  migrations, which retires this whole class of bug.
+- **The runner's `node_modules` is a symlink** to `/usr/lib/node_modules` (the
+  global Playwright install), created on first run in each temp run dir.
+  Required because Node's ESM resolution doesn't consult the global store.
+- **The frontend bundle is large** — roughly 3.8 MB unminified, ~1 MB gzipped.
+  Monaco, ReactFlow and xyflow are the heavy hitters. Vite warns on every build;
+  it is functional and the bundle has not been split.
+- **Don't name a `CancellationToken` parameter `_`** in a handler that also does
+  `_ = Task.Run(...)` — the parameter shadows the discard and the compiler tries
+  to assign a `Task` to a `CancellationToken`.
+- **`gh` CLI is not installed** on the dev machine; PRs go through a compare URL.
+- Most rules in [Playwright authoring rules](#playwright-authoring-rules) exist
+  because a single observed failure got escalated to a hard rule. When a
+  generated body fails in a new way, the fix is usually a new rule there rather
+  than a patch to one function.
 
 ---
 
@@ -386,21 +801,26 @@ Today the runtime helpers (`__mzClick`, `__mzSelectOption`, `__mzPointerDrag`, �
 
 | Term | Meaning |
 |---|---|
-| **Signature** | (today) MAZDA's structured description of one component. Becomes the Manifest in the proposal. |
-| **Manifest** | (proposed) The DSL document that describes one page/component for the assistant. |
-| **Element** | One selector in a signature/manifest, classified as Interactive or Informational, with a description and optional structural logic. |
+| **Signature** | MAZDA's structured description of one component — elements, relationships, flows, and a function catalogue. |
+| **Element** | One selector in a signature, classified Interactive or Informational, with a description and optional structural logic. |
 | **Selector** | A Playwright-ready CSS selector. Templated with `{i}` for repeated rows. |
-| **Dependency** | When manifest A embeds manifest B's component; the runner unions B's elements/state into A's context. |
-| **User Flow** | DFA-shaped graph of UI states + element-anchored transitions. |
+| **Dependency** | When signature A embeds signature B's component; every step unions B's elements, relationships and functions into A's context. |
+| **User flow** | DFA-shaped graph of UI states + element-anchored transitions. |
 | **Relationship graph** | Semantic edges between selectors (labels, grouped-under, controls, refers-to, …) that the DOM tree doesn't reveal. |
-| **gatherInformation** | A per-manifest function that captures the live state of the component — opens modals first if needed, reads every informational selector, returns JSON. |
-| **High-level function** | A pre-built Playwright abstraction the LLM can call by name instead of synthesizing low-level DOM steps. |
-| **Setup script / Test script / Final script** | The three stages of a run: fixtures, the test body, and the merged single `.spec.ts`. |
-| **Analyze state** | The step that runs an extraction script in the browser and turns its raw output into a semantic JSON via `IStateBuilder`. |
-| **`browserId`** | (proposed) Opaque handle to a Browser-Manager-owned headless browser instance. |
-| **CDP** | Chrome DevTools Protocol. MAZDA connects to externally-running browsers via CDP instead of bundling Chromium in its image. |
-| **MCP** | Model Context Protocol. The server-side tool exposure that lets external agents call MAZDA as a set of tools. |
+| **Function catalogue** | The set of high-level operations on a signature — what the planner composes at runtime. |
+| **State function** | A no-argument reader returning structured JSON. Runs during gather; never called by the planner directly. |
+| **Action function** | A parameterised, side-effect-producing operation. The planner's building block. |
+| **Gather** | The deterministic phase that runs every state function and merges their returns into a state snapshot. |
+| **Plan** | A flat, ordered list of `(function, literal args)` steps produced by the runtime LLM. |
+| **Interpreter** | The deterministic phase that executes a plan step by step, fail-fast, streaming events. |
+| **Execution envelope** | The terminal record of a run: outcome, per-step results, plus the state and plan that produced it. |
+| **Harness** | The ephemeral `.spec.ts` that `FunctionHarnessBuilder` stitches from function bodies for one gather or execute pass. |
+| **CDP** | Chrome DevTools Protocol. MAZDA connects to an externally-running browser instead of bundling Chromium. |
+| **MCP** | Model Context Protocol. The server-side tool exposure that lets external agents call MAZDA. |
 
 ---
 
-*This document covers both the implemented system (as of this session — including the new Relationships step) and the proposed redesign. The implemented system is the source of truth for what's running; the redesign is the target architecture for the next major refactor.*
+*This document describes the implemented system and is the single source of
+truth for how MAZDA works — architecture, accumulated lessons, and operational
+recipes. `FUNCTION_CATALOGUE.md` is its companion: the design reasoning behind
+the catalogue architecture and the record of how it was built.*

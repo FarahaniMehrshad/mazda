@@ -6,6 +6,7 @@ using Mazda.Application.Common.Abstractions;
 using Mazda.Application.Modules.Generations;
 using Mazda.Application.Modules.Identity;
 using Mazda.Application.Modules.Mcp;
+using Mazda.Application.Modules.Cdp;
 using Mazda.Application.Modules.Signatures;
 using Mazda.Infrastructure.Llm;
 
@@ -125,6 +126,18 @@ public static class Endpoints
             async (Guid id, Guid fid, ISender s) =>
                 (await s.Send(new DeleteSignatureFunctionCommand(id, fid))).ToHttp());
 
+        // Run ONE function against the CDP-attached browser with caller-supplied
+        // args — the Functions page's "Test" affordance. Synchronous and slow by
+        // nature (Playwright spawn + real interaction), which the 30m
+        // proxy_read_timeout on /api/ in frontend.nginx.conf accommodates.
+        //
+        // A body that throws still returns 200 with ok:false — the error message
+        // IS the answer the author came for. Only an unreachable browser or a
+        // spec that won't run produces a 502.
+        sigs.MapPost("/{id:guid}/functions/{fid:guid}/test",
+            async (Guid id, Guid fid, [FromBody] TestFunctionBody body, ISender s) =>
+                (await s.Send(new TestSignatureFunctionCommand(id, fid, body.ArgsJson ?? "{}"))).ToHttp());
+
         // ── Runs / Generations (auth) ─────────────────────────────
         // Under the function-catalogue architecture a "run" is one pass
         // through gather → plan → execute. Two endpoints do the work:
@@ -156,6 +169,26 @@ public static class Endpoints
             (await s.Send(new ExecuteRunCommand(id))).ToHttp());
 
         // ── MCP tools (auth) — REST CRUD ──────────────────────────
+        // ── CDP attachment ────────────────────────────────────────
+        // Which Chrome, and which tab, MAZDA drives. GET probes the browser
+        // and lists its tabs in one call so the panel renders from a single
+        // round-trip; an unreachable browser is reported in the payload
+        // (available:false + reason) rather than as a failed request, because
+        // "Chrome isn't running" is a normal state the UI must render.
+        var cdp = app.MapGroup("/api/cdp").RequireAuthorization().WithTags("Cdp");
+
+        cdp.MapGet("/status", async (ISender s) =>
+            (await s.Send(new GetCdpStatusQuery())).ToHttp());
+
+        cdp.MapPost("/attach", async ([FromBody] AttachTabBody body, ISender s) =>
+            (await s.Send(new AttachCdpTabCommand(body.TargetId))).ToHttp());
+
+        cdp.MapPost("/detach", async (ISender s) =>
+            (await s.Send(new DetachCdpTabCommand())).ToHttp());
+
+        cdp.MapPut("/port", async ([FromBody] CdpPortBody body, ISender s) =>
+            (await s.Send(new SetCdpPortCommand(body.Port))).ToHttp());
+
         var mcp = app.MapGroup("/api/mcp-tools").RequireAuthorization().WithTags("McpTools");
 
         mcp.MapGet("/", async (ISender s) =>
@@ -206,4 +239,10 @@ public static class Endpoints
     public record FlowsBody(string FlowsJson);
     public record RelationshipsBody(string GraphJson);
     public record AddDependencyBody(Guid DependsOnId);
+    // Args travel as a JSON *string* rather than a bound object: the shape is
+    // per-function (it comes from that function's parameter schema), so there
+    // is nothing static to bind to.
+    public record TestFunctionBody(string? ArgsJson);
+    public record AttachTabBody(string TargetId);
+    public record CdpPortBody(int Port);
 }

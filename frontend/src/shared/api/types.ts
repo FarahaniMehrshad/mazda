@@ -137,7 +137,7 @@ export interface GenerationDto {
   prompt: string;
   /**
    * JSON blob produced by the state-gather phase — shape
-   * `{ manifest, capturedAt, state: { <fnName>: <return> } }`. Null until
+   * `{ signature, capturedAt, state: { <fnName>: <return> } }`. Null until
    * the gather step completes; set once, never mutated.
    */
   gatheredStateJson: string | null;
@@ -194,12 +194,61 @@ export interface SignatureFunctionDto {
   updatedAt: string;
 }
 
+/**
+ * Result of running one catalogue function against the live CDP browser from
+ * the Functions page.
+ *
+ * `ok: false` is a normal, successful response — a body that threw is exactly
+ * what the author is testing for. The request itself only fails when the
+ * browser is unreachable or the stitched spec won't run.
+ */
+export interface FunctionTestResultDto {
+  /** Qualified name actually invoked — namespaced when it came from a dependency. */
+  call: string;
+  ok: boolean;
+  /** JSON text of the return value. Null for action functions, which return nothing. */
+  returnedJson: string | null;
+  errorKind: string | null;
+  errorMessage: string | null;
+  errorStack: string | null;
+  durationMs: number;
+  /** Where the browser actually was — a wrong-page failure explains itself. */
+  pageUrl: string | null;
+  pageTitle: string | null;
+  logTail: string;
+}
+
+/** One driveable Chrome tab, as reported by CDP's /json/list. */
+export interface CdpTabDto {
+  /** Stable for the life of the tab; survives reloads, dies when it closes. */
+  targetId: string;
+  title: string;
+  url: string;
+  attached: boolean;
+}
+
+export interface CdpStatusDto {
+  available: boolean;
+  browserVersion: string | null;
+  /** Why the browser could not be reached. Null when available. */
+  reason: string | null;
+  port: number;
+  /** Empty when nothing is attached — harnesses then take the first page found. */
+  attachedTargetId: string;
+  /** Captured at attach time, so the attachment stays nameable while Chrome is closed. */
+  attachedTitle: string;
+  attachedUrl: string;
+  /** Attached to a tab that is no longer open — runs would fail until re-picked. */
+  attachedTabMissing: boolean;
+  tabs: CdpTabDto[];
+}
+
 // ── Runtime pipeline blob shapes ────────────────────────────────────
 // These are the typed views of the JSON blobs on GenerationDto. The wire
 // still carries opaque strings; consumers parse into these when rendering.
 
 export interface GatheredStateBlob {
-  manifest: string;         // e.g. "todo-list@1.2.0"
+  signature: string;        // e.g. "todo-list@1.2.0"
   capturedAt: string;
   state: Record<string, unknown>;
 }

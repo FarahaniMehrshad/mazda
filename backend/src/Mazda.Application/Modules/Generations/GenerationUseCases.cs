@@ -3,6 +3,7 @@ using FluentValidation;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Mazda.Application.Common.Abstractions;
+using Mazda.Application.Modules.Cdp;
 using Mazda.Domain.Common;
 using Mazda.Domain.Modules.Generations;
 
@@ -55,7 +56,7 @@ internal static class GenerationMapper
     public static string SerializeGatheredState(GatheredState s) =>
         JsonSerializer.Serialize(new
         {
-            manifest = s.Manifest,
+            signature = s.SignatureLabel,
             capturedAt = s.CapturedAt,
             state = JsonDocument.Parse(string.IsNullOrWhiteSpace(s.StateJson) ? "{}" : s.StateJson).RootElement,
         }, JsonOpts);
@@ -127,12 +128,12 @@ internal static class GenerationMapper
     {
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
-        var manifest = root.TryGetProperty("manifest", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() ?? "" : "";
+        var signatureLabel = root.TryGetProperty("signature", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() ?? "" : "";
         var capturedAt = root.TryGetProperty("capturedAt", out var c) && c.ValueKind == JsonValueKind.String
             ? c.GetDateTime() : DateTime.UtcNow;
         var stateJson = root.TryGetProperty("state", out var s) && s.ValueKind == JsonValueKind.Object
             ? s.GetRawText() : "{}";
-        return new GatheredState(manifest, capturedAt, stateJson);
+        return new GatheredState(signatureLabel, capturedAt, stateJson);
     }
 }
 
@@ -159,6 +160,8 @@ public class PlanRunHandler(
     IEffectiveSignatureResolver effective,
     IStateGatherer gatherer,
     IPlanGenerator planner,
+    IUserSettingsRepository userSettings,
+    ICdpClient cdp,
     ICurrentUser me,
     IUnitOfWork uow) : IRequestHandler<PlanRunCommand, Result<GenerationDto>>
 {
@@ -187,7 +190,15 @@ public class PlanRunHandler(
 
         try
         {
-            var state = await gatherer.GatherAsync(sig, deps, ct);
+            var (target, cdpError) = await CdpTargetResolver.ResolveValidatedAsync(
+                userSettings, cdp, me.UserId.Value, ct);
+            if (cdpError is not null)
+            {
+                gen.MarkFailed(cdpError);
+                await uow.SaveChangesAsync(ct);
+                return Result.Failure<GenerationDto>(Error.Validation(cdpError));
+            }
+            var state = await gatherer.GatherAsync(sig, deps, target, ct);
             gen.RecordGatheredState(GenerationMapper.SerializeGatheredState(state));
             // Persist between phases so the UI can render the state
             // snapshot even if the plan call hangs or the browser is slow.
@@ -247,6 +258,7 @@ public class ExecuteRunHandler(
     IEffectiveSignatureResolver effective,
     IPlanInterpreter interpreter,
     IExecutionRegistry registry,
+    IUserSettingsRepository userSettings,
     ICurrentUser me,
     IUnitOfWork uow,
     IServiceScopeFactory scopeFactory) : IRequestHandler<ExecuteRunCommand, Result<GenerationDto>>
@@ -303,6 +315,11 @@ public class ExecuteRunHandler(
         var runId = gen.Id;
         var ownerId = me.UserId.Value;
 
+        // Resolve the CDP attachment HERE, not inside the Task below: the
+        // MediatR request scope (and userSettings with it) is disposed the
+        // moment this handler returns.
+        var target = await CdpTargetResolver.ResolveAsync(userSettings, ownerId, _ct);
+
         // Fire-and-forget — the interpreter streams per-step events into
         // IExecutionRegistry via IScriptRunner.RunAsync. The SSE endpoint
         // reads from there; we persist the terminal state in a fresh scope
@@ -312,7 +329,7 @@ public class ExecuteRunHandler(
             RunnerCompletion completion = new(RunnerExitKind.Errored, -1, string.Empty);
             try
             {
-                var envelope = await interpreter.ExecuteAsync(runId, sig, deps, plan, state, CancellationToken.None);
+                var envelope = await interpreter.ExecuteAsync(runId, sig, deps, plan, state, target, CancellationToken.None);
 
                 // Terminal execution status derived from the envelope's outcome.
                 // We fold Ok → Passed and Failed → FailedTest because the

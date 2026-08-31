@@ -231,3 +231,19 @@ public class McpToolRepository(MazdaDbContext db) : IMcpToolRepository
         return Task.CompletedTask;
     }
 }
+
+public class UserSettingsRepository(MazdaDbContext db) : IUserSettingsRepository
+{
+    public async Task<UserSettings> GetOrCreateAsync(Guid userId, CancellationToken ct = default)
+    {
+        var existing = await db.UserSettings.FirstOrDefaultAsync(x => x.UserId == userId, ct);
+        if (existing is not null) return existing;
+
+        // Created lazily on first read. The caller's SaveChanges persists it;
+        // if it never saves, we simply create it again next time — the row
+        // holds nothing but defaults at this point.
+        var created = UserSettings.CreateDefault(userId);
+        await db.UserSettings.AddAsync(created, ct);
+        return created;
+    }
+}

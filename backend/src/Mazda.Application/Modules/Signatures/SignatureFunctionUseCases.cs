@@ -1,6 +1,8 @@
 using FluentValidation;
 using MediatR;
+using Mazda.Application.Common;
 using Mazda.Application.Common.Abstractions;
+using Mazda.Application.Modules.Cdp;
 using Mazda.Domain.Common;
 using Mazda.Domain.Modules.Signatures;
 
@@ -470,5 +472,131 @@ public class DeleteSignatureFunctionHandler(
         await repo.RemoveFunctionAsync(sig, cmd.FunctionId, ct);
         await uow.SaveChangesAsync(ct);
         return Result.Success();
+    }
+}
+
+// ── Test one function against the live browser ───────────────────────
+// Design-time debugging affordance for the Functions page. Runs a single
+// body through the CDP-attached browser with caller-supplied args so an
+// author can find out whether a selector still matches WITHOUT going all
+// the way around gather → plan → execute and hoping the planner picks the
+// function they wanted to check.
+//
+// A body that throws is a SUCCESSFUL request whose result carries the
+// error — seeing that message is the point. Only an unreachable browser
+// or a spec that won't run produces a failed Result.
+
+/// <summary>
+/// Outcome of a single function test, as the Functions page renders it.
+/// Mirrors <see cref="FunctionTestOutcome"/>, plus the qualified name that
+/// was actually invoked so the UI can label the result unambiguously when
+/// the function came from a dependency.
+/// </summary>
+public record FunctionTestResultDto(
+    string Call,
+    bool Ok,
+    string? ReturnedJson,
+    string? ErrorKind,
+    string? ErrorMessage,
+    string? ErrorStack,
+    int DurationMs,
+    string? PageUrl,
+    string? PageTitle,
+    string LogTail);
+
+public record TestSignatureFunctionCommand(
+    Guid SignatureId,
+    Guid FunctionId,
+    string ArgsJson) : IRequest<Result<FunctionTestResultDto>>;
+
+public class TestSignatureFunctionValidator : AbstractValidator<TestSignatureFunctionCommand>
+{
+    public TestSignatureFunctionValidator()
+    {
+        RuleFor(x => x.SignatureId).NotEmpty();
+        RuleFor(x => x.FunctionId).NotEmpty();
+        // Generous cap: args can legitimately carry a pasted block of text.
+        RuleFor(x => x.ArgsJson).MaximumLength(100_000);
+    }
+}
+
+public class TestSignatureFunctionHandler(
+    ISignatureRepository repo,
+    IEffectiveSignatureResolver resolver,
+    IFunctionTester tester,
+    IUserSettingsRepository userSettings,
+    ICdpClient cdp,
+    ICurrentUser me)
+    : IRequestHandler<TestSignatureFunctionCommand, Result<FunctionTestResultDto>>
+{
+    public async Task<Result<FunctionTestResultDto>> Handle(
+        TestSignatureFunctionCommand cmd, CancellationToken ct)
+    {
+        if (me.UserId is null)
+            return Result.Failure<FunctionTestResultDto>(Error.Validation("Not authenticated."));
+
+        var sig = await repo.FindByIdAsync(cmd.SignatureId, me.UserId.Value, ct);
+        if (sig is null)
+            return Result.Failure<FunctionTestResultDto>(Error.NotFound("Signature"));
+
+        var fn = sig.Functions.FirstOrDefault(f => f.Id == cmd.FunctionId);
+        if (fn is null)
+            return Result.Failure<FunctionTestResultDto>(Error.NotFound("Function"));
+
+        var argsJson = string.IsNullOrWhiteSpace(cmd.ArgsJson) ? "{}" : cmd.ArgsJson.Trim();
+
+        // Validate args BEFORE spawning Playwright. A missing required
+        // parameter should name itself in a 400, not surface thirty seconds
+        // later as an undefined-variable TypeError inside a browser.
+        var argError = FunctionArgs.Validate(fn.ParametersJsonSchema, argsJson);
+        if (argError is not null)
+            return Result.Failure<FunctionTestResultDto>(Error.Validation(argError));
+
+        // Dependencies matter even when testing a root function: bodies are
+        // declared alongside the whole catalogue, so a sibling helper from an
+        // embedded component has to be in scope for the harness to compile.
+        IReadOnlyList<Signature>? deps = null;
+        if (sig.DependencyIds.Count > 0)
+        {
+            var effective = await resolver.ResolveAsync(sig.Id, me.UserId.Value, ct);
+            deps = effective?.Where(s => s.Id != sig.Id).ToList();
+        }
+
+        // Functions owned by the root signature are addressed unqualified —
+        // exactly how FunctionHarnessBuilder.Enumerate names them.
+        var call = fn.Name;
+
+        var (target, cdpError) = await CdpTargetResolver.ResolveValidatedAsync(
+            userSettings, cdp, me.UserId.Value, ct);
+        if (cdpError is not null)
+            return Result.Failure<FunctionTestResultDto>(Error.Validation(cdpError));
+
+        FunctionTestOutcome outcome;
+        try
+        {
+            outcome = await tester.TestAsync(sig, deps, call, argsJson, target, ct);
+        }
+        catch (HarnessException ex)
+        {
+            return Result.Failure<FunctionTestResultDto>(
+                Error.External(ExceptionMessage.Describe(ex)));
+        }
+        catch (Exception ex)
+        {
+            return Result.Failure<FunctionTestResultDto>(
+                Error.External($"Function test failed: {ExceptionMessage.Describe(ex)}"));
+        }
+
+        return Result.Success(new FunctionTestResultDto(
+            Call: call,
+            Ok: outcome.Ok,
+            ReturnedJson: outcome.ReturnedJson,
+            ErrorKind: outcome.ErrorKind,
+            ErrorMessage: outcome.ErrorMessage,
+            ErrorStack: outcome.ErrorStack,
+            DurationMs: outcome.DurationMs,
+            PageUrl: outcome.PageUrl,
+            PageTitle: outcome.PageTitle,
+            LogTail: outcome.LogTail));
     }
 }

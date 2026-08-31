@@ -85,3 +85,13 @@ public interface IMcpToolRepository
     Task AddAsync(McpTool tool, CancellationToken ct = default);
     Task RemoveAsync(McpTool tool, CancellationToken ct = default);
 }
+
+/// <summary>
+/// Per-user settings (today: the CDP attachment). Reads are get-or-create —
+/// a user who has never opened the CDP panel has no row, and every caller
+/// wants defaults rather than a null check.
+/// </summary>
+public interface IUserSettingsRepository
+{
+    Task<UserSettings> GetOrCreateAsync(Guid userId, CancellationToken ct = default);
+}

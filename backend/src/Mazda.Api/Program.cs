@@ -80,47 +80,11 @@ using (var scope = app.Services.CreateScope())
     // EnsureCreated() does nothing on an existing DB, so columns added
     // after the table was first materialized never appear. Patch them in
     // idempotently. Postgres ADD COLUMN IF NOT EXISTS is safe to re-run.
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE signatures
-            ADD COLUMN IF NOT EXISTS last_setup_prompt text NOT NULL DEFAULT '',
-            ADD COLUMN IF NOT EXISTS last_test_prompt  text NOT NULL DEFAULT '',
-            ADD COLUMN IF NOT EXISTS last_setup_script text NOT NULL DEFAULT '',
-            ADD COLUMN IF NOT EXISTS last_test_script  text NOT NULL DEFAULT '',
-            ADD COLUMN IF NOT EXISTS last_final_script text NOT NULL DEFAULT '';
-        """);
-
-    // Lift the legacy varchar(4000) cap on prompt columns. Non-locking
-    // conversion since text → varchar(4000) was the original direction;
-    // widening is a no-op for existing data.
     //
-    // Guarded on column existence: the function-catalogue rewrite dropped
-    // setup_prompt / test_prompt from the Generation EF mapping, so on a
-    // FRESH database those columns are never created by EnsureCreated and
-    // an unguarded ALTER blows up with SQLSTATE 42703. The signatures
-    // columns (last_setup_prompt / last_test_prompt) are still mapped
-    // today, but wrapping them too keeps the block symmetric and
-    // future-proof.
-    db.Database.ExecuteSqlRaw("""
-        DO $$
-        BEGIN
-            IF EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='signatures' AND column_name='last_setup_prompt') THEN
-                ALTER TABLE signatures ALTER COLUMN last_setup_prompt TYPE text;
-            END IF;
-            IF EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='signatures' AND column_name='last_test_prompt') THEN
-                ALTER TABLE signatures ALTER COLUMN last_test_prompt TYPE text;
-            END IF;
-            IF EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='generations' AND column_name='setup_prompt') THEN
-                ALTER TABLE generations ALTER COLUMN setup_prompt TYPE text;
-            END IF;
-            IF EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='generations' AND column_name='test_prompt') THEN
-                ALTER TABLE generations ALTER COLUMN test_prompt TYPE text;
-            END IF;
-        END$$;
-        """);
+    // The blocks that used to add and widen the pre-catalogue script/prompt
+    // columns are gone — those columns are dropped at the end of this
+    // startup sequence, so adding them here first would churn the table on
+    // every boot.
 
     // Category discriminator on signature_elements (Interactive vs Informational).
     // Existing rows back-fill to Interactive — that's what they all were before
@@ -132,21 +96,6 @@ using (var scope = app.Services.CreateScope())
         ALTER TABLE signature_elements
             ADD COLUMN IF NOT EXISTS category      varchar(20) NOT NULL DEFAULT 'Interactive',
             ADD COLUMN IF NOT EXISTS element_logic text        NOT NULL DEFAULT '';
-        """);
-
-    // Analyze-state phase: a deterministic Playwright script that reads the UI's
-    // informational elements, the raw stdout from running it, and an LLM-built
-    // semantic state JSON. All start NULL/empty; populated only after the user
-    // runs the new step. Plus a per-signature memoized script for reuse.
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE generations
-            ADD COLUMN IF NOT EXISTS analyze_state_script      text,
-            ADD COLUMN IF NOT EXISTS analyze_state_raw_output  text,
-            ADD COLUMN IF NOT EXISTS analyze_state_json        text;
-        ALTER TABLE signatures
-            ADD COLUMN IF NOT EXISTS last_analyze_state_script      text NOT NULL DEFAULT '',
-            ADD COLUMN IF NOT EXISTS last_analyze_state_raw_output  text NOT NULL DEFAULT '',
-            ADD COLUMN IF NOT EXISTS last_analyze_state_json        text NOT NULL DEFAULT '';
         """);
 
     // The actual bundled component source (separate from `source` which is the
@@ -228,16 +177,6 @@ using (var scope = app.Services.CreateScope())
             ON signature_dependencies(depends_on_signature_id);
         """);
 
-    // Analyze-state scope selector — optional CSS selector that scopes the
-    // analyze script to a sub-tree (modal, popover, portal, …). Both per-run
-    // (generations) and per-signature (last-used pre-fill).
-    db.Database.ExecuteSqlRaw("""
-        ALTER TABLE generations
-            ADD COLUMN IF NOT EXISTS analyze_state_scope        varchar(500);
-        ALTER TABLE signatures
-            ADD COLUMN IF NOT EXISTS last_analyze_state_scope   varchar(500) NOT NULL DEFAULT '';
-        """);
-
     // Element relationships graph — output of the dedicated relationship
     // analysis step. Stored as JSON text on the signature; the runtime
     // serializer caps payload at 500_000 chars in the EF mapping. Empty
@@ -255,34 +194,14 @@ using (var scope = app.Services.CreateScope())
     // (interpreter's terminal result). Plus a single free-text `prompt`
     // that replaces the old setup+test split.
     //
-    // Legacy columns are intentionally NOT dropped here — this migration
-    // is additive so historical rows stay legible in the DB even though
-    // the EF mapping ignores them. The NOT NULL constraint is dropped on
-    // the two required legacy prompt columns so INSERTs from the new
-    // mapping (which doesn't populate them) succeed with them absent.
-    // Once the frontend rebuild lands and no reader touches them, a
-    // follow-up migration can DROP COLUMN.
+    // The pre-catalogue columns these replaced are dropped at the end of
+    // this sequence, so no DROP NOT NULL dance is needed for them any more.
     db.Database.ExecuteSqlRaw("""
         ALTER TABLE generations
             ADD COLUMN IF NOT EXISTS prompt                   text,
             ADD COLUMN IF NOT EXISTS gathered_state_json      text,
             ADD COLUMN IF NOT EXISTS plan_json                text,
             ADD COLUMN IF NOT EXISTS execution_envelope_json  text;
-
-        -- Legacy prompt columns were NOT NULL from the initial EnsureCreated.
-        -- DROP NOT NULL so new-shape INSERTs (which don't specify them) work.
-        -- Idempotent — a no-op once they're already nullable.
-        DO $$
-        BEGIN
-            IF EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='generations' AND column_name='setup_prompt' AND is_nullable='NO') THEN
-                ALTER TABLE generations ALTER COLUMN setup_prompt DROP NOT NULL;
-            END IF;
-            IF EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='generations' AND column_name='test_prompt' AND is_nullable='NO') THEN
-                ALTER TABLE generations ALTER COLUMN test_prompt DROP NOT NULL;
-            END IF;
-        END$$;
         """);
 
     // High-level function catalogue — the design-time artifact the runtime
@@ -323,6 +242,61 @@ using (var scope = app.Services.CreateScope())
             ON signature_functions(signature_id, name);
         CREATE INDEX IF NOT EXISTS ix_signature_functions_sig_order
             ON signature_functions(signature_id, "order");
+        """);
+
+    // Per-user settings. Today it holds only the CDP attachment — which port
+    // Chrome is debugging on and which tab (by CDP targetId) MAZDA drives.
+    // Before this, every harness took the first page Chrome reported, which is
+    // arbitrary once more than one tab is open.
+    db.Database.ExecuteSqlRaw("""
+        CREATE TABLE IF NOT EXISTS user_settings (
+            "Id"                 uuid          PRIMARY KEY,
+            user_id              uuid          NOT NULL,
+            cdp_port             integer       NOT NULL DEFAULT 9222,
+            attached_target_id   varchar(200)  NOT NULL DEFAULT '',
+            attached_title       varchar(500)  NOT NULL DEFAULT '',
+            attached_url         varchar(2000) NOT NULL DEFAULT '',
+            "CreatedAt"          timestamptz   NOT NULL DEFAULT NOW(),
+            "UpdatedAt"          timestamptz   NOT NULL DEFAULT NOW()
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_user_settings_user ON user_settings(user_id);
+        """);
+
+    // ── Retire the pre-catalogue schema ──────────────────────────────
+    // Every column below belonged to the Setup / Analyze-state / Test /
+    // Merge wizard that the function catalogue replaced. Nothing in the EF
+    // model maps them and no query reads them, so they are dead weight that
+    // also keeps setting the "unmapped column still referenced by an
+    // unguarded ALTER" trap.
+    //
+    // MUST STAY LAST in this sequence — an earlier block that still added or
+    // widened one of these would be undone on the same boot.
+    //
+    // DROP COLUMN IF EXISTS is idempotent, so this is a no-op from the second
+    // startup onward and on any freshly-created database. It is, however, a
+    // one-way door for existing data in those columns.
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE signatures
+            DROP COLUMN IF EXISTS last_setup_prompt,
+            DROP COLUMN IF EXISTS last_test_prompt,
+            DROP COLUMN IF EXISTS last_setup_script,
+            DROP COLUMN IF EXISTS last_test_script,
+            DROP COLUMN IF EXISTS last_final_script,
+            DROP COLUMN IF EXISTS last_analyze_state_script,
+            DROP COLUMN IF EXISTS last_analyze_state_raw_output,
+            DROP COLUMN IF EXISTS last_analyze_state_json,
+            DROP COLUMN IF EXISTS last_analyze_state_scope;
+
+        ALTER TABLE generations
+            DROP COLUMN IF EXISTS setup_prompt,
+            DROP COLUMN IF EXISTS test_prompt,
+            DROP COLUMN IF EXISTS setup_script,
+            DROP COLUMN IF EXISTS test_script,
+            DROP COLUMN IF EXISTS final_script,
+            DROP COLUMN IF EXISTS analyze_state_script,
+            DROP COLUMN IF EXISTS analyze_state_raw_output,
+            DROP COLUMN IF EXISTS analyze_state_json,
+            DROP COLUMN IF EXISTS analyze_state_scope;
         """);
 }
 
