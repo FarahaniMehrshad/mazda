@@ -413,9 +413,19 @@ Two further runner behaviours worth knowing:
 - **ANSI stripping.** `StripAnsi` removes CSI/OSC/two-byte escape sequences —
   and bare CSI bodies whose `ESC` was eaten upstream — from every captured line
   before it reaches the registry or the persisted log. Without it the browser
-  renders `[33m` / `[7m` garbage inside `<pre>` blocks. Only `NO_COLOR=1` is set
-  in the spawn env; setting `FORCE_COLOR` to *any* value (even `0`) makes Node
-  ignore `NO_COLOR` and emit a warning to stderr.
+  renders `[33m` / `[7m` garbage inside `<pre>` blocks.
+- **No colour env vars are set on the child.** Playwright hard-codes
+  `FORCE_COLOR=1` on the workers it spawns (`runner/workerHost.js`). A
+  `NO_COLOR` set on the parent is inherited into that worker, Node sees the
+  conflict and emits a warning through `process.emitWarning` — which is
+  *deferred*, so it can land between the two `console.log` calls a harness uses
+  to fence its JSON payload and corrupt it. We cannot stop Playwright setting
+  `FORCE_COLOR` on its own children, so the fix is not to create the conflict.
+  `StripAnsi` was already doing the real work.
+- **Fenced payloads are parsed per line, not concatenated.** For the same
+  reason: anything can race into the fence. `HarnessOutput.ExtractFenced` picks
+  the interior line that parses as JSON rather than gluing the interior
+  together.
 - **Trace hand-off.** After a failed run the runner prints the path of
   `test-results/.../trace.zip` plus the `npx playwright show-trace` command to
   run on the host.

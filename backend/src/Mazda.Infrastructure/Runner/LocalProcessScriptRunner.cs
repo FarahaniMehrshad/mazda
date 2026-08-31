@@ -103,10 +103,22 @@ public sealed class LocalProcessScriptRunner(
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
-            // Only NO_COLOR. Setting FORCE_COLOR to *any* value (even "0")
-            // makes Node ignore NO_COLOR and emit a warning to stderr —
-            // exactly the warning the user saw in the broken log.
-            Environment = { ["NO_COLOR"] = "1" },
+            // Deliberately NOT setting NO_COLOR.
+            //
+            // Playwright spawns its test workers with FORCE_COLOR=1 hard-coded
+            // (runner/workerHost.js). A NO_COLOR we set on the parent is
+            // inherited into that worker, Node sees both, and emits
+            //   "The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env
+            //    being set"
+            // via process.emitWarning — which is DEFERRED, so it can surface
+            // between the two console.log calls a harness uses to fence its
+            // JSON payload, corrupting it. We cannot stop Playwright setting
+            // FORCE_COLOR on its own children, so the only lever is not to
+            // create the conflict.
+            //
+            // Nothing is lost: StripAnsi below already scrubs the escapes, and
+            // the comment above records that these env hints never scrubbed
+            // reliably anyway.
         };
         psi.ArgumentList.Add("playwright");
         psi.ArgumentList.Add("test");
@@ -213,7 +225,8 @@ public sealed class LocalProcessScriptRunner(
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
-            Environment = { ["NO_COLOR"] = "1" },
+            // No NO_COLOR — see RunAsync above for why it corrupts harness
+            // payloads. StripAnsi handles the escapes.
         };
         psi.ArgumentList.Add("playwright");
         psi.ArgumentList.Add("test");
