@@ -359,52 +359,62 @@ public static class McpServer
 
     private static JsonObject BuildToolDescriptor(McpToolDescriptor d)
     {
-        // Embed the signature's interactable/informational/user-flows JSON in
-        // the tool description so the calling LLM can craft its setup_prompt
-        // and test_prompt with concrete selector knowledge.
+        // Describe the tool in terms of what MAZDA can actually be asked to do:
+        // the component's ACTION CATALOGUE.
+        //
+        // This block used to embed the signature's selectors and user flows and
+        // instruct the agent to reference them. That was the old architecture's
+        // vocabulary, from when the runtime LLM wrote Playwright. It doesn't
+        // apply now — the planner picks catalogue functions by name and fills
+        // their arguments, and never sees a selector. Telling an agent to think
+        // in selectors produced prompts the planner had nothing to map onto.
         var descriptionParts = new List<string>();
         if (!string.IsNullOrWhiteSpace(d.Description))
             descriptionParts.Add(d.Description);
-        descriptionParts.Add(
-            $"Backing signature: \"{d.SignatureName}\". The signature, including " +
-            "its interactable elements, informational elements, and user flows, " +
-            "is provided below as JSON context — reference its selectors and flows " +
-            "when crafting setup_prompt and test_prompt.\n\n" +
-            "Signature JSON:\n" + d.SignatureContextJson);
 
-        var hasSetupDefault = !string.IsNullOrWhiteSpace(d.DefaultSetupPrompt);
-        var hasTestDefault  = !string.IsNullOrWhiteSpace(d.DefaultTestPrompt);
+        if (d.CatalogueEmpty)
+        {
+            // Listed but not callable. Say so here rather than let the agent
+            // find out by spending a call on it.
+            descriptionParts.Add(
+                $"NOT READY: the backing component \"{d.SignatureName}\" has no action " +
+                "catalogue yet, so any call to this tool will fail. Its owner needs to " +
+                "generate one in MAZDA first.");
+        }
+        else
+        {
+            descriptionParts.Add(
+                $"Drives the \"{d.SignatureName}\" component through its real UI in a " +
+                "browser. Describe the OUTCOME you want in plain English — MAZDA reads " +
+                "the component's live state, then composes the actions below to achieve " +
+                "it. Do not write code, CSS selectors, or step-by-step UI instructions; " +
+                "the actions listed here are the only operations available, so a request " +
+                "outside them cannot be carried out.\n\n" +
+                "Available actions:\n" + d.CatalogueJson);
+        }
 
-        var setupDesc = "Free-form English describing what Playwright setup should do " +
-            "before the test (e.g. \"connect via CDP to Chrome on localhost:9222 and " +
-            "navigate to /checkout\").";
-        if (hasSetupDefault)
-            setupDesc += " A default is configured for this tool — omit to use it.";
+        var hasDefault = !string.IsNullOrWhiteSpace(d.DefaultPrompt);
 
-        var testDesc = "Free-form English describing what the test should do, what to " +
-            "assert, and which signature elements to interact with.";
-        if (hasTestDefault)
-            testDesc += " A default is configured for this tool — omit to use it.";
+        var promptDesc =
+            "What you want accomplished on this component, in plain English " +
+            "(e.g. \"mark the groceries task done and add 'buy bread' as high priority\"). " +
+            "Refer to items by their visible names or positions — MAZDA resolves them " +
+            "against the component's live state before acting.";
+        if (hasDefault)
+            promptDesc += " This tool has a default configured — omit to use it.";
 
         var properties = new JsonObject
         {
-            ["setup_prompt"] = new JsonObject
+            ["prompt"] = new JsonObject
             {
                 ["type"] = "string",
-                ["description"] = setupDesc,
-            },
-            ["test_prompt"] = new JsonObject
-            {
-                ["type"] = "string",
-                ["description"] = testDesc,
+                ["description"] = promptDesc,
             },
         };
 
-        // Required only when no default is configured — otherwise the client
-        // can rely on the tool's pre-set defaults.
+        // Required only when the tool has no default to fall back on.
         var required = new JsonArray();
-        if (!hasSetupDefault) required.Add("setup_prompt");
-        if (!hasTestDefault) required.Add("test_prompt");
+        if (!hasDefault) required.Add("prompt");
 
         return new JsonObject
         {
@@ -428,8 +438,20 @@ public static class McpServer
         if (string.IsNullOrEmpty(name)) return ToolErrorContent("Missing tool name.");
 
         var args = p["arguments"] as JsonObject ?? new JsonObject();
-        var setupPrompt = args["setup_prompt"]?.GetValue<string>();
-        var testPrompt  = args["test_prompt"]?.GetValue<string>();
+
+        // `prompt` is the advertised argument. setup_prompt / test_prompt are
+        // accepted but no longer advertised: they were the two halves of the
+        // pre-catalogue architecture and were being concatenated anyway, so
+        // joining them here keeps any client built against the old schema
+        // working without carrying the split any further inward.
+        var prompt = args["prompt"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            var legacy = new[] { args["setup_prompt"]?.GetValue<string>(), args["test_prompt"]?.GetValue<string>() }
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Select(x => x!.Trim());
+            prompt = string.Join("\n\n", legacy);
+        }
 
         // Look up the tool by name (scoped to the authenticated user via the
         // descriptors query — same ICurrentUser ambient context).
@@ -439,7 +461,7 @@ public static class McpServer
         if (match is null) return ToolErrorContent($"Tool '{name}' not found (or disabled).");
 
         // Hand off to the invocation handler.
-        var invoke = await sender.Send(new InvokeMcpToolCommand(match.Id, setupPrompt, testPrompt), ct);
+        var invoke = await sender.Send(new InvokeMcpToolCommand(match.Id, prompt), ct);
         if (!invoke.IsSuccess) return ToolErrorContent(invoke.Error.Message);
 
         var r = invoke.Value;

@@ -76,8 +76,9 @@ export function McpServerPage() {
             </div>
             <div style={{ color: "var(--text-3)", marginTop: 4, fontSize: 13, maxWidth: 640 }}>
               Expose your signatures as tools to any MCP client (Claude Desktop,
-              Claude Code, …). Each tool runs the full pipeline on call: setup
-              → analyze → test → merge → execute.
+              Claude Code, …). A call reads the component's live state, plans
+              against its action catalogue, then executes: gather → plan →
+              execute.
             </div>
           </div>
           <BtnPrimary
@@ -250,8 +251,7 @@ function ToolCard({
           name: tool.name,
           displayName: tool.displayName,
           description: tool.description,
-          defaultSetupPrompt: tool.defaultSetupPrompt,
-          defaultTestPrompt: tool.defaultTestPrompt,
+          defaultPrompt: tool.defaultPrompt,
           enabled: !tool.enabled,
         },
       });
@@ -284,8 +284,7 @@ function ToolCard({
 
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
         <Pill icon={Icon.file(10)}>{tool.signatureName}</Pill>
-        {tool.defaultSetupPrompt && <Pill>default setup</Pill>}
-        {tool.defaultTestPrompt && <Pill>default test</Pill>}
+        {tool.defaultPrompt && <Pill>has default prompt</Pill>}
       </div>
 
       {tool.description && (
@@ -323,8 +322,7 @@ function ToolForm({
   const [displayName, setDisplayName] = useState(existing?.displayName ?? "");
   const [rawName, setRawName] = useState(existing?.name ?? "");
   const [description, setDescription] = useState(existing?.description ?? "");
-  const [defaultSetupPrompt, setDefaultSetupPrompt] = useState(existing?.defaultSetupPrompt ?? "");
-  const [defaultTestPrompt, setDefaultTestPrompt] = useState(existing?.defaultTestPrompt ?? "");
+  const [defaultPrompt, setDefaultPrompt] = useState(existing?.defaultPrompt ?? "");
   const [enabled, setEnabled] = useState(existing?.enabled ?? true);
 
   // Auto-derive the technical name from the display name when the user hasn't
@@ -346,8 +344,7 @@ function ToolForm({
       name: rawName.trim() || displayName.trim(),
       displayName: displayName.trim() || canonical,
       description: description.trim() || undefined,
-      defaultSetupPrompt: defaultSetupPrompt.trim() || undefined,
-      defaultTestPrompt: defaultTestPrompt.trim() || undefined,
+      defaultPrompt: defaultPrompt.trim() || undefined,
       enabled,
     };
     try {
@@ -443,35 +440,21 @@ function ToolForm({
             onChange={(e) => setDescription(e.target.value)}
             rows={3}
             maxLength={10_000}
-            placeholder="What this test verifies, when it should be run, anything else the LLM should know."
+            placeholder="What this tool is for and when an agent should reach for it. The component's available actions are appended automatically."
             style={{ ...inputStyle, resize: "vertical", minHeight: 70 }}
           />
         </Field>
 
         <Field
-          label="Default setup_prompt (optional)"
-          hint="If set, callers may omit setup_prompt. They can still override."
+          label="Default prompt (optional)"
+          hint="Set this and callers may omit `prompt` — a fixed-purpose tool. Leave empty and every call must supply its own."
         >
           <textarea
-            value={defaultSetupPrompt}
-            onChange={(e) => setDefaultSetupPrompt(e.target.value)}
+            value={defaultPrompt}
+            onChange={(e) => setDefaultPrompt(e.target.value)}
             rows={3}
             maxLength={50_000}
-            placeholder="e.g. Connect via CDP to Chrome on localhost:9222 and navigate to /checkout."
-            style={{ ...inputStyle, resize: "vertical", minHeight: 70 }}
-          />
-        </Field>
-
-        <Field
-          label="Default test_prompt (optional)"
-          hint="If set, callers may omit test_prompt. They can still override."
-        >
-          <textarea
-            value={defaultTestPrompt}
-            onChange={(e) => setDefaultTestPrompt(e.target.value)}
-            rows={3}
-            maxLength={50_000}
-            placeholder="e.g. Add an item to cart, proceed to checkout, assert the total matches."
+            placeholder="e.g. Mark every overdue task as done."
             style={{ ...inputStyle, resize: "vertical", minHeight: 70 }}
           />
         </Field>

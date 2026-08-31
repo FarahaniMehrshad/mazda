@@ -3,11 +3,18 @@ using Mazda.Domain.Common;
 namespace Mazda.Domain.Modules.Mcp;
 
 /// <summary>
-/// A signature exposed as an MCP tool. The tool's input schema is fixed
-/// (setup_prompt + test_prompt, both strings). On invocation the server runs
-/// the full wizard pipeline (setup → analyze state → test → merge → execute)
-/// against the backing signature and returns the execution log + pass/fail
-/// status as the tool result.
+/// A signature exposed as an MCP tool, so an external agent can ask MAZDA to
+/// drive that component's real UI.
+///
+/// The input schema is a single `prompt` string. On invocation the server runs
+/// the function-catalogue pipeline — gather state, plan, execute — against the
+/// backing signature and returns the execution envelope as the tool result.
+///
+/// The schema used to be a setup_prompt / test_prompt pair, from the
+/// architecture where a run was two LLM calls (fixtures, then assertions).
+/// That split stopped meaning anything when the catalogue replaced runtime
+/// script generation; the transport still accepts the old pair and joins it,
+/// but nothing inward carries the distinction.
 ///
 /// Tool NAMES are sanitized to MCP's required shape (lowercase, snake_case)
 /// and must be unique per user — they're how the calling LLM addresses the
@@ -21,17 +28,22 @@ public class McpTool : Entity
     public string DisplayName { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Tool description shown to the calling LLM. The signature's signature
-    /// (interactable elements, informational elements, user flows) is appended
-    /// to this at list-time, so this field is just the high-level intent.
+    /// Tool description shown to the calling LLM. The backing signature's
+    /// FUNCTION CATALOGUE is appended at list-time, so this field carries just
+    /// the high-level intent.
     /// </summary>
     public string Description { get; private set; } = string.Empty;
 
-    /// <summary>Default setup prompt used when the caller omits one. Empty string means "no default".</summary>
-    public string DefaultSetupPrompt { get; private set; } = string.Empty;
-
-    /// <summary>Default test prompt used when the caller omits one.</summary>
-    public string DefaultTestPrompt { get; private set; } = string.Empty;
+    /// <summary>
+    /// Prompt used when the caller omits one. Empty means "no default", and
+    /// the tool then requires `prompt` on every call.
+    ///
+    /// This replaced a setup/test pair left over from the architecture where
+    /// a run was two LLM calls (fixtures, then assertions). Under the function
+    /// catalogue there is one prompt and one planner call; the pair was being
+    /// concatenated with a blank line before anything looked at it.
+    /// </summary>
+    public string DefaultPrompt { get; private set; } = string.Empty;
 
     /// <summary>
     /// When false the tool is hidden from tools/list and tools/call returns
@@ -48,8 +60,7 @@ public class McpTool : Entity
         string name,
         string displayName,
         string? description,
-        string? defaultSetupPrompt,
-        string? defaultTestPrompt,
+        string? defaultPrompt,
         bool enabled)
     {
         if (ownerId == Guid.Empty) throw new ArgumentException("Owner required.", nameof(ownerId));
@@ -63,8 +74,7 @@ public class McpTool : Entity
             Name = name.Trim().ToLowerInvariant(),
             DisplayName = string.IsNullOrWhiteSpace(displayName) ? name.Trim() : displayName.Trim(),
             Description = description?.Trim() ?? string.Empty,
-            DefaultSetupPrompt = defaultSetupPrompt ?? string.Empty,
-            DefaultTestPrompt = defaultTestPrompt ?? string.Empty,
+            DefaultPrompt = defaultPrompt?.Trim() ?? string.Empty,
             Enabled = enabled,
         };
     }
@@ -85,10 +95,9 @@ public class McpTool : Entity
     }
 
     public void SetDescription(string? description) { Description = description?.Trim() ?? string.Empty; Touch(); }
-    public void SetDefaults(string? setupPrompt, string? testPrompt)
+    public void SetDefaultPrompt(string? prompt)
     {
-        DefaultSetupPrompt = setupPrompt ?? string.Empty;
-        DefaultTestPrompt = testPrompt ?? string.Empty;
+        DefaultPrompt = prompt?.Trim() ?? string.Empty;
         Touch();
     }
     public void SetEnabled(bool enabled) { Enabled = enabled; Touch(); }

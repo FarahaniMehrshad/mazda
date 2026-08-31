@@ -7,8 +7,7 @@ export interface McpToolInput {
   name: string;
   displayName: string;
   description?: string;
-  defaultSetupPrompt?: string;
-  defaultTestPrompt?: string;
+  defaultPrompt?: string;
   enabled: boolean;
 }
 

@@ -145,8 +145,7 @@ using (var scope = app.Services.CreateScope())
             name                  varchar(80) NOT NULL,
             display_name          varchar(120) NOT NULL DEFAULT '',
             description           text        NOT NULL DEFAULT '',
-            default_setup_prompt  text        NOT NULL DEFAULT '',
-            default_test_prompt   text        NOT NULL DEFAULT '',
+            default_prompt        text        NOT NULL DEFAULT '',
             enabled               boolean     NOT NULL DEFAULT TRUE,
             "CreatedAt"           timestamptz NOT NULL DEFAULT NOW(),
             "UpdatedAt"           timestamptz NOT NULL DEFAULT NOW()
@@ -260,6 +259,40 @@ using (var scope = app.Services.CreateScope())
             "UpdatedAt"          timestamptz   NOT NULL DEFAULT NOW()
         );
         CREATE UNIQUE INDEX IF NOT EXISTS ix_user_settings_user ON user_settings(user_id);
+        """);
+
+    // Collapse mcp_tools' setup/test prompt pair into one default_prompt.
+    // The pair dated from when a run was two LLM calls (fixtures, then
+    // assertions); under the function catalogue there is a single planner
+    // prompt, and the invoke handler was concatenating the two with a blank
+    // line before anything read them.
+    //
+    // Backfill preserves that same concatenation so existing tools keep
+    // behaving identically, then drops the old columns. Self-contained and
+    // idempotent: the backfill is guarded on the old columns still existing,
+    // so a second boot is a no-op.
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE mcp_tools
+            ADD COLUMN IF NOT EXISTS default_prompt text NOT NULL DEFAULT '';
+
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='mcp_tools' AND column_name='default_setup_prompt') THEN
+                UPDATE mcp_tools
+                   SET default_prompt = TRIM(BOTH E'\n' FROM
+                        COALESCE(default_setup_prompt, '') ||
+                        CASE WHEN COALESCE(default_setup_prompt,'') <> ''
+                              AND COALESCE(default_test_prompt,'')  <> ''
+                             THEN E'\n\n' ELSE '' END ||
+                        COALESCE(default_test_prompt, ''))
+                 WHERE default_prompt = '';
+            END IF;
+        END$$;
+
+        ALTER TABLE mcp_tools
+            DROP COLUMN IF EXISTS default_setup_prompt,
+            DROP COLUMN IF EXISTS default_test_prompt;
         """);
 
     // ── Retire the pre-catalogue schema ──────────────────────────────

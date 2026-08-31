@@ -216,8 +216,7 @@ internal class McpToolConfig : IEntityTypeConfiguration<McpTool>
         b.Property(x => x.Name).HasColumnName("name").HasMaxLength(80).IsRequired();
         b.Property(x => x.DisplayName).HasColumnName("display_name").HasMaxLength(120);
         b.Property(x => x.Description).HasColumnName("description");
-        b.Property(x => x.DefaultSetupPrompt).HasColumnName("default_setup_prompt");
-        b.Property(x => x.DefaultTestPrompt).HasColumnName("default_test_prompt");
+        b.Property(x => x.DefaultPrompt).HasColumnName("default_prompt");
         b.Property(x => x.Enabled).HasColumnName("enabled");
         // Tool NAMES are how the calling LLM addresses a tool (`tools/call name=...`).
         // They must be unique per user. The DB index enforces it.

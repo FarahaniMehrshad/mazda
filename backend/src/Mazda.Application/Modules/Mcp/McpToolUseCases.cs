@@ -6,6 +6,7 @@ using Mazda.Application.Common.Abstractions;
 using Mazda.Application.Modules.Cdp;
 using Mazda.Application.Modules.Generations;
 using Mazda.Domain.Common;
+using Mazda.Domain.Modules.Signatures;
 using Mazda.Domain.Modules.Generations;
 using Mazda.Domain.Modules.Mcp;
 
@@ -20,8 +21,7 @@ public record McpToolDto(
     string Name,
     string DisplayName,
     string Description,
-    string DefaultSetupPrompt,
-    string DefaultTestPrompt,
+    string DefaultPrompt,
     bool Enabled,
     DateTime CreatedAt,
     DateTime UpdatedAt);
@@ -31,7 +31,7 @@ internal static class McpToolMapper
     public static McpToolDto ToDto(this McpTool t, string signatureName) => new(
         t.Id, t.SignatureId, signatureName,
         t.Name, t.DisplayName, t.Description,
-        t.DefaultSetupPrompt, t.DefaultTestPrompt,
+        t.DefaultPrompt,
         t.Enabled, t.CreatedAt, t.UpdatedAt);
 
     // Tool names must be MCP-shape: lowercase, alphanumerics + underscores.
@@ -101,8 +101,7 @@ public record CreateMcpToolCommand(
     string Name,
     string DisplayName,
     string? Description,
-    string? DefaultSetupPrompt,
-    string? DefaultTestPrompt,
+    string? DefaultPrompt,
     bool Enabled) : IRequest<Result<McpToolDto>>;
 
 public class CreateMcpToolValidator : AbstractValidator<CreateMcpToolCommand>
@@ -113,8 +112,7 @@ public class CreateMcpToolValidator : AbstractValidator<CreateMcpToolCommand>
         RuleFor(x => x.Name).NotEmpty().MaximumLength(80);
         RuleFor(x => x.DisplayName).MaximumLength(120);
         RuleFor(x => x.Description).MaximumLength(10_000).When(x => x.Description is not null);
-        RuleFor(x => x.DefaultSetupPrompt).MaximumLength(50_000).When(x => x.DefaultSetupPrompt is not null);
-        RuleFor(x => x.DefaultTestPrompt).MaximumLength(50_000).When(x => x.DefaultTestPrompt is not null);
+        RuleFor(x => x.DefaultPrompt).MaximumLength(50_000).When(x => x.DefaultPrompt is not null);
     }
 }
 
@@ -137,7 +135,7 @@ public class CreateMcpToolHandler(
         var tool = McpTool.Create(
             me.UserId.Value, sig.Id, canonical,
             string.IsNullOrWhiteSpace(cmd.DisplayName) ? canonical : cmd.DisplayName,
-            cmd.Description, cmd.DefaultSetupPrompt, cmd.DefaultTestPrompt, cmd.Enabled);
+            cmd.Description, cmd.DefaultPrompt, cmd.Enabled);
         await tools.AddAsync(tool, ct);
         await uow.SaveChangesAsync(ct);
         return Result.Success(tool.ToDto(sig.Name));
@@ -152,8 +150,7 @@ public record UpdateMcpToolCommand(
     string Name,
     string DisplayName,
     string? Description,
-    string? DefaultSetupPrompt,
-    string? DefaultTestPrompt,
+    string? DefaultPrompt,
     bool Enabled) : IRequest<Result<McpToolDto>>;
 
 public class UpdateMcpToolValidator : AbstractValidator<UpdateMcpToolCommand>
@@ -165,8 +162,7 @@ public class UpdateMcpToolValidator : AbstractValidator<UpdateMcpToolCommand>
         RuleFor(x => x.Name).NotEmpty().MaximumLength(80);
         RuleFor(x => x.DisplayName).MaximumLength(120);
         RuleFor(x => x.Description).MaximumLength(10_000).When(x => x.Description is not null);
-        RuleFor(x => x.DefaultSetupPrompt).MaximumLength(50_000).When(x => x.DefaultSetupPrompt is not null);
-        RuleFor(x => x.DefaultTestPrompt).MaximumLength(50_000).When(x => x.DefaultTestPrompt is not null);
+        RuleFor(x => x.DefaultPrompt).MaximumLength(50_000).When(x => x.DefaultPrompt is not null);
     }
 }
 
@@ -195,7 +191,7 @@ public class UpdateMcpToolHandler(
         tool.Rename(canonical, string.IsNullOrWhiteSpace(cmd.DisplayName) ? canonical : cmd.DisplayName);
         if (tool.SignatureId != cmd.SignatureId) tool.Retarget(cmd.SignatureId);
         tool.SetDescription(cmd.Description);
-        tool.SetDefaults(cmd.DefaultSetupPrompt, cmd.DefaultTestPrompt);
+        tool.SetDefaultPrompt(cmd.DefaultPrompt);
         tool.SetEnabled(cmd.Enabled);
         await uow.SaveChangesAsync(ct);
         return Result.Success(tool.ToDto(sig.Name));
@@ -240,14 +236,13 @@ public record McpInvocationResult(
     string Summary,        // 1-2 line human summary
     string FullLog);       // Full envelope + optional error stack — the transport surfaces this to the agent.
 
-// Kept for wire compatibility with existing MCP clients: SetupPrompt and
-// TestPrompt are joined into a single planner prompt (setup first, then
-// blank line, then test). Most tools set only DefaultTestPrompt; the
-// concatenation degrades gracefully when either side is empty.
+// One prompt, one planner call. The transport still accepts the legacy
+// setup_prompt / test_prompt argument pair and joins them before getting
+// here — see McpServer.CallTool — so old clients keep working without the
+// domain carrying a split that stopped meaning anything.
 public record InvokeMcpToolCommand(
     Guid ToolId,
-    string? SetupPrompt,
-    string? TestPrompt) : IRequest<Result<McpInvocationResult>>;
+    string? Prompt) : IRequest<Result<McpInvocationResult>>;
 
 public class InvokeMcpToolHandler(
     IMcpToolRepository tools,
@@ -278,18 +273,13 @@ public class InvokeMcpToolHandler(
         var effectiveSigs = await effective.ResolveAsync(sig.Id, me.UserId.Value, ct);
         var deps = effectiveSigs?.Where(s => s.Id != sig.Id).ToList();
 
-        // Resolve the effective prompt. The wire still carries setup +
-        // test for compatibility — join them (with fallbacks to the tool's
-        // defaults) into the single natural-language prompt the planner
-        // sees. Both empty is a validation error.
-        var setup = !string.IsNullOrWhiteSpace(cmd.SetupPrompt) ? cmd.SetupPrompt!.Trim() : tool.DefaultSetupPrompt;
-        var testPrompt = !string.IsNullOrWhiteSpace(cmd.TestPrompt) ? cmd.TestPrompt!.Trim() : tool.DefaultTestPrompt;
-        var prompt = string.Join(
-            "\n\n",
-            new[] { setup, testPrompt }.Where(p => !string.IsNullOrWhiteSpace(p)));
+        // Caller's prompt wins; the tool's default is the fallback.
+        var prompt = !string.IsNullOrWhiteSpace(cmd.Prompt)
+            ? cmd.Prompt!.Trim()
+            : tool.DefaultPrompt;
         if (string.IsNullOrWhiteSpace(prompt))
             return Result.Failure<McpInvocationResult>(Error.Validation(
-                "Provide setup_prompt and/or test_prompt (no default configured for this tool)."));
+                "Provide `prompt` — this tool has no default configured."));
 
         // Materialise the Generation row up front so the run is visible on
         // the Runs page even if the pipeline fails mid-way.
@@ -373,10 +363,16 @@ public record McpToolDescriptor(
     string Name,
     string DisplayName,
     string Description,
-    string DefaultSetupPrompt,
-    string DefaultTestPrompt,
+    string DefaultPrompt,
     string SignatureName,
-    string SignatureContextJson);
+    /// The backing signature's ACTION functions, serialised for the tool
+    /// description. This is the vocabulary the planner actually understands —
+    /// see the handler.
+    string CatalogueJson,
+    /// True when the signature has no catalogue yet: the tool is listed but
+    /// any call will fail, and the description says so rather than letting an
+    /// agent discover it the hard way.
+    bool CatalogueEmpty);
 
 public class ListMcpToolDescriptorsHandler(
     IMcpToolRepository tools,
@@ -394,26 +390,66 @@ public class ListMcpToolDescriptorsHandler(
         foreach (var t in enabled)
         {
             if (!byId.TryGetValue(t.SignatureId, out var sig)) continue;
+
+            // Advertise the ACTION CATALOGUE, not the element list.
+            //
+            // This used to ship selectors and user flows and tell the calling
+            // agent to reference them when writing its prompt. That was the
+            // vocabulary of the old architecture, where the runtime LLM wrote
+            // Playwright. It no longer is: IPlanGenerator never sees a
+            // selector — it picks action functions by name and fills their
+            // arguments. An agent told to think in selectors writes prompts
+            // the planner has nothing to map onto.
+            //
+            // State functions are excluded for the same reason they are hidden
+            // from the planner: they run automatically during gather, and
+            // showing them invites an agent to ask for reads the plan format
+            // cannot express.
+            var actions = sig.Functions
+                .Where(f => f.Kind == FunctionKind.Action)
+                .OrderBy(f => f.Order)
+                .ToList();
+
             var ctx = JsonSerializer.Serialize(new
             {
-                signatureName = sig.Name,
-                signatureType = sig.Type,
-                humanDescription = sig.HumanDescription,
-                userFlowsJson = string.IsNullOrWhiteSpace(sig.UserFlowsJson) ? null : sig.UserFlowsJson,
-                elements = sig.Elements.OrderBy(e => e.Order).Select(e => new
+                component = sig.Name,
+                componentType = sig.Type,
+                whatItIs = string.IsNullOrWhiteSpace(sig.HumanDescription) ? null : sig.HumanDescription,
+                availableActions = actions.Select(f => new
                 {
-                    selector = e.ElementSelector,
-                    category = e.Category.ToString().ToLowerInvariant(),
-                    elementType = e.ElementType,
-                    description = e.ElementDescription,
-                    logic = string.IsNullOrWhiteSpace(e.ElementLogic) ? null : e.ElementLogic,
+                    name = f.Name,
+                    description = f.Description,
+                    parameters = McpJson.TryParseJson(f.ParametersJsonSchema),
+                    preconditions = string.IsNullOrWhiteSpace(f.Preconditions) ? null : f.Preconditions,
                 }),
             }, new JsonSerializerOptions { WriteIndented = false });
 
             descriptors.Add(new McpToolDescriptor(
                 t.Id, t.Name, t.DisplayName, t.Description,
-                t.DefaultSetupPrompt, t.DefaultTestPrompt, sig.Name, ctx));
+                t.DefaultPrompt, sig.Name, ctx, actions.Count == 0));
         }
         return Result.Success<IReadOnlyList<McpToolDescriptor>>(descriptors);
+    }
+}
+
+internal static class McpJson
+{
+    /// <summary>
+    /// Inline a stored JSON string into an anonymous object so it serialises
+    /// as structure rather than an escaped blob. Null on unparseable input —
+    /// a missing key reads better to an LLM than an error string.
+    /// </summary>
+    public static JsonElement? TryParseJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.Clone();
+        }
+        catch
+        {
+            return null;
+        }
     }
 }

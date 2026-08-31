@@ -123,8 +123,14 @@ export interface McpToolDto {
   name: string;
   displayName: string;
   description: string;
-  defaultSetupPrompt: string;
-  defaultTestPrompt: string;
+  /**
+   * Prompt used when the caller omits one. Empty means the tool requires
+   * `prompt` on every call.
+   *
+   * Replaced a setup/test pair left over from when a run was two LLM calls;
+   * under the function catalogue there is one prompt and one planner call.
+   */
+  defaultPrompt: string;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;

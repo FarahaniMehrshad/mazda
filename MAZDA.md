@@ -567,6 +567,20 @@ A first-class Streamable-HTTP MCP endpoint at `/api/mcp`, authenticated with the
 user's MAZDA JWT. Each `McpTool` row targets a specific Signature and carries
 default prompts.
 
+The tool's input schema is a single `prompt` string. Its description carries
+the backing signature's **action catalogue** — function names, descriptions and
+parameter schemas — because that is the vocabulary the planner understands. It
+deliberately does *not* ship selectors: `IPlanGenerator` never sees one, so an
+agent told to think in selectors writes prompts the planner cannot map onto.
+State functions are excluded for the same reason they are hidden from the
+planner. A tool whose signature has no catalogue yet says so in its description
+rather than letting an agent spend a call discovering it.
+
+> The schema was once a `setup_prompt` / `test_prompt` pair, from when a run was
+> two LLM calls. The invoke handler had been concatenating them with a blank
+> line for some time; the pair is gone from the domain, and the transport
+> accepts the old arguments and joins them so existing clients keep working.
+
 When an external agent invokes a tool, the handler runs the same
 gather → plan → execute pipeline the wizard uses, **synchronously** (MCP is
 request/response, so the caller blocks until the plan finishes). The result
@@ -643,7 +657,7 @@ PostgreSQL via Npgsql. Tables:
 | `signature_functions` | the catalogue — unique on `(signature_id, name)` |
 | `user_settings` | per-user CDP attachment (port + tab `targetId`) |
 | `generations` | one row per run |
-| `mcp_tools` | external-agent tool exposures |
+| `mcp_tools` | external-agent tool exposures (one `default_prompt`) |
 
 A `generations` row is a single-shot record of one request, filled in order:
 `prompt` → `gathered_state_json` → `plan_json` → `execution_envelope_json`.
