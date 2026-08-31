@@ -134,6 +134,17 @@ public static class Endpoints
         // A body that throws still returns 200 with ok:false — the error message
         // IS the answer the author came for. Only an unreachable browser or a
         // spec that won't run produces a 502.
+        // Ask the LLM to repair a function that just failed. The client posts
+        // back the failure it already holds rather than making us re-run the
+        // test to rediscover it. Returns a PROPOSAL — nothing is persisted, so
+        // applying an AI edit goes through the same PUT as a hand edit.
+        sigs.MapPost("/{id:guid}/functions/{fid:guid}/fix",
+            async (Guid id, Guid fid, [FromBody] FixFunctionBody body, ISender s) =>
+                (await s.Send(new FixSignatureFunctionCommand(
+                    id, fid, body.UserHint, body.ErrorKind, body.ErrorMessage,
+                    body.ErrorStack, body.ArgsJson, body.PageUrl, body.PageTitle,
+                    body.LogTail))).ToHttp());
+
         sigs.MapPost("/{id:guid}/functions/{fid:guid}/test",
             async (Guid id, Guid fid, [FromBody] TestFunctionBody body, ISender s) =>
                 (await s.Send(new TestSignatureFunctionCommand(id, fid, body.ArgsJson ?? "{}"))).ToHttp());
@@ -245,4 +256,7 @@ public static class Endpoints
     public record TestFunctionBody(string? ArgsJson);
     public record AttachTabBody(string TargetId);
     public record CdpPortBody(int Port);
+    public record FixFunctionBody(
+        string? UserHint, string? ErrorKind, string? ErrorMessage, string? ErrorStack,
+        string? ArgsJson, string? PageUrl, string? PageTitle, string? LogTail);
 }

@@ -1,6 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/shared/api/client";
-import type { FunctionTestResultDto, SignatureFunctionDto } from "@/shared/api/types";
+import type {
+  FunctionFixProposalDto,
+  FunctionTestResultDto,
+  SignatureFunctionDto,
+} from "@/shared/api/types";
 
 /**
  * Payload shape for POST / PUT on a single function. Server rebinds
@@ -42,7 +46,28 @@ export const functionsApi = {
       `/api/signatures/${sigId}/functions/${fnId}/test`,
       { argsJson }
     ),
+  /**
+   * Ask the LLM to repair a body that just failed. We post back the failure
+   * we already hold rather than making the server re-run the test to
+   * rediscover it.
+   */
+  fix: (sigId: string, fnId: string, body: FixRequest) =>
+    api.post<FunctionFixProposalDto>(
+      `/api/signatures/${sigId}/functions/${fnId}/fix`,
+      body
+    ),
 };
+
+export interface FixRequest {
+  userHint: string;
+  errorKind: string | null;
+  errorMessage: string | null;
+  errorStack: string | null;
+  argsJson: string;
+  pageUrl: string | null;
+  pageTitle: string | null;
+  logTail: string;
+}
 
 export function useSignatureFunctions(sigId: string | undefined) {
   return useQuery({
@@ -96,5 +121,13 @@ export function useTestFunction(sigId: string | undefined) {
   return useMutation({
     mutationFn: ({ fnId, argsJson }: { fnId: string; argsJson: string }) =>
       functionsApi.test(sigId!, fnId, argsJson),
+  });
+}
+
+/** Returns a proposal; nothing is persisted until the caller applies it. */
+export function useFixFunction(sigId: string | undefined) {
+  return useMutation({
+    mutationFn: ({ fnId, body }: { fnId: string; body: FixRequest }) =>
+      functionsApi.fix(sigId!, fnId, body),
   });
 }

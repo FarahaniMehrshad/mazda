@@ -600,3 +600,126 @@ public class TestSignatureFunctionHandler(
             LogTail: outcome.LogTail));
     }
 }
+
+// ── Fix a failed function with the LLM ───────────────────────────────
+// The repair counterpart to the test above. The client hands back the
+// failure it just saw — it already holds the whole FunctionTestResultDto,
+// and re-running the test server-side would cost another slow browser
+// round-trip to learn what we were just told.
+//
+// Nothing is persisted here. The proposal comes back for the author to
+// read and accept; applying it goes through the ordinary update endpoint,
+// so an AI edit and a hand edit follow the same path and the same
+// validation.
+
+public record FunctionFixProposalDto(
+    /// The body as it stands, so the UI can diff without a second fetch.
+    string CurrentBody,
+    string ProposedBody,
+    string Explanation,
+    /// False when the model decided the body was already correct — the UI
+    /// should say so rather than offering an Apply that changes nothing.
+    bool Changed,
+    int TokensUsed);
+
+public record FixSignatureFunctionCommand(
+    Guid SignatureId,
+    Guid FunctionId,
+    string? UserHint,
+    string? ErrorKind,
+    string? ErrorMessage,
+    string? ErrorStack,
+    string? ArgsJson,
+    string? PageUrl,
+    string? PageTitle,
+    string? LogTail) : IRequest<Result<FunctionFixProposalDto>>;
+
+public class FixSignatureFunctionValidator : AbstractValidator<FixSignatureFunctionCommand>
+{
+    public FixSignatureFunctionValidator()
+    {
+        RuleFor(x => x.SignatureId).NotEmpty();
+        RuleFor(x => x.FunctionId).NotEmpty();
+        RuleFor(x => x.UserHint).MaximumLength(10_000).When(x => x.UserHint is not null);
+        // The log is the single most useful input, but it is also the biggest.
+        // Cap generously; the fixer trims to its own budget before prompting.
+        RuleFor(x => x.LogTail).MaximumLength(100_000).When(x => x.LogTail is not null);
+    }
+}
+
+public class FixSignatureFunctionHandler(
+    ISignatureRepository repo,
+    IEffectiveSignatureResolver resolver,
+    IFunctionFixer fixer,
+    ICurrentUser me)
+    : IRequestHandler<FixSignatureFunctionCommand, Result<FunctionFixProposalDto>>
+{
+    public async Task<Result<FunctionFixProposalDto>> Handle(
+        FixSignatureFunctionCommand cmd, CancellationToken ct)
+    {
+        if (me.UserId is null)
+            return Result.Failure<FunctionFixProposalDto>(Error.Validation("Not authenticated."));
+
+        var sig = await repo.FindByIdAsync(cmd.SignatureId, me.UserId.Value, ct);
+        if (sig is null)
+            return Result.Failure<FunctionFixProposalDto>(Error.NotFound("Signature"));
+
+        var fn = sig.Functions.FirstOrDefault(f => f.Id == cmd.FunctionId);
+        if (fn is null)
+            return Result.Failure<FunctionFixProposalDto>(Error.NotFound("Function"));
+
+        // Without an error there is nothing to diagnose, and the model would
+        // be reduced to guessing at a body that may be perfectly fine.
+        if (string.IsNullOrWhiteSpace(cmd.ErrorMessage) && string.IsNullOrWhiteSpace(cmd.LogTail))
+            return Result.Failure<FunctionFixProposalDto>(Error.Validation(
+                "Run the function first — the repair needs the error it produced."));
+
+        IReadOnlyList<Signature>? deps = null;
+        if (sig.DependencyIds.Count > 0)
+        {
+            var effective = await resolver.ResolveAsync(sig.Id, me.UserId.Value, ct);
+            deps = effective?.Where(s => s.Id != sig.Id).ToList();
+        }
+
+        var failure = new FunctionFailureContext(
+            ErrorKind: cmd.ErrorKind,
+            ErrorMessage: cmd.ErrorMessage,
+            ErrorStack: cmd.ErrorStack,
+            ArgsJson: string.IsNullOrWhiteSpace(cmd.ArgsJson) ? "{}" : cmd.ArgsJson,
+            PageUrl: cmd.PageUrl,
+            PageTitle: cmd.PageTitle,
+            LogTail: cmd.LogTail);
+
+        FunctionFixResult result;
+        try
+        {
+            result = await fixer.FixAsync(sig, deps, fn, failure, cmd.UserHint, ct);
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Malformed model output — actionable by retrying, so a 400 rather
+            // than a 502 blaming the provider.
+            return Result.Failure<FunctionFixProposalDto>(Error.Validation(
+                $"The repair model returned something unusable: {ex.Message}"));
+        }
+        catch (Exception ex)
+        {
+            return Result.Failure<FunctionFixProposalDto>(Error.External(
+                $"Function repair failed: {ExceptionMessage.Describe(ex)}"));
+        }
+
+        var changed = !string.Equals(
+            Normalize(result.Body), Normalize(fn.Body), StringComparison.Ordinal);
+
+        return Result.Success(new FunctionFixProposalDto(
+            CurrentBody: fn.Body,
+            ProposedBody: result.Body,
+            Explanation: result.Explanation,
+            Changed: changed,
+            TokensUsed: result.TokensUsed));
+    }
+
+    /// <summary>Line-ending and trailing-whitespace differences are not changes.</summary>
+    private static string Normalize(string s)
+        => string.Join('\n', s.Replace("\r\n", "\n").Split('\n').Select(l => l.TrimEnd())).Trim();
+}

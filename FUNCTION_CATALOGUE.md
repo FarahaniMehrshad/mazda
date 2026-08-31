@@ -21,6 +21,7 @@
 10. [Remaining cleanup](#10-remaining-cleanup)
 11. [Live function testing](#11-live-function-testing)
 12. [Browser attachment (which tab)](#12-browser-attachment-which-tab)
+13. [Fix with AI](#13-fix-with-ai)
 
 ---
 
@@ -603,3 +604,59 @@ block for its `position: fixed` descendants** — so the overlay's `inset: 0`
 resolved to the top bar's own box (measured: 1100x62) and the dialog rendered as
 a clipped strip. Any future fixed-position UI mounted from inside `TopBar` needs
 the same portal.
+
+## 13. Fix with AI
+
+A failed test already holds everything needed to diagnose itself. "Fix with AI"
+turns that into a repair loop: **fail → diagnose → review diff → apply → run
+again**, without leaving the panel.
+
+### Scope: the body, nothing else
+
+The model may rewrite the body and only the body. Changing the parameter schema
+would invalidate the arguments the author just typed *and* the contract the
+runtime planner composes against — a fix that genuinely needs a new parameter
+is a catalogue-level edit, not a repair. The prompt says so explicitly: if that
+is the only real fix, return the body unchanged and explain why.
+
+### What the model receives
+
+The author types an optional hint; everything else is sent automatically —
+error kind and message, the runner log tail, the arguments the call was made
+with, the page URL and title it actually ran on, the signature's element list
+(selectors, descriptions, `elementLogic`), the relationship graph, the component
+source, and **the sibling functions' bodies**. That last one matters more than it
+sounds: seeing how a working function selects the same rows is frequently the
+entire answer.
+
+The system prompt maps the common Playwright failure shapes to the fix each one
+wants — strict-mode violations to `.nth(i)` rather than re-scoping, timeouts to a
+selector check against the elements list, visibility/interception to `__mzClick`
+— and pushes hard toward a **minimal edit**. A body that fails on one selector
+should not come back with five other lines rewritten; a large diff is harder to
+review and more likely to break something that worked.
+
+### Nothing is persisted by the fix endpoint
+
+`POST .../functions/{fid}/fix` returns a *proposal*: current body, proposed body,
+an explanation, and a `changed` flag. Applying it goes through the ordinary
+function `PUT`, so an AI edit and a hand edit take the same path and the same
+validation. The UI shows an inline Monaco diff — the author has to be able to
+see what changed before trusting it.
+
+The client posts back the failure it already holds rather than making the server
+re-run the test to rediscover it; re-running would cost another full browser
+round-trip to learn what we were just told, and could easily produce a
+*different* failure.
+
+`changed: false` is a real answer, not an error — it means the model judged the
+body correct and the cause lies outside it (wrong page state, wrong argument).
+The UI says so and offers no Apply.
+
+### Verified
+
+Against a local page with `.task-row` / `.task-name` markup and a body
+deliberately pointing at `.todo-item .title`: the test failed with a Playwright
+timeout, the model swapped in `.task-name` from the elements list, left the
+other two lines untouched, explained the mismatch, and the re-run returned
+`["buy milk","buy bread","walk dog"]` in 68ms.

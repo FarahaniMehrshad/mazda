@@ -218,6 +218,23 @@ export interface FunctionTestResultDto {
   logTail: string;
 }
 
+/**
+ * An LLM-proposed repair for a function body that failed against the page.
+ *
+ * A proposal only — nothing is saved server-side. Applying it goes through the
+ * ordinary function-update endpoint, so an AI edit and a hand edit take the
+ * same path.
+ */
+export interface FunctionFixProposalDto {
+  /** The body as it stands, so the UI can diff without a second fetch. */
+  currentBody: string;
+  proposedBody: string;
+  explanation: string;
+  /** False when the model judged the body already correct. */
+  changed: boolean;
+  tokensUsed: number;
+}
+
 /** One driveable Chrome tab, as reported by CDP's /json/list. */
 export interface CdpTabDto {
   /** Stable for the life of the tab; survives reloads, dies when it closes. */

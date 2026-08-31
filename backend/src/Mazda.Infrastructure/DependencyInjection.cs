@@ -39,6 +39,7 @@ public static class DependencyInjection
         services.AddSingleton<IScriptGenerator, LlmScriptGenerator>();
         services.AddSingleton<IStateBuilder, LlmStateBuilder>();
         services.AddSingleton<IFunctionCatalogueGenerator, LlmFunctionCatalogueGenerator>();
+        services.AddSingleton<IFunctionFixer, LlmFunctionFixer>();
         services.AddSingleton<IPlanGenerator, LlmPlanGenerator>();
 
         // Script execution (Playwright via Node inside the API container).

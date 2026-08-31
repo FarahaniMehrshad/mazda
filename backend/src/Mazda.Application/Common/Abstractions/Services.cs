@@ -283,6 +283,58 @@ public record ExecutionEnvelope(
 /// runtime error is encoded into the returned JSON, and a whole-browser
 /// failure surfaces as a <see cref="HarnessException"/>.
 /// </summary>
+/// <summary>
+/// What a failed function test observed. Fed to <see cref="IFunctionFixer"/>
+/// so the model diagnoses the actual failure rather than re-deriving the body
+/// from scratch.
+/// </summary>
+public sealed record FunctionFailureContext(
+    string? ErrorKind,
+    string? ErrorMessage,
+    string? ErrorStack,
+    /// Arguments the function was called with — a selector can be right and
+    /// the args still wrong.
+    string ArgsJson,
+    /// Where the browser actually was. A body that assumes the wrong view
+    /// fails in a way only this explains.
+    string? PageUrl,
+    string? PageTitle,
+    /// Tail of the runner log. Playwright's own diagnostics ("waiting for
+    /// locator … resolved to 3 elements") are often more useful than the
+    /// exception message.
+    string? LogTail);
+
+public sealed record FunctionFixResult(
+    /// Replacement body only. Never the schemas — see IFunctionFixer.
+    string Body,
+    /// One or two sentences on what was wrong, shown next to the diff.
+    string Explanation,
+    int TokensUsed);
+
+/// <summary>
+/// Repairs a function body that failed against the live page.
+///
+/// Scoped deliberately to the BODY. Changing the parameter schema would
+/// invalidate the arguments the author just typed and break the contract the
+/// runtime planner composes against; a fix that genuinely needs a new
+/// parameter is a catalogue-level edit, not a repair.
+///
+/// Uses the generator model, like the catalogue generator — this writes real
+/// Playwright, and weak models regress badly at it.
+/// </summary>
+public interface IFunctionFixer
+{
+    Task<FunctionFixResult> FixAsync(
+        Signature signature,
+        IReadOnlyList<Signature>? dependencies,
+        SignatureFunction function,
+        FunctionFailureContext failure,
+        /// Optional free-text steer from the author ("the row index is
+        /// 1-based in this grid"). Empty when they just want a diagnosis.
+        string? userHint,
+        CancellationToken ct = default);
+}
+
 // ── CDP attachment ───────────────────────────────────────────────────
 // Which Chrome tab MAZDA drives. Every harness used to take the first page
 // Chrome reported, which is arbitrary once more than one tab is open.
