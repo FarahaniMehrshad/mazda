@@ -51,7 +51,7 @@ export function AuthPage() {
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <MazdaWordmark size={18} glow />
             <div className="mz-eyebrow" style={{ marginTop: 4 }}>
-              The one who knows
+              UI-driven browser automation
             </div>
           </div>
 

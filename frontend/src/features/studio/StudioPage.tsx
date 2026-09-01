@@ -35,7 +35,7 @@ export function StudioPage() {
           <div className="mz-hero-text">
             <div className="mz-eyebrow">The studio</div>
             <div className="mz-hero-title">
-              The one
+              UI-driven
               <br />
               <span
                 style={{
@@ -45,13 +45,11 @@ export function StudioPage() {
                   color: "transparent",
                 }}
               >
-                who knows.
+                browser automation
               </span>
             </div>
             <div style={{ color: "var(--text-2)", fontSize: 15, lineHeight: 1.55 }}>
-              Hand Mazda a component, a URL, and a sentence in plain English.
-              <br />
-              Get back a Playwright spec you can run on your own machine.
+              Bring AI agents to legacy web apps — without reimplementing your frontend in agent code.
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
               <BtnPrimary icon={Icon.spark()} onClick={() => navigate("/signatures/new")}>
