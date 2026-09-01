@@ -487,14 +487,12 @@ public interface IStateBuilder
 public record StateBuildResult(string StateJson, int TokensUsed);
 
 /// <summary>
-/// Outbound port for inferring a UI user-flow graph from a Signature
-/// (and optional Cypress integration test source as grounding context).
+/// Outbound port for inferring a UI user-flow graph from a Signature.
 /// </summary>
 public interface IFlowAnalyzer
 {
     Task<FlowAnalysisResult> InferFlowsAsync(
         Signature signature,
-        string? cypressSource,
         CancellationToken ct = default);
 }
 

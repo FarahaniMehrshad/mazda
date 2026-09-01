@@ -71,8 +71,8 @@ public static class Endpoints
             (await s.Send(new UpdateRelationshipsCommand(id, body.GraphJson))).ToHttp());
 
         // Wizard step 5 — user flows.
-        sigs.MapPost("/{id:guid}/flows/generate", async (Guid id, [FromBody] GenerateFlowsBody body, ISender s) =>
-            (await s.Send(new GenerateUserFlowsCommand(id, body.CypressSource))).ToHttp());
+        sigs.MapPost("/{id:guid}/flows/generate", async (Guid id, ISender s) =>
+            (await s.Send(new GenerateUserFlowsCommand(id))).ToHttp());
 
         sigs.MapPut("/{id:guid}/flows", async (Guid id, [FromBody] FlowsBody body, ISender s) =>
             (await s.Send(new UpdateUserFlowsCommand(id, body.FlowsJson))).ToHttp());
@@ -246,7 +246,6 @@ public static class Endpoints
 
     // Body records for endpoints whose model-binder needs a shaped payload.
     // Command records defined in Application handle the rest.
-    public record GenerateFlowsBody(string? CypressSource);
     public record FlowsBody(string FlowsJson);
     public record RelationshipsBody(string GraphJson);
     public record AddDependencyBody(Guid DependsOnId);

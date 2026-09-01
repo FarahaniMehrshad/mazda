@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import Editor from "@monaco-editor/react";
 import {
@@ -18,7 +18,6 @@ import {
   ScreenShell,
   BtnPrimary,
   BtnGhost,
-  Pill,
   StepIndicator,
 } from "@/shared/components/Primitives";
 import { Icon } from "@/shared/icons/Icon";
@@ -150,9 +149,6 @@ export function UserFlowsPage() {
     signature ? { mode: "signature", signatureId: signature.id } : null,
   );
 
-  const cypressInputRef = useRef<HTMLInputElement>(null);
-  const [cypressName, setCypressName] = useState("");
-  const [cypressSource, setCypressSource] = useState("");
   const [draftJson, setDraftJson] = useState("");
   const [parseError, setParseError] = useState<string | null>(null);
 
@@ -169,23 +165,10 @@ export function UserFlowsPage() {
     [parsed]
   );
 
-  async function onCypressFile(file: File) {
-    if (file.size > 200_000) {
-      alert("Cypress file too large — keep it under 200 KB.");
-      return;
-    }
-    const text = await file.text();
-    setCypressName(file.name);
-    setCypressSource(text);
-  }
-
   async function onGenerate() {
     if (!id) return;
     try {
-      const updated = await generate.mutateAsync({
-        id,
-        cypressSource: cypressSource.trim() || undefined,
-      });
+      const updated = await generate.mutateAsync({ id });
       setDraftJson(updated.userFlowsJson || "");
       setParseError(null);
     } catch (err) {
@@ -264,47 +247,13 @@ export function UserFlowsPage() {
                 overflow: "auto",
               }}
             >
-              <div className="mz-eyebrow">Step 4 · User flows</div>
+              <div className="mz-eyebrow">Step 5 · User flows</div>
               <div style={{ color: "var(--text-3)", fontSize: 12.5, lineHeight: 1.55 }}>
                 Mazda walks the signature and infers a graph of all plausible UI flows —
                 states the user can be in, and the element-anchored actions that
-                connect them. The Test prompt step then maps your English instruction
-                onto a path through this graph.
+                connect them. The Functions step uses this graph as grounding when it
+                proposes the catalogue.
               </div>
-
-              <div className="mz-divider" />
-
-              <div className="mz-eyebrow" style={{ fontSize: 9.5 }}>
-                Optional: Cypress test as grounding
-              </div>
-              <div style={{ color: "var(--text-4)", fontSize: 11.5, lineHeight: 1.5 }}>
-                If you have a Cypress integration test that exercises this UI, upload
-                it — the analyzer will map each <code style={{ fontFamily: "var(--f-mono)" }}>cy.*</code> call
-                onto an edge in the graph.
-              </div>
-              <input
-                ref={cypressInputRef}
-                type="file"
-                accept=".ts,.tsx,.js,.jsx,.cy.ts,.cy.js,.txt"
-                style={{ display: "none" }}
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) onCypressFile(f);
-                  e.target.value = "";
-                }}
-              />
-              <BtnGhost
-                full
-                icon={Icon.file()}
-                onClick={() => cypressInputRef.current?.click()}
-              >
-                {cypressName ? "Replace Cypress file" : "Upload Cypress test"}
-              </BtnGhost>
-              {cypressName && (
-                <Pill tone="info" icon={Icon.file(10)}>
-                  {cypressName}
-                </Pill>
-              )}
 
               <div className="mz-divider" />
 

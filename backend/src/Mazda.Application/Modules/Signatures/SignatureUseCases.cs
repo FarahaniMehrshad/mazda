@@ -219,14 +219,13 @@ public class AnalyzeComponentHandler(
 
 // === User flows (LLM-inferred graph of UI states + element-anchored actions) ===
 
-public record GenerateUserFlowsCommand(Guid SignatureId, string? CypressSource) : IRequest<Result<SignatureDto>>;
+public record GenerateUserFlowsCommand(Guid SignatureId) : IRequest<Result<SignatureDto>>;
 
 public class GenerateUserFlowsValidator : AbstractValidator<GenerateUserFlowsCommand>
 {
     public GenerateUserFlowsValidator()
     {
         RuleFor(x => x.SignatureId).NotEmpty();
-        RuleFor(x => x.CypressSource).MaximumLength(200_000).When(x => x.CypressSource is not null);
     }
 }
 
@@ -243,7 +242,7 @@ public class GenerateUserFlowsHandler(
         if (sig is null) return Result.Failure<SignatureDto>(Error.NotFound("Signature"));
 
         FlowAnalysisResult result;
-        try { result = await analyzer.InferFlowsAsync(sig, cmd.CypressSource, ct); }
+        try { result = await analyzer.InferFlowsAsync(sig, ct); }
         catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Flow analyzer failed: {ExceptionMessage.Describe(ex)}")); }
 
         sig.SetUserFlows(result.FlowsJson);

@@ -10,8 +10,7 @@ public class LlmFlowAnalyzer(IOptions<LlmOptions> options) : IFlowAnalyzer
 {
     private static readonly string SystemPrompt = """
         you are mazda's flow analyst. given a ui signature (a list of css-selector-
-        anchored interactive elements) — and optionally a cypress integration test
-        file that exercises the same ui — you produce a directed graph of all
+        anchored interactive elements) you produce a directed graph of all
         plausible user flows through that ui.
 
         output json only — no prose, no markdown, no code fences.
@@ -70,16 +69,6 @@ public class LlmFlowAnalyzer(IOptions<LlmOptions> options) : IFlowAnalyzer
         - the graph should be connected — every non-initial node must be reachable
           from `state.initial`.
 
-        ── using a cypress test as grounding ──
-        if the user provides cypress integration test source, use it as ground
-        truth for which flows are real and important. extract:
-          • which elements get clicked/filled and in what order.
-          • which states the test asserts (visible / not visible / contains text).
-          • branches (e.g. retries on failure).
-        map each `cy.get/contains/click/type/select` to an edge in your graph,
-        using the signature's selector for the same element. use the test's
-        `describe/it` structure to name the principal flow chains.
-
         ── hard rules ──
         - json only. no fences, no prose.
         - every `from` and `to` must reference a node id you defined.
@@ -89,7 +78,7 @@ public class LlmFlowAnalyzer(IOptions<LlmOptions> options) : IFlowAnalyzer
           loops are fine for "edit again" patterns).
         """;
 
-    public async Task<FlowAnalysisResult> InferFlowsAsync(Signature signature, string? cypressSource, CancellationToken ct = default)
+    public async Task<FlowAnalysisResult> InferFlowsAsync(Signature signature, CancellationToken ct = default)
     {
         var opts = options.Value;
         var chat = ChatClientFactory.ForModel(opts, opts.AnalyzerModel);
@@ -109,11 +98,7 @@ public class LlmFlowAnalyzer(IOptions<LlmOptions> options) : IFlowAnalyzer
             }),
         }, new JsonSerializerOptions { WriteIndented = true });
 
-        var cypressBlock = string.IsNullOrWhiteSpace(cypressSource)
-            ? string.Empty
-            : $"\n\nCypress integration test (use as grounding — map every cy.* call to an edge):\n```ts\n{cypressSource}\n```";
-
-        var userMsg = $"Signature:\n{sigJson}{cypressBlock}";
+        var userMsg = $"Signature:\n{sigJson}";
 
         var completion = await chat.CompleteChatSafeAsync(
             new List<ChatMessage>

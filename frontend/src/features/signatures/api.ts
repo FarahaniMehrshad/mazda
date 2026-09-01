@@ -18,8 +18,8 @@ export const signatureApi = {
   remove: (id: string) => api.del<void>(`/api/signatures/${id}`),
   analyze: (fileName: string, source: string, description?: string, name?: string) =>
     api.post<SignatureDto>("/api/signatures/analyze", { fileName, source, description, name }),
-  generateFlows: (id: string, cypressSource?: string) =>
-    api.post<SignatureDto>(`/api/signatures/${id}/flows/generate`, { cypressSource }),
+  generateFlows: (id: string) =>
+    api.post<SignatureDto>(`/api/signatures/${id}/flows/generate`, {}),
   saveFlows: (id: string, flowsJson: string) =>
     api.put<SignatureDto>(`/api/signatures/${id}/flows`, { flowsJson }),
   analyzeInformational: (id: string) =>
@@ -86,8 +86,7 @@ export function useAnalyzeComponent() {
 export function useGenerateFlows() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, cypressSource }: { id: string; cypressSource?: string }) =>
-      signatureApi.generateFlows(id, cypressSource),
+    mutationFn: ({ id }: { id: string }) => signatureApi.generateFlows(id),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["signatures"] });
       qc.setQueryData(["signature", data.id], data);
