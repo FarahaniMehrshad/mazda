@@ -55,20 +55,34 @@ export function RunPage() {
 
   const [prompt, setPrompt] = useState("");
   const [err, setErr] = useState<string | null>(null);
+  // A run is immutable once planned — the prompt, gathered state, plan and
+  // execution envelope are the record of what happened. "Re-plan" therefore
+  // means *a new run against the same signature*, not an edit of this one, so
+  // the executed run stays intact in the Runs list. This flag just unlocks the
+  // prompt box and swaps the primary button back to Plan.
+  const [replanning, setReplanning] = useState(false);
   const plan = usePlanRun();
   const execute = useExecuteRun();
 
-  // Pre-fill prompt from an existing run (resume case).
+  // Pre-fill prompt from an existing run (resume case). Skipped while the user
+  // is composing a new prompt, or a background refetch would silently discard
+  // what they typed — and `!prompt` alone would re-fill the box the moment they
+  // cleared it to start over.
   useEffect(() => {
+    if (replanning) return;
     if (gen.data?.prompt && !prompt) setPrompt(gen.data.prompt);
-  }, [gen.data?.prompt]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [gen.data?.prompt, replanning]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onPlan = async () => {
     if (!sigId) return;
     setErr(null);
     try {
       const created = await plan.mutateAsync({ signatureId: sigId, prompt });
-      navigate(`/runs/${created.id}`, { replace: true });
+      setReplanning(false);
+      // Replace only on the first hop (/signatures/:id/run is a placeholder
+      // URL nobody wants Back to return to). Re-planning from an existing run
+      // pushes, so Back walks to the run you came from.
+      navigate(`/runs/${created.id}`, { replace: !runId });
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : String(e));
     }
@@ -121,6 +135,13 @@ export function RunPage() {
           executing={execute.isPending}
           gen={gen.data ?? null}
           canExecute={!!runId && gen.data?.status === "Ready" && gen.data?.executionStatus !== "Running"}
+          replanning={replanning}
+          onStartReplan={() => setReplanning(true)}
+          onCancelReplan={() => {
+            setReplanning(false);
+            setPrompt(gen.data?.prompt ?? "");
+            setErr(null);
+          }}
         />
 
         {err && (
@@ -137,7 +158,7 @@ export function RunPage() {
         {gathered && <StatePane state={gathered} />}
         {planBlob && <PlanPane plan={planBlob} />}
         {runId && gen.data?.executionStatus && gen.data.executionStatus !== "Idle" && (
-          <ExecutionPane runId={runId} status={gen.data.executionStatus} envelope={envelope} onDone={() => gen.refetch()} />
+          <ExecutionPane key={runId} runId={runId} status={gen.data.executionStatus} envelope={envelope} onDone={() => gen.refetch()} />
         )}
         </div>
       </div>
@@ -372,6 +393,9 @@ function PromptPane({
   executing,
   gen,
   canExecute,
+  replanning,
+  onStartReplan,
+  onCancelReplan,
 }: {
   prompt: string;
   onPromptChange: (v: string) => void;
@@ -381,12 +405,37 @@ function PromptPane({
   executing: boolean;
   gen: GenerationDto | null;
   canExecute: boolean;
+  replanning: boolean;
+  onStartReplan: () => void;
+  onCancelReplan: () => void;
 }) {
-  const readOnly = !!gen;
+  const readOnly = !!gen && !replanning;
+  // Editing mid-execution would be a lie: the interpreter is already walking
+  // the old plan, and the new run would race it for the same browser tab.
+  const running = gen?.executionStatus === "Running";
+  const changed = replanning && prompt.trim() !== (gen?.prompt ?? "").trim();
   return (
     <div style={{ marginTop: 24 }}>
-      <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 6, fontFamily: "var(--f-mono)" }}>
-        prompt
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+          gap: 8,
+          marginBottom: 6,
+        }}
+      >
+        <div style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--f-mono)" }}>
+          {replanning ? "prompt · starts a new run" : "prompt"}
+        </div>
+        {gen && (
+          <MiniBtn
+            onClick={replanning ? onCancelReplan : onStartReplan}
+            disabled={!replanning && running}
+          >
+            {replanning ? "Cancel" : running ? "Running…" : "New prompt"}
+          </MiniBtn>
+        )}
       </div>
       <textarea
         value={prompt}
@@ -412,7 +461,12 @@ function PromptPane({
             {planning ? "Planning…" : "Plan"}
           </BtnPrimary>
         )}
-        {gen && canExecute && (
+        {replanning && (
+          <BtnPrimary onClick={onPlan} disabled={planning || !prompt.trim() || !changed}>
+            {planning ? "Planning…" : "Plan new run"}
+          </BtnPrimary>
+        )}
+        {gen && !replanning && canExecute && (
           <BtnPrimary onClick={onExecute} disabled={executing}>
             {executing ? "Starting…" : "Execute plan"}
           </BtnPrimary>
