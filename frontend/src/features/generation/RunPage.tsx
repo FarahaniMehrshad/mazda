@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { ScreenShell, StepIndicator, BtnPrimary, Pill } from "@/shared/components/Primitives";
 import { TopBar } from "@/shared/components/TopBar";
 import { useStepNavigator } from "@/shared/components/useStepNavigator";
-import { useSignature } from "@/features/signatures/api";
+import { useSignature, useUpdateSignatureDescription } from "@/features/signatures/api";
 import { useGeneration, usePlanRun, useExecuteRun } from "./api";
 import type {
   GenerationDto,
@@ -110,6 +110,8 @@ export function RunPage() {
           </div>
         </div>
 
+        <ContextPane sigId={sigId} description={sig.data?.humanDescription ?? ""} />
+
         <PromptPane
           prompt={prompt}
           onPromptChange={setPrompt}
@@ -140,6 +142,222 @@ export function RunPage() {
         </div>
       </div>
     </ScreenShell>
+  );
+}
+
+// ── Context pane ─────────────────────────────────────────────────────
+//
+// The signature's human description, editable in place.
+//
+// It is first captured on the upload page, but the upload page is a one-shot:
+// once the wizard moves on there is no way back to it, and the description is
+// exactly the kind of thing an operator learns *later* — a business rule, what
+// a field actually means, which account this run is against. The planner reads
+// it on every run (LlmPlanGenerator puts it in the `signature` block of the
+// context payload), so it is worth being able to correct right before planning.
+//
+// Persisted through PUT /api/signatures/{id}/description, so an edit made here
+// also feeds the catalogue generator and the flow analyzer next time they run.
+
+// Matches the backend cap (UpdateSignatureDescriptionValidator.MaxChars).
+const MAX_DESCRIPTION_CHARS = 50_000;
+
+function ContextPane({ sigId, description }: { sigId: string | undefined; description: string }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(description);
+  const [fileName, setFileName] = useState("");
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const save = useUpdateSignatureDescription();
+
+  // The signature arrives asynchronously, and a run resumed from /runs/:id
+  // fetches it a beat after the page mounts. Re-seed the draft whenever the
+  // stored value changes underneath us — but never while the user is typing,
+  // or a background refetch would silently discard their edit.
+  useEffect(() => {
+    if (!editing) setDraft(description);
+  }, [description, editing]);
+
+  const tooLong = draft.length > MAX_DESCRIPTION_CHARS;
+  const dirty = draft !== description;
+
+  async function onFile(file: File) {
+    if (!/\.(md|markdown|txt)$/i.test(file.name)) {
+      setSaveErr("Description must be a .md / .markdown / .txt file.");
+      return;
+    }
+    const text = await file.text();
+    if (text.length > MAX_DESCRIPTION_CHARS) {
+      setSaveErr(
+        `File too large (${text.length.toLocaleString()} chars, limit ${MAX_DESCRIPTION_CHARS.toLocaleString()}).`,
+      );
+      return;
+    }
+    setSaveErr(null);
+    setFileName(file.name);
+    setDraft(text);
+  }
+
+  async function onSave() {
+    if (!sigId || tooLong) return;
+    setSaveErr(null);
+    try {
+      await save.mutateAsync({ id: sigId, description: draft });
+      setEditing(false);
+      setFileName("");
+    } catch (e) {
+      setSaveErr(e instanceof ApiError ? e.message : String(e));
+    }
+  }
+
+  function onCancel() {
+    setDraft(description);
+    setFileName("");
+    setSaveErr(null);
+    setEditing(false);
+  }
+
+  return (
+    <div style={{ marginTop: 24 }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+          gap: 8,
+          marginBottom: 6,
+        }}
+      >
+        <div style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--f-mono)" }}>
+          context · passed to the planner
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {editing && (
+            <>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".md,.markdown,.txt"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  // Reset so picking the same file twice still fires onChange.
+                  e.target.value = "";
+                  if (f) onFile(f);
+                }}
+              />
+              <MiniBtn onClick={() => fileRef.current?.click()}>
+                {fileName ? `↻ ${fileName}` : "Load from .md"}
+              </MiniBtn>
+            </>
+          )}
+          <MiniBtn onClick={() => (editing ? onCancel() : setEditing(true))}>
+            {editing ? "Cancel" : description ? "Edit" : "Add context"}
+          </MiniBtn>
+          {editing && (
+            <MiniBtn onClick={onSave} disabled={save.isPending || tooLong || !dirty} accent>
+              {save.isPending ? "Saving…" : "Save"}
+            </MiniBtn>
+          )}
+        </div>
+      </div>
+
+      {editing ? (
+        <>
+          <textarea
+            value={draft}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              // Hand-edited — the "loaded from" chip would now be lying.
+              if (fileName) setFileName("");
+            }}
+            placeholder="Anything the planner should know that the component's source code doesn't say — business rules, what a field means, which account this run is against."
+            rows={8}
+            style={{
+              width: "100%",
+              padding: "14px 16px",
+              background: "var(--glass-1)",
+              border: `1px solid ${tooLong ? "var(--err, #e07a5f)" : "var(--glass-stroke-2)"}`,
+              borderRadius: 10,
+              color: "var(--text-1)",
+              fontSize: 13,
+              lineHeight: 1.6,
+              resize: "vertical",
+              outline: "none",
+            }}
+          />
+          <div
+            style={{
+              fontFamily: "var(--f-mono)",
+              fontSize: 10.5,
+              textAlign: "right",
+              marginTop: 4,
+              color: tooLong ? "var(--err, #e07a5f)" : "var(--text-4)",
+            }}
+          >
+            {draft.length.toLocaleString()} / {MAX_DESCRIPTION_CHARS.toLocaleString()} chars
+          </div>
+        </>
+      ) : (
+        <div
+          style={{
+            padding: "12px 16px",
+            background: "var(--glass-1)",
+            border: "1px solid var(--glass-stroke-2)",
+            borderRadius: 10,
+            fontSize: 13,
+            lineHeight: 1.6,
+            color: description ? "var(--text-2)" : "var(--text-4)",
+            fontStyle: description ? "normal" : "italic",
+            // Long descriptions are commonly a pasted spec. Cap the resting
+            // height so the pane cannot push the prompt below the fold.
+            maxHeight: 180,
+            overflow: "auto",
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          {description || "No context yet. The planner will see only the signature's name, type and observed state."}
+        </div>
+      )}
+
+      {saveErr && (
+        <div style={{ marginTop: 8 }}>
+          <Pill tone="err">{saveErr}</Pill>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MiniBtn({
+  children,
+  onClick,
+  disabled,
+  accent,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  accent?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        fontSize: 10.5,
+        fontFamily: "var(--f-mono)",
+        padding: "3px 10px",
+        borderRadius: 999,
+        background: accent ? "var(--accent-soft, var(--glass-2))" : "var(--glass-1)",
+        border: "1px solid var(--glass-stroke)",
+        color: accent ? "var(--text-1)" : "var(--text-3)",
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.45 : 1,
+      }}
+    >
+      {children}
+    </button>
   );
 }
 

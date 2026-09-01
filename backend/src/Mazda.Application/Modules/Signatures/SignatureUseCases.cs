@@ -149,6 +149,46 @@ public class SaveSignatureHandler(ISignatureRepository repo, ICurrentUser me, IU
     }
 }
 
+// ── Update the human description ──────────────────────────────────
+// Split out from SaveSignatureCommand deliberately. Save is a whole-aggregate
+// write that hard-replaces the element collection; the description is edited
+// long after the wizard's upload step (from the Run page, where it is the
+// operator's last chance to tell the planner something the source code does
+// not say). Routing that through Save would force every caller to round-trip
+// the full element list just to change a paragraph of prose.
+public record UpdateSignatureDescriptionCommand(Guid Id, string? Description)
+    : IRequest<Result<SignatureDto>>;
+
+public class UpdateSignatureDescriptionValidator : AbstractValidator<UpdateSignatureDescriptionCommand>
+{
+    // Mirrors the human_description column width (see MazdaDbContext) so an
+    // over-long paste fails as a 400 rather than a truncation or a DB error.
+    public const int MaxChars = 50_000;
+
+    public UpdateSignatureDescriptionValidator()
+    {
+        RuleFor(x => x.Description).MaximumLength(MaxChars)
+            .When(x => x.Description is not null)
+            .WithMessage($"Description must be {MaxChars:N0} characters or fewer.");
+    }
+}
+
+public class UpdateSignatureDescriptionHandler(ISignatureRepository repo, ICurrentUser me, IUnitOfWork uow)
+    : IRequestHandler<UpdateSignatureDescriptionCommand, Result<SignatureDto>>
+{
+    public async Task<Result<SignatureDto>> Handle(UpdateSignatureDescriptionCommand cmd, CancellationToken ct)
+    {
+        if (me.UserId is null) return Result.Failure<SignatureDto>(Error.Validation("Not authenticated."));
+
+        var sig = await repo.FindByIdAsync(cmd.Id, me.UserId.Value, ct);
+        if (sig is null) return Result.Failure<SignatureDto>(Error.NotFound("Signature"));
+
+        sig.SetHumanDescription(cmd.Description);
+        await uow.SaveChangesAsync(ct);
+        return Result.Success(sig.ToDto());
+    }
+}
+
 // ── Delete ────────────────────────────────────────────────────────
 public record DeleteSignatureCommand(Guid Id) : IRequest<Result>;
 

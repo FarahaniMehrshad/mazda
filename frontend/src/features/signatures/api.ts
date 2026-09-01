@@ -30,6 +30,10 @@ export const signatureApi = {
     api.post<SignatureDto>(`/api/signatures/${id}/analyze-relationships`, {}),
   saveRelationships: (id: string, graphJson: string) =>
     api.put<SignatureDto>(`/api/signatures/${id}/relationships`, { graphJson }),
+  // Prose context for the LLM. Editable after the wizard — see RunPage's
+  // Context pane. Sent on its own so the element collection is untouched.
+  updateDescription: (id: string, description: string) =>
+    api.put<SignatureDto>(`/api/signatures/${id}/description`, { description }),
   // ── Dependencies ──
   listDependencies: (id: string) =>
     api.get<SignatureDependencyDto[]>(`/api/signatures/${id}/dependencies`),
@@ -87,6 +91,18 @@ export function useGenerateFlows() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id }: { id: string }) => signatureApi.generateFlows(id),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["signatures"] });
+      qc.setQueryData(["signature", data.id], data);
+    },
+  });
+}
+
+export function useUpdateSignatureDescription() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, description }: { id: string; description: string }) =>
+      signatureApi.updateDescription(id, description),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["signatures"] });
       qc.setQueryData(["signature", data.id], data);

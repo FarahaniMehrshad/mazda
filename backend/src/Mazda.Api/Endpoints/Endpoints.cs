@@ -50,6 +50,15 @@ public static class Endpoints
         sigs.MapDelete("/{id:guid}", async (Guid id, ISender s) =>
             (await s.Send(new DeleteSignatureCommand(id))).ToHttp());
 
+        // The human description is editable for the life of the signature, not
+        // just at upload time — it is the operator's channel for context the
+        // source code cannot carry (business rules, what a field means, which
+        // account the run is against), and the planner reads it on every run.
+        // Dedicated endpoint so editing prose does not require re-POSTing the
+        // whole element collection through Save.
+        sigs.MapPut("/{id:guid}/description", async (Guid id, [FromBody] DescriptionBody body, ISender s) =>
+            (await s.Send(new UpdateSignatureDescriptionCommand(id, body.Description))).ToHttp());
+
         sigs.MapPost("/analyze", async ([FromBody] AnalyzeComponentCommand cmd, ISender s) =>
             (await s.Send(cmd)).ToHttp());
 
@@ -247,6 +256,7 @@ public static class Endpoints
     // Body records for endpoints whose model-binder needs a shaped payload.
     // Command records defined in Application handle the rest.
     public record FlowsBody(string FlowsJson);
+    public record DescriptionBody(string? Description);
     public record RelationshipsBody(string GraphJson);
     public record AddDependencyBody(Guid DependsOnId);
     // Args travel as a JSON *string* rather than a bound object: the shape is
