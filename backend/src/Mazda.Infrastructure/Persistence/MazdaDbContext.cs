@@ -5,6 +5,7 @@ using Mazda.Domain.Modules.Identity;
 using Mazda.Domain.Modules.Signatures;
 using Mazda.Domain.Modules.Generations;
 using Mazda.Domain.Modules.Mcp;
+using Mazda.Domain.Modules.Recordings;
 
 namespace Mazda.Infrastructure.Persistence;
 
@@ -18,6 +19,8 @@ public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContex
     public DbSet<SignatureFunction> SignatureFunctions => Set<SignatureFunction>();
     public DbSet<Generation> Generations => Set<Generation>();
     public DbSet<McpTool> McpTools => Set<McpTool>();
+    public DbSet<RecordingSession> RecordingSessions => Set<RecordingSession>();
+    public DbSet<RecordingEvent> RecordingEvents => Set<RecordingEvent>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -29,6 +32,8 @@ public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContex
         mb.ApplyConfiguration(new SignatureFunctionConfig());
         mb.ApplyConfiguration(new GenerationConfig());
         mb.ApplyConfiguration(new McpToolConfig());
+        mb.ApplyConfiguration(new RecordingSessionConfig());
+        mb.ApplyConfiguration(new RecordingEventConfig());
     }
 
     Task<int> IUnitOfWork.SaveChangesAsync(CancellationToken ct) => base.SaveChangesAsync(ct);
@@ -133,6 +138,8 @@ internal class SignatureElementConfig : IEntityTypeConfiguration<SignatureElemen
         b.Property(x => x.ElementType).HasMaxLength(40).IsRequired();
         b.Property(x => x.ElementLogic).HasColumnName("element_logic");
         b.Property(x => x.ElementDescription).HasMaxLength(1000);
+        // Provenance (Source / Recorded / Manual). Stored by name like Category.
+        b.Property(x => x.Origin).HasColumnName("origin").HasConversion<string>().HasMaxLength(20);
         b.HasIndex(x => new { x.SignatureId, x.Order });
     }
 }
@@ -222,5 +229,65 @@ internal class McpToolConfig : IEntityTypeConfiguration<McpTool>
         // They must be unique per user. The DB index enforces it.
         b.HasIndex(x => new { x.OwnerId, x.Name }).IsUnique();
         b.HasIndex(x => x.SignatureId);
+    }
+}
+
+internal class RecordingSessionConfig : IEntityTypeConfiguration<RecordingSession>
+{
+    public void Configure(EntityTypeBuilder<RecordingSession> b)
+    {
+        b.ToTable("recording_sessions");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.OwnerId).HasColumnName("owner_id").IsRequired();
+        b.Property(x => x.SignatureId).HasColumnName("signature_id").IsRequired();
+        b.Property(x => x.Label).HasColumnName("label").HasMaxLength(200);
+        b.Property(x => x.LabelIsAuto).HasColumnName("label_is_auto");
+        b.Property(x => x.Intent).HasColumnName("intent");
+        b.Property(x => x.Understanding).HasColumnName("understanding");
+        b.Property(x => x.Status).HasColumnName("status").HasConversion<string>().HasMaxLength(20);
+        b.Property(x => x.StartedAt).HasColumnName("started_at");
+        b.Property(x => x.EndedAt).HasColumnName("ended_at");
+        b.Property(x => x.StartUrl).HasColumnName("start_url").HasMaxLength(2000);
+        b.Property(x => x.AllowedOriginsJson).HasColumnName("allowed_origins");
+        b.Property(x => x.CaptureBodies).HasColumnName("capture_bodies");
+        b.Property(x => x.MaskAllInputs).HasColumnName("mask_all_inputs");
+        b.Property(x => x.CdpPort).HasColumnName("cdp_port");
+        b.Property(x => x.TargetId).HasColumnName("target_id").HasMaxLength(200);
+        b.Property(x => x.EventCount).HasColumnName("event_count");
+        b.Property(x => x.ActionCount).HasColumnName("action_count");
+        b.Property(x => x.Truncated).HasColumnName("truncated");
+        b.Property(x => x.Error).HasColumnName("error");
+        // Opaque JSON blobs, round-tripped verbatim — text, not jsonb.
+        b.Property(x => x.EpisodesJson).HasColumnName("episodes_json");
+        b.Property(x => x.ProposalJson).HasColumnName("proposal_json");
+        b.Property(x => x.AppliedAt).HasColumnName("applied_at");
+        b.Property(x => x.UseForGrounding).HasColumnName("use_for_grounding");
+        b.Ignore(x => x.IsActive);
+        // Deleting the signature deletes its recordings (and, via the events
+        // FK, their raw events).
+        b.HasOne<Signature>().WithMany()
+         .HasForeignKey(x => x.SignatureId)
+         .OnDelete(DeleteBehavior.Cascade);
+        b.HasIndex(x => new { x.SignatureId, x.CreatedAt });
+        b.HasIndex(x => new { x.OwnerId, x.Status });
+    }
+}
+
+internal class RecordingEventConfig : IEntityTypeConfiguration<RecordingEvent>
+{
+    public void Configure(EntityTypeBuilder<RecordingEvent> b)
+    {
+        b.ToTable("recording_events");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.SessionId).HasColumnName("session_id").IsRequired();
+        b.Property(x => x.Seq).HasColumnName("seq");
+        b.Property(x => x.TMs).HasColumnName("t_ms");
+        b.Property(x => x.Kind).HasColumnName("kind").HasMaxLength(20).IsRequired();
+        b.Property(x => x.ActionId).HasColumnName("action_id").HasMaxLength(64);
+        b.Property(x => x.PayloadJson).HasColumnName("payload_json");
+        b.HasOne<RecordingSession>().WithMany()
+         .HasForeignKey(x => x.SessionId)
+         .OnDelete(DeleteBehavior.Cascade);
+        b.HasIndex(x => new { x.SessionId, x.Seq });
     }
 }

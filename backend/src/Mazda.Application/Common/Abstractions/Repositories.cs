@@ -2,6 +2,7 @@ using Mazda.Domain.Modules.Identity;
 using Mazda.Domain.Modules.Signatures;
 using Mazda.Domain.Modules.Generations;
 using Mazda.Domain.Modules.Mcp;
+using Mazda.Domain.Modules.Recordings;
 
 namespace Mazda.Application.Common.Abstractions;
 
@@ -39,7 +40,14 @@ public interface ISignatureRepository
     /// which is fragile with field-backed collections under <c>WithOne()</c> mappings)
     /// then attaches the new collection through the aggregate.
     /// </summary>
-    Task ReplaceElementsAsync(Signature signature, IEnumerable<SignatureElement> newElements, CancellationToken ct = default);
+    Task ReplaceElementsAsync(Signature signature, IEnumerable<SignatureElement> newElements, CancellationToken ct = default)
+        => ReplaceElementsAsync(signature, newElements, ElementChangePolicy.InvalidateOnAnyChange, ct);
+
+    /// <summary>
+    /// Same, with control over when derived caches (flows, relationships,
+    /// function catalogue) are wiped. See <see cref="ElementChangePolicy"/>.
+    /// </summary>
+    Task ReplaceElementsAsync(Signature signature, IEnumerable<SignatureElement> newElements, ElementChangePolicy policy, CancellationToken ct = default);
 
     /// <summary>
     /// Hard-replace the function catalogue of an existing signature. Uses the same
@@ -59,6 +67,19 @@ public interface ISignatureRepository
     /// that's a 404 or not.
     /// </summary>
     Task RemoveFunctionAsync(Signature signature, Guid functionId, CancellationToken ct = default);
+}
+
+/// <summary>When an element replacement should wipe the signature's derived caches.</summary>
+public enum ElementChangePolicy
+{
+    /// <summary>Any content change wipes flows, relationships and functions (the classic behaviour).</summary>
+    InvalidateOnAnyChange,
+    /// <summary>
+    /// Wipe only when an existing selector disappears. A purely additive merge
+    /// (e.g. applying a recording) keeps every cache: function bodies and graph
+    /// edges reference only selectors that still exist.
+    /// </summary>
+    InvalidateOnlyIfExistingSelectorsChanged,
 }
 
 public interface IGenerationRepository
@@ -94,4 +115,25 @@ public interface IMcpToolRepository
 public interface IUserSettingsRepository
 {
     Task<UserSettings> GetOrCreateAsync(Guid userId, CancellationToken ct = default);
+}
+
+/// <summary>A completed recording as function-generation grounding.</summary>
+public sealed record GroundingRecording(string Title, string Intent, string Understanding, string EpisodesJson);
+
+/// <summary>"Learn by watching" sessions and their raw event log.</summary>
+public interface IRecordingRepository
+{
+    Task AddAsync(RecordingSession session, CancellationToken ct = default);
+    Task<RecordingSession?> FindByIdAsync(Guid id, Guid ownerId, CancellationToken ct = default);
+    /// <summary>Owner-agnostic lookup for the background recorder host.</summary>
+    Task<RecordingSession?> FindByIdUnscopedAsync(Guid id, CancellationToken ct = default);
+    Task<IReadOnlyList<RecordingSession>> ListBySignatureAsync(Guid signatureId, Guid ownerId, CancellationToken ct = default);
+    Task<RecordingSession?> FindActiveForOwnerAsync(Guid ownerId, CancellationToken ct = default);
+    Task<int> CountBySignatureAsync(Guid signatureId, CancellationToken ct = default);
+    Task AddEventsAsync(IEnumerable<RecordingEvent> events, CancellationToken ct = default);
+    Task<IReadOnlyList<RecordingEvent>> ListEventsAsync(Guid sessionId, int afterSeq, int take, CancellationToken ct = default);
+    Task<IReadOnlyList<RecordingEvent>> ListAllEventsAsync(Guid sessionId, CancellationToken ct = default);
+    /// <summary>EpisodesJson of completed, grounding-enabled sessions for a signature, newest first.</summary>
+    Task<IReadOnlyList<GroundingRecording>> ListGroundingEpisodesAsync(Guid signatureId, CancellationToken ct = default);
+    Task RemoveAsync(RecordingSession session, CancellationToken ct = default);
 }

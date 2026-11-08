@@ -6,7 +6,11 @@ using Mazda.Domain.Modules.Signatures;
 
 namespace Mazda.Application.Modules.Signatures;
 
-public record SignatureElementDto(string Selector, string Category, string ElementType, string Description, string Logic);
+// Origin: "source" (analyzer, from uploaded code) | "recorded" (learned from a
+// recording session) | "manual". Optional on input so older clients that
+// don't send it keep working; Save preserves the stored origin of an element
+// whose selector already exists when the client omits it.
+public record SignatureElementDto(string Selector, string Category, string ElementType, string Description, string Logic, string? Origin = null);
 
 public record SignatureDto(
     Guid Id,
@@ -27,7 +31,10 @@ public record SignatureDto(
     // IDs of signatures this one depends on. Frontend uses the count for the
     // sidebar badge; the full Dependencies panel pulls the labeled rows via
     // ListSignatureDependenciesQuery (which adds names + element counts).
-    IReadOnlyList<Guid> DependencyIds);
+    IReadOnlyList<Guid> DependencyIds,
+    // False for signatures created without uploaded source ("learn by
+    // watching" only). The wizard hides the source-driven steps for them.
+    bool HasSourceCode = true);
 
 internal static class SignatureMapper
 {
@@ -36,8 +43,16 @@ internal static class SignatureMapper
         s.RelationshipsJson,
         s.Elements.Count, s.UpdatedAt,
         s.Elements.OrderBy(e => e.Order).Select(e => new SignatureElementDto(
-            e.ElementSelector, e.Category.ToString(), e.ElementType, e.ElementDescription, e.ElementLogic)).ToList(),
-        s.DependencyIds);
+            e.ElementSelector, e.Category.ToString(), e.ElementType, e.ElementDescription, e.ElementLogic,
+            e.Origin.ToString().ToLowerInvariant())).ToList(),
+        s.DependencyIds,
+        !string.IsNullOrWhiteSpace(s.SourceCode));
+
+    internal static ElementOrigin ParseOrigin(string? raw, ElementOrigin fallback = ElementOrigin.Source)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return fallback;
+        return Enum.TryParse<ElementOrigin>(raw.Trim(), ignoreCase: true, out var o) ? o : fallback;
+    }
 
     internal static ElementCategory ParseCategory(string? raw)
     {
@@ -127,8 +142,18 @@ public class SaveSignatureHandler(ISignatureRepository repo, ICurrentUser me, IU
             await repo.AddAsync(sig, ct);
         }
 
+        // Origin: honour what the client sent; otherwise keep the stored origin
+        // for a selector we already know; otherwise a brand-new row from the
+        // editor is Manual (on update) / Source (on create, i.e. upload).
+        var storedOrigin = sig.Elements
+            .GroupBy(e => e.ElementSelector, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First().Origin, StringComparer.Ordinal);
         var elements = cmd.Elements
-            .Select((e, i) => SignatureElement.Create(e.Selector, SignatureMapper.ParseCategory(e.Category), e.ElementType, e.Description, i, e.Logic))
+            .Select((e, i) => SignatureElement.Create(
+                e.Selector, SignatureMapper.ParseCategory(e.Category), e.ElementType, e.Description, i, e.Logic,
+                SignatureMapper.ParseOrigin(e.Origin,
+                    storedOrigin.TryGetValue(e.Selector.Trim(), out var known) ? known
+                    : isUpdate ? ElementOrigin.Manual : ElementOrigin.Source)))
             .ToList();
 
         if (isUpdate)
@@ -358,9 +383,16 @@ public class ReanalyzeInteractiveHandler(
         try { analysis = await analyzer.AnalyzeAsync(sig.SourceCode, sig.Source, sig.HumanDescription, ct); }
         catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Analyzer failed: {ExceptionMessage.Describe(ex)}")); }
 
-        // Replace ONLY the interactive elements; preserve everything informational.
+        // Replace ONLY the source-derived interactive elements; preserve
+        // everything informational, and every element learned from a
+        // recording (the source analyzer cannot see those — that is why they
+        // were recorded).
         var informational = sig.Elements
             .Where(e => e.Category == ElementCategory.Informational)
+            .OrderBy(e => e.Order)
+            .ToList();
+        var recordedInteractive = sig.Elements
+            .Where(e => e.Category == ElementCategory.Interactive && e.Origin == ElementOrigin.Recorded)
             .OrderBy(e => e.Order)
             .ToList();
 
@@ -379,6 +411,19 @@ public class ReanalyzeInteractiveHandler(
                 e.Logic))
             .ToList();
 
+        var newSelectors = newInteractive.Select(e => e.ElementSelector).ToHashSet(StringComparer.Ordinal);
+        var preservedRecorded = recordedInteractive
+            .Where(e => !newSelectors.Contains(e.ElementSelector))
+            .Select(e => SignatureElement.Create(
+                e.ElementSelector,
+                ElementCategory.Interactive,
+                e.ElementType,
+                e.ElementDescription,
+                nextOrder++,
+                e.ElementLogic,
+                ElementOrigin.Recorded))
+            .ToList();
+
         var preservedInformational = informational
             .Select(e => SignatureElement.Create(
                 e.ElementSelector,
@@ -386,10 +431,11 @@ public class ReanalyzeInteractiveHandler(
                 e.ElementType,
                 e.ElementDescription,
                 nextOrder++,
-                e.ElementLogic))
+                e.ElementLogic,
+                e.Origin))
             .ToList();
 
-        var merged = newInteractive.Concat(preservedInformational).ToList();
+        var merged = newInteractive.Concat(preservedRecorded).Concat(preservedInformational).ToList();
 
         await repo.ReplaceElementsAsync(sig, merged, ct);
         await uow.SaveChangesAsync(ct);
@@ -439,6 +485,12 @@ public class AnalyzeInformationalHandler(
             .Where(e => e.Category == ElementCategory.Interactive)
             .OrderBy(e => e.Order)
             .ToList();
+        // Informational elements learned from a recording (toasts, popups,
+        // validation messages the recorder SAW appear) survive the rebuild.
+        var recordedInformational = sig.Elements
+            .Where(e => e.Category == ElementCategory.Informational && e.Origin == ElementOrigin.Recorded)
+            .OrderBy(e => e.Order)
+            .ToList();
         var newInformational = result.Elements
             .Select((e, i) => SignatureElement.Create(
                 e.Selector,
@@ -450,6 +502,7 @@ public class AnalyzeInformationalHandler(
             .ToList();
 
         var nextOrder = 0;
+        var newInfoSelectors = newInformational.Select(e => e.ElementSelector).ToHashSet(StringComparer.Ordinal);
         var merged = interactive
             .Select(e => SignatureElement.Create(
                 e.ElementSelector,
@@ -457,7 +510,8 @@ public class AnalyzeInformationalHandler(
                 e.ElementType,
                 e.ElementDescription,
                 nextOrder++,
-                e.ElementLogic))
+                e.ElementLogic,
+                e.Origin))
             .Concat(newInformational.Select(e => SignatureElement.Create(
                 e.ElementSelector,
                 ElementCategory.Informational,
@@ -465,6 +519,16 @@ public class AnalyzeInformationalHandler(
                 e.ElementDescription,
                 nextOrder++,
                 e.ElementLogic)))
+            .Concat(recordedInformational
+                .Where(e => !newInfoSelectors.Contains(e.ElementSelector))
+                .Select(e => SignatureElement.Create(
+                    e.ElementSelector,
+                    ElementCategory.Informational,
+                    e.ElementType,
+                    e.ElementDescription,
+                    nextOrder++,
+                    e.ElementLogic,
+                    ElementOrigin.Recorded)))
             .ToList();
 
         await repo.ReplaceElementsAsync(sig, merged, ct);

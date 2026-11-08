@@ -23,6 +23,7 @@ public static class DependencyInjection
         services.AddScoped<IGenerationRepository, GenerationRepository>();
         services.AddScoped<IMcpToolRepository, McpToolRepository>();
         services.AddScoped<IUserSettingsRepository, UserSettingsRepository>();
+        services.AddScoped<IRecordingRepository, RecordingRepository>();
 
         // Security
         services.Configure<JwtOptions>(cfg.GetSection("Jwt"));
@@ -41,6 +42,7 @@ public static class DependencyInjection
         services.AddSingleton<IFunctionCatalogueGenerator, LlmFunctionCatalogueGenerator>();
         services.AddSingleton<IFunctionFixer, LlmFunctionFixer>();
         services.AddSingleton<IPlanGenerator, LlmPlanGenerator>();
+        services.AddSingleton<IRecordingAnalyzer, LlmRecordingAnalyzer>();
 
         // Script execution (Playwright via Node inside the API container).
         services.AddSingleton<IExecutionRegistry, Runner.InMemoryExecutionRegistry>();
@@ -52,6 +54,8 @@ public static class DependencyInjection
         services.AddSingleton<IStateGatherer, Runner.StateGatherer>();
         services.AddSingleton<IPlanInterpreter, Runner.PlanInterpreter>();
         services.AddSingleton<IFunctionTester, Runner.FunctionTester>();
+        // Long-lived "learn by watching" recorder processes (one per active session).
+        services.AddSingleton<IRecordingHost, Runner.RecordingHost>();
         services.AddHttpClient("cdp");
         services.AddSingleton<ICdpClient, Cdp.CdpClient>();
 

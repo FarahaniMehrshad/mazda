@@ -302,7 +302,7 @@ internal static class FunctionHarnessBuilder
     /// analyze-state script uses today, so it works out of the box on the
     /// existing runner without a special flag.
     /// </summary>
-    private static void AppendPreamble(StringBuilder sb, string testName, CdpTarget target)
+    internal static void AppendPreamble(StringBuilder sb, string testName, CdpTarget target)
     {
         sb.AppendLine("import { test, chromium } from '@playwright/test';");
         sb.AppendLine("import type { Page } from '@playwright/test';");

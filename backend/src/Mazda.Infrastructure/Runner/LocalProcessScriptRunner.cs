@@ -53,32 +53,28 @@ public sealed class LocalProcessScriptRunner(
         }
         """;
 
-    public async Task<RunnerCompletion> RunAsync(Guid generationId, string script, CancellationToken ct = default)
+    public Task<RunnerCompletion> RunAsync(Guid generationId, string script, CancellationToken ct = default)
+        => RunAsync(generationId, script, new ScriptRunOptions(), ct);
+
+    public async Task<RunnerCompletion> RunAsync(Guid generationId, string script, ScriptRunOptions opts, CancellationToken ct = default)
     {
         var workdirRoot = Environment.GetEnvironmentVariable("MAZDA_RUNNER_WORKDIR") ?? "/var/mazda/runs";
         var runDir = Path.Combine(workdirRoot, generationId.ToString("N"));
-        Directory.CreateDirectory(runDir);
+        await PrepareRunDirAsync(runDir, script, opts.PlaywrightConfigOverride ?? PlaywrightConfig, ct);
 
-        var rewritten = RewriteHosts(script);
-        await File.WriteAllTextAsync(Path.Combine(runDir, "mazda.spec.ts"), rewritten, ct);
-        await File.WriteAllTextAsync(Path.Combine(runDir, "playwright.config.ts"), PlaywrightConfig, ct);
-        await File.WriteAllTextAsync(Path.Combine(runDir, "package.json"), PackageJson, ct);
+        var stopFile = Path.Combine(runDir, "STOP");
+        // A STOP file left over from a previous run in the same dir would make
+        // a recorder exit the moment it starts.
+        try { File.Delete(stopFile); } catch { }
 
-        // Node ESM resolution doesn't look at the global node_modules. Symlink the
-        // run dir's node_modules to the global one so `@playwright/test` resolves.
-        var localNodeModules = Path.Combine(runDir, "node_modules");
-        var globalNodeModules = Environment.GetEnvironmentVariable("MAZDA_GLOBAL_NODE_MODULES")
-                                ?? "/usr/lib/node_modules";
-        if (!Directory.Exists(localNodeModules) && !File.Exists(localNodeModules))
+        if (opts.StreamToRegistry)
         {
-            try { File.CreateSymbolicLink(localNodeModules, globalNodeModules); }
-            catch (Exception ex) { log.LogWarning(ex, "Could not symlink node_modules → {Global}", globalNodeModules); }
+            registry.Append(generationId, $"$ cd {runDir}");
+            registry.Append(generationId, "$ npx playwright test mazda.spec.ts --reporter=list");
         }
 
-        registry.Append(generationId, $"$ cd {runDir}");
-        registry.Append(generationId, "$ npx playwright test mazda.spec.ts --reporter=list");
-
         var fullLog = new StringBuilder();
+        var logGate = new object();
         void Emit(string line)
         {
             // Strip ANSI escape sequences before storing/streaming. Two reasons:
@@ -91,9 +87,15 @@ public sealed class LocalProcessScriptRunner(
             //      and renders the ESC byte as nothing, leaving garbage like
             //      `[33m`, `[7m`, `[27m` interleaved with the actual text.
             var stripped = StripAnsi(line);
-            registry.Append(generationId, stripped);
-            fullLog.AppendLine(stripped);
+            if (opts.OnLine is not null)
+            {
+                try { opts.OnLine(stripped); }
+                catch (Exception ex) { log.LogWarning(ex, "Runner line sink threw"); }
+            }
+            if (opts.StreamToRegistry) registry.Append(generationId, stripped);
+            if (opts.CaptureFullLog) lock (logGate) fullLog.AppendLine(stripped);
         }
+        string FullLog() { lock (logGate) return fullLog.ToString(); }
 
         var psi = new ProcessStartInfo
         {
@@ -125,6 +127,12 @@ public sealed class LocalProcessScriptRunner(
         psi.ArgumentList.Add("mazda.spec.ts");
         // No --reporter flag here: the CLI form `list` would override the config's
         // reporter array and drop `printSteps: true`. Let playwright.config.ts win.
+        //
+        // Graceful-stop channel. Stdin is useless for this — Playwright's test
+        // worker does not inherit the runner's stdin — but env vars ARE
+        // inherited, so a long-lived spec polls for this file and shuts down
+        // cleanly (flushing whatever it has buffered) when it appears.
+        psi.Environment["MAZDA_STOP_FILE"] = stopFile;
 
         using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
         proc.OutputDataReceived += (_, e) => { if (e.Data is not null) Emit(e.Data); };
@@ -141,7 +149,7 @@ public sealed class LocalProcessScriptRunner(
             // NOTE: do NOT call registry.Complete here. The handler will call it
             // AFTER the terminal status has been persisted, so the SSE end event
             // only fires once the DB reflects the final state.
-            return new RunnerCompletion(RunnerExitKind.Errored, -1, fullLog.ToString());
+            return new RunnerCompletion(RunnerExitKind.Errored, -1, FullLog());
         }
 
         proc.BeginOutputReadLine();
@@ -153,11 +161,33 @@ public sealed class LocalProcessScriptRunner(
         }
         catch (OperationCanceledException)
         {
+            if (opts.GracefulStopTimeout is { } grace && !proc.HasExited)
+            {
+                try { await File.WriteAllTextAsync(stopFile, "stop", CancellationToken.None); }
+                catch (Exception ex) { log.LogWarning(ex, "Could not write stop file {File}", stopFile); }
+
+                using var graceCts = new CancellationTokenSource(grace);
+                try
+                {
+                    await proc.WaitForExitAsync(graceCts.Token);
+                    // Exited on its own inside the grace window — make sure the
+                    // async stdout readers have drained before classifying.
+                    proc.WaitForExit();
+                    return Classify(proc, Emit, runDir, FullLog);
+                }
+                catch (OperationCanceledException) { /* fall through to kill */ }
+            }
+
             try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
             Emit("runner: cancelled by user");
-            return new RunnerCompletion(RunnerExitKind.Cancelled, -1, fullLog.ToString());
+            return new RunnerCompletion(RunnerExitKind.Cancelled, -1, FullLog());
         }
 
+        return Classify(proc, Emit, runDir, FullLog);
+    }
+
+    private static RunnerCompletion Classify(Process proc, Action<string> emit, string runDir, Func<string> fullLog)
+    {
         var kind = proc.ExitCode switch
         {
             0 => RunnerExitKind.Passed,
@@ -174,32 +204,36 @@ public sealed class LocalProcessScriptRunner(
             {
                 foreach (var tracePath in Directory.EnumerateFiles(resultsDir, "trace.zip", SearchOption.AllDirectories))
                 {
-                    Emit($"runner: trace saved → {tracePath}");
-                    Emit("runner: open with `npx playwright show-trace " + tracePath + "` (run on host)");
+                    emit($"runner: trace saved → {tracePath}");
+                    emit("runner: open with `npx playwright show-trace " + tracePath + "` (run on host)");
                 }
             }
         }
-        Emit($"runner: exit {proc.ExitCode} ({kind.ToString().ToLowerInvariant()})");
+        emit($"runner: exit {proc.ExitCode} ({kind.ToString().ToLowerInvariant()})");
 
         // Caller (StartExecutionHandler) is responsible for calling
         // registry.Complete AFTER it has persisted the terminal status so the
         // SSE end event arrives at the client only once the DB reflects it.
-        return new RunnerCompletion(kind, proc.ExitCode, fullLog.ToString());
+        return new RunnerCompletion(kind, proc.ExitCode, fullLog());
     }
 
-    public async Task<RunnerCompletion> RunOnceAsync(string script, CancellationToken ct = default)
+    /// <summary>
+    /// Materialises the per-run directory: spec (with loopback hosts rewritten
+    /// and helpers injected), playwright config, package.json, and the
+    /// node_modules symlink that lets ESM resolution find the global
+    /// <c>@playwright/test</c>.
+    /// </summary>
+    private async Task PrepareRunDirAsync(string runDir, string script, string config, CancellationToken ct)
     {
-        // Isolated run dir per call — analyze-state extraction runs concurrent
-        // with the wizard's main run flow potentially, so don't collide.
-        var workdirRoot = Environment.GetEnvironmentVariable("MAZDA_RUNNER_WORKDIR") ?? "/var/mazda/runs";
-        var runDir = Path.Combine(workdirRoot, "once-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(runDir);
 
         var rewritten = RewriteHosts(script);
         await File.WriteAllTextAsync(Path.Combine(runDir, "mazda.spec.ts"), rewritten, ct);
-        await File.WriteAllTextAsync(Path.Combine(runDir, "playwright.config.ts"), PlaywrightConfig, ct);
+        await File.WriteAllTextAsync(Path.Combine(runDir, "playwright.config.ts"), config, ct);
         await File.WriteAllTextAsync(Path.Combine(runDir, "package.json"), PackageJson, ct);
 
+        // Node ESM resolution doesn't look at the global node_modules. Symlink the
+        // run dir's node_modules to the global one so `@playwright/test` resolves.
         var localNodeModules = Path.Combine(runDir, "node_modules");
         var globalNodeModules = Environment.GetEnvironmentVariable("MAZDA_GLOBAL_NODE_MODULES")
                                 ?? "/usr/lib/node_modules";
@@ -208,6 +242,15 @@ public sealed class LocalProcessScriptRunner(
             try { File.CreateSymbolicLink(localNodeModules, globalNodeModules); }
             catch (Exception ex) { log.LogWarning(ex, "Could not symlink node_modules → {Global}", globalNodeModules); }
         }
+    }
+
+    public async Task<RunnerCompletion> RunOnceAsync(string script, CancellationToken ct = default)
+    {
+        // Isolated run dir per call — analyze-state extraction runs concurrent
+        // with the wizard's main run flow potentially, so don't collide.
+        var workdirRoot = Environment.GetEnvironmentVariable("MAZDA_RUNNER_WORKDIR") ?? "/var/mazda/runs";
+        var runDir = Path.Combine(workdirRoot, "once-" + Guid.NewGuid().ToString("N"));
+        await PrepareRunDirAsync(runDir, script, PlaywrightConfig, ct);
 
         var fullLog = new StringBuilder();
         void Capture(string line)

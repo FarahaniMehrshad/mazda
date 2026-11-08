@@ -15,6 +15,10 @@ html, body, #root {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Native controls (scrollbars, date pickers, any stray <select>) follow the
+   dark theme instead of the OS light default. */
+:root { color-scheme: dark; }
+
 * { box-sizing: border-box; }
 
 button {
@@ -26,6 +30,79 @@ input, textarea, select {
   font-family: inherit;
   color: inherit;
 }
+
+/* Safety net only — use <Select> (shared/components/Select.tsx); the build
+   rejects native <select> elsewhere. Keeps one that slips in readable. */
+select, option {
+  background-color: var(--bg-2);
+  color: var(--text-1);
+}
+
+/* ── <Select> ─────────────────────────────────────────────────────────── */
+.mz-select-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--glass-1);
+  border: 1px solid var(--glass-stroke-2);
+  border-radius: 8px;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+.mz-select-trigger:hover:not(:disabled) { background: var(--glass-2); }
+.mz-select-trigger:focus-visible,
+.mz-select-trigger[data-open] {
+  border-color: rgba(234, 112, 40, 0.55);
+  box-shadow: 0 0 0 3px rgba(234, 112, 40, 0.14);
+}
+.mz-select-trigger:disabled { opacity: 0.5; cursor: not-allowed; }
+.mz-select-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mz-select-value[data-placeholder] { color: var(--text-4); }
+.mz-select-chevron { flex: none; color: var(--text-3); transition: transform 120ms ease; }
+.mz-select-trigger[data-open] .mz-select-chevron { transform: rotate(180deg); }
+
+.mz-select-popup {
+  position: fixed;
+  z-index: 1000; /* above modals (backdrops sit at 50) */
+  padding: 4px;
+  overflow-y: auto;
+  background: #16121a;
+  border: 1px solid var(--glass-stroke-2);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+  animation: mz-fade-in 0.12s ease-out both;
+}
+.mz-select-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: var(--text-1);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+.mz-select-option[data-highlighted] { background: rgba(234, 112, 40, 0.16); }
+.mz-select-option[data-selected] { color: var(--orange-100); }
+.mz-select-option[aria-disabled] { opacity: 0.4; cursor: not-allowed; }
+.mz-select-hint { font-size: 11px; color: var(--text-3); font-family: var(--f-mono); }
+.mz-select-empty { padding: 10px; font-size: 12px; color: var(--text-4); text-align: center; }
 
 a { color: inherit; text-decoration: none; }
 

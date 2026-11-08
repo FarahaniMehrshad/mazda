@@ -19,13 +19,14 @@
 9. [Runtime helpers injected into generated code](#runtime-helpers-injected-into-generated-code)
 10. [Playwright authoring rules](#playwright-authoring-rules) — *hard-won, read before writing a body*
 11. [CDP attach: the three-problem stack](#cdp-attach-the-three-problem-stack)
-12. [MCP server](#mcp-server)
-13. [Frontend](#frontend)
-14. [Persistence](#persistence)
-15. [Deployment](#deployment)
-16. [Running and operating the stack](#running-and-operating-the-stack)
-17. [Quirks and gotchas](#quirks-and-gotchas)
-18. [Glossary](#glossary)
+12. [Learn by watching (recordings)](#learn-by-watching-recordings)
+13. [MCP server](#mcp-server)
+14. [Frontend](#frontend)
+15. [Persistence](#persistence)
+16. [Deployment](#deployment)
+17. [Running and operating the stack](#running-and-operating-the-stack)
+18. [Quirks and gotchas](#quirks-and-gotchas)
+19. [Glossary](#glossary)
 
 ---
 
@@ -561,6 +562,107 @@ reintroduced.
 
 ---
 
+## Learn by watching (recordings)
+
+The source-driven wizard steps can't see inside components that ship without
+usable source, such as third-party libraries and closed bundles. Recording
+fills that gap. The user operates the attached tab, and MAZDA watches through
+CDP and learns from what the page actually did.
+
+**Pipeline:** record, then condense into episodes, then analyze (LLM), then
+review and apply. The episodes also ground catalogue generation.
+
+| Stage | Where | What happens |
+|---|---|---|
+| Record | `Runner/RecorderScriptBuilder.cs`, `Runner/Recorder/recorder-page.js`, `Runner/RecordingHost.cs` | A long-lived Playwright spec attaches to the tab and runs with `test.setTimeout(0)`. It exposes a binding and injects the page script, both into current documents (`frame.evaluate`) and future ones (`page.addInitScript`, page-scoped so it never touches other tabs). It also enables CDP `Network` on its own session and follows main-frame navigations. Each event goes to stdout as one `__MZ_REC__ {json}` line. |
+| Persist | `RecordingHost` | Lines are parsed, sanitized (`PayloadSanitizer`) and batched into `recording_events` every 1 s or 100 events. A compact copy (no bodies) goes to `IExecutionRegistry`, which feeds `GET /api/recordings/{id}/stream`. |
+| Condense | `Application/Modules/Recordings/EpisodeBuilder.cs` | Deterministic, no LLM. Events are grouped by action id into episodes: action, target (best selector plus candidates), effects (appeared / disappeared / changed / text), network, `urlBefore` and `urlAfter`, settle time. Fills are merged, repeats collapsed, URLs templated (`/items/{id}`), and the result is fitted to 60k chars. |
+| Analyze | `Llm/LlmRecordingAnalyzer.cs` + `ProposalValidator` | `AnalyzerModel` proposes elements and flow-graph additions. The server drops any selector that wasn't observed. |
+| Apply | `RecordingMerge` | A purely additive merge. New elements get `Origin = Recorded`, existing ones may get "Observed: …" appended to their logic, and flows are unioned by id. It uses `ElementChangePolicy.InvalidateOnlyIfExistingSelectorsChanged`, so the catalogue and relationship graph survive. |
+| Ground | `GenerateFunctionCatalogueHandler` → `LlmFunctionCatalogueGenerator` | Completed sessions with `UseForGrounding` add an "Observed behaviour" block to the prompt. It is authoritative for timing and effects: wait on observed effects and responses, never `waitForTimeout`. |
+
+**What is captured about structure.** A clicked target carries its
+*collection*: when it sits in a repeated set, the recorder emits a selector
+matching every item (`#list > li`), the item count, its index, the path from
+the item to the target, and an outline of the item. Every appeared element
+carries an outline of its meaningful descendants: classes, `data-*`
+attributes, roles, labels, checked/value/options, and text as `textContent`
+(with a flag when CSS `text-transform` changes how it displays). Lists that
+rebuild on every update show up as "items removed + re-added".
+`EpisodeBuilder` diffs each re-mounted item against its previous outline and
+records `itemChanges` (e.g. `article.task data-done false → true`). Items that
+did not change are marked `rerendered` and lose their outline.
+
+**Analysis is joint and follows the source-analysis rules.**
+- **Inputs and model.** `POST /api/signatures/{id}/recordings/analyze` sends
+  every completed recording to `LlmRecordingAnalyzer` in one call, on the
+  generator model.
+- **Rules.** The prompt carries `SignatureRules`: the type vocabulary, the
+  mandatory list + listitem pairs for repeating containers, read-target
+  criteria and logic notes. These are the source analyzers' rules, restated
+  for observation.
+- **`fresh`.** With `fresh`, previously learned elements are hidden from the
+  model. Applying with `replaceLearned` then replaces them rather than adding
+  overlapping variants.
+- **Validation.** `ProposalValidator` accepts observed selectors, collection
+  item + path, and outline paths under their item, or a combination of those.
+  An ungrounded selector is rewritten to its `matchesExisting` target or
+  dropped; it never survives as itself.
+
+**Intent in, understanding out.** Each recording has an optional user
+*intent* ("archive a task, not delete it"), editable at any time. The analyzer
+treats it as the stated goal but follows the episodes. For every session it
+returns a *title* and an *understanding*: a plain-language readback of what it
+saw, which calls out contradictions with the intent. The title replaces the
+timestamp label until the user renames the recording (`LabelIsAuto`). The user
+compares intent with understanding, refines the intent and re-analyzes.
+Function generation receives each recording's title, intent and understanding
+alongside its episodes, so action names follow the user's wording.
+
+**Action boundary.** An action opens a mutation window on `pointerdown`, not on
+`click`, because many libraries (react-select, MUI, AntD) open popups on
+mousedown. The window closes after 300 ms of DOM quiet, 3 s after it opened,
+when the next action starts, or on stop. Network is attributed to the last
+action boundary within 3 s; anything outside that is background traffic.
+
+**Selectors.** Candidates come in preference order: test-id, non-generated
+`#id`, Playwright `role=…[name=…]`, stable attribute, `text=`, library class,
+CSS path. Each candidate with a CSS form carries a page-time match `count`.
+"Best" means the first *semantic* candidate that is unique or unverifiable;
+a CSS path is used only as a last resort.
+
+Role selectors are emitted only when the name is one Playwright will compute.
+Names taken from text content count only for roles that allow it (button,
+link, option…), so you will never see `role=listbox[name="<its options' text>"]`.
+
+**Privacy.**
+- Sensitive inputs are masked *in the page* before anything crosses the
+  binding: password, card and OTP autocomplete fields, name/label patterns,
+  and `[data-mz-mask|data-private|data-sensitive]`.
+- Bodies and URLs are redacted again server-side, by key.
+- Headers are never stored.
+- An origin allowlist applies to both the page script and the network capture.
+  It defaults to the attached tab's origin.
+
+**Lifecycle.**
+- One active recording per user.
+- Stop writes the runner's `MAZDA_STOP_FILE`. The spec flushes page buffers and
+  disconnects. The runner kills the process only after a 10 s grace period.
+- A closed tab ends the session as Completed with a note, so the captured part
+  can still be analyzed.
+- An API restart marks orphaned sessions Failed on boot.
+- Caps are 30 min, 5,000 events and 20 MB.
+
+**Re-analysis keeps recorded elements.** Re-analyze interactive and the
+informational pass rebuild elements from source. Both preserve
+`Origin = Recorded` rows, because the source analyzers can't see them.
+
+**Signatures without source.** Upload has a "No source? Create & learn by
+watching" action that creates an empty signature. `SignatureDto.HasSourceCode`
+lets the UI hide the source-driven steps.
+
+---
+
 ## MCP server
 
 A first-class Streamable-HTTP MCP endpoint at `/api/mcp`, authenticated with the
@@ -621,6 +723,18 @@ state snapshot and the plan → Execute → live step cards driven by the SSE
 
 ### Notable design choices
 
+- **Dropdowns use `<Select>` (`shared/components/Select.tsx`), never a native
+  `<select>`.**
+  - **Why:** a native select's option list is drawn by the OS and ignores CSS,
+    so on the dark theme it pops up white.
+  - **What `<Select>` does:** it draws its own list in a portal on `<body>`,
+    which is never clipped by modals, and flips upward near the viewport
+    bottom. Keyboard behaviour and ARIA roles match a native select.
+  - **Enforcement:** `scripts/check-ui.mjs` runs first in `npm run build`, and
+    so in the web image, and fails on any `<select>`/`<option>` outside that
+    file. Run it alone with `npm run check:ui`.
+  - **Fallback:** `:root { color-scheme: dark }` keeps any other native
+    control dark.
 - **Monaco is bundled locally**, not loaded from the CDN — `monaco-editor` is an
   explicit npm dependency and Vite's `?worker` imports wire the workers. Google
   Fonts were likewise dropped from `index.html`; typography falls back through
