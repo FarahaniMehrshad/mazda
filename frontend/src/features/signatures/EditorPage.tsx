@@ -224,13 +224,20 @@ export function EditorPage() {
             </div>
 
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
-              <BtnGhost
-                icon={Icon.spark()}
-                onClick={onReanalyze}
-                disabled={reanalyze.isPending || save.isPending}
-              >
-                {reanalyze.isPending ? "Re-analyzing…" : "Re-analyze interactive"}
+              {/* Third-party components often have no usable source — let
+                  the user demonstrate the UI and MAZDA learn from watching. */}
+              <BtnGhost onClick={() => navigate(`/signatures/${signature.id}/learn`)}>
+                Learn by watching
               </BtnGhost>
+              {signature.hasSourceCode !== false && (
+                <BtnGhost
+                  icon={Icon.spark()}
+                  onClick={onReanalyze}
+                  disabled={reanalyze.isPending || save.isPending}
+                >
+                  {reanalyze.isPending ? "Re-analyzing…" : "Re-analyze interactive"}
+                </BtnGhost>
+              )}
               <BtnGhost onClick={onSave} disabled={save.isPending || reanalyze.isPending}>
                 {save.isPending ? "Saving…" : "Save changes"}
               </BtnGhost>
@@ -335,7 +342,10 @@ function ElementRow({ index, el }: { index: number; el: SignatureElementDto }) {
           </div>
         )}
       </div>
-      <Pill>{el.elementType}</Pill>
+      <div style={{ display: "flex", gap: 6 }}>
+        {el.origin === "recorded" && <Pill tone="orange">observed</Pill>}
+        <Pill>{el.elementType}</Pill>
+      </div>
     </div>
   );
 }

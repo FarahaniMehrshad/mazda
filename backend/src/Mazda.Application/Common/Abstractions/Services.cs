@@ -166,9 +166,16 @@ public record RelationshipAnalysisResult(string GraphJson, int TokensUsed);
 /// </summary>
 public interface IFunctionCatalogueGenerator
 {
+    /// <param name="recordedEpisodes">
+    /// EpisodesJson documents from "learn by watching" recordings of this
+    /// signature. Authoritative for runtime behaviour (what appears after an
+    /// action, which requests fire) — and the only grounding when the
+    /// signature has no source code.
+    /// </param>
     Task<FunctionCatalogueResult> GenerateAsync(
         Signature signature,
         IReadOnlyList<Signature>? dependencies = null,
+        IReadOnlyList<string>? recordedEpisodes = null,
         CancellationToken ct = default);
 }
 
@@ -544,10 +551,105 @@ public interface IScriptRunner
     Task<RunnerCompletion> RunAsync(Guid generationId, string script, CancellationToken ct = default);
 
     /// <summary>
+    /// Same as <see cref="RunAsync(Guid,string,CancellationToken)"/> with knobs for
+    /// long-lived scripts (the recorder): a per-line sink, opting out of the
+    /// registry / full-log buffers (both are unbounded), a graceful-stop window
+    /// on cancellation, and a replacement playwright.config.ts.
+    /// </summary>
+    Task<RunnerCompletion> RunAsync(Guid id, string script, ScriptRunOptions options, CancellationToken ct = default);
+
+    /// <summary>
     /// One-shot run that bypasses the SSE registry. For analytical scripts whose
     /// output is parsed programmatically rather than tailed live (analyze-state
     /// extraction, etc.). Captures stdout+stderr into FullLog and returns when
     /// the process exits.
     /// </summary>
     Task<RunnerCompletion> RunOnceAsync(string script, CancellationToken ct = default);
+}
+
+/// <summary>
+/// Options for <see cref="IScriptRunner.RunAsync(Guid,string,ScriptRunOptions,CancellationToken)"/>.
+/// Defaults reproduce the classic RunAsync behaviour exactly.
+/// </summary>
+/// <param name="OnLine">Called with every ANSI-stripped stdout/stderr line.</param>
+/// <param name="StreamToRegistry">Append every line to <see cref="IExecutionRegistry"/>.</param>
+/// <param name="CaptureFullLog">Buffer every line into <see cref="RunnerCompletion.FullLog"/>.</param>
+/// <param name="GracefulStopTimeout">
+/// When set, cancellation first writes the file named by the child's
+/// <c>MAZDA_STOP_FILE</c> env var and waits this long for a clean exit before
+/// killing the process tree. Null keeps the immediate kill.
+/// </param>
+/// <param name="PlaywrightConfigOverride">Replaces the default playwright.config.ts.</param>
+public sealed record ScriptRunOptions(
+    Action<string>? OnLine = null,
+    bool StreamToRegistry = true,
+    bool CaptureFullLog = true,
+    TimeSpan? GracefulStopTimeout = null,
+    string? PlaywrightConfigOverride = null);
+
+// ── "Learn by watching" ───────────────────────────────────────────────
+
+/// <summary>What the recorder host needs to attach and start capturing.</summary>
+public sealed record RecordingStartSpec(
+    Guid SessionId,
+    CdpTarget Target,
+    IReadOnlyList<string> AllowedOrigins,
+    bool CaptureBodies,
+    bool MaskAllInputs);
+
+/// <summary>
+/// Owns the long-lived recorder processes. Start returns immediately; the
+/// host streams events into the DB + <see cref="IExecutionRegistry"/> (keyed
+/// by session id) and persists the terminal session state itself.
+/// </summary>
+public interface IRecordingHost
+{
+    void Start(RecordingStartSpec spec);
+    /// <summary>Ask the recorder to flush and exit. False when the session is not running in this process.</summary>
+    bool RequestStop(Guid sessionId);
+    bool IsActive(Guid sessionId);
+    /// <summary>Request stop on every active session (API shutdown).</summary>
+    void StopAll();
+}
+
+/// <summary>An element the recording analyzer proposes adding to (or matching in) the signature.</summary>
+public sealed record ProposedElement(
+    string Selector,
+    string Category,
+    string ElementType,
+    string Description,
+    string Logic,
+    /// Selector of the existing element this is the same control as, or null when new.
+    string? MatchesExisting,
+    /// Episode indices ("i") that evidence this element.
+    IReadOnlyList<int> Evidence);
+
+public sealed record RecordingAnalysisResult(
+    IReadOnlyList<ProposedElement> Elements,
+    /// Flow graph in the LlmFlowAnalyzer schema ({ nodes, edges }).
+    string FlowsJson,
+    string Notes,
+    int TokensUsed,
+    /// Recording sessions this proposal was derived from (joint analysis).
+    IReadOnlyList<Guid>? SessionIds = null,
+    /// Analyzed without previously learned elements: applying it may replace them.
+    bool Fresh = false,
+    /// Per-session readback: the analyzer's title + what it understood.
+    IReadOnlyList<SessionUnderstanding>? Sessions = null);
+
+/// <summary>What the analyzer took one recorded session to show.</summary>
+public sealed record SessionUnderstanding(Guid SessionId, string Title, string Understanding);
+
+/// <summary>One recorded session handed to the analyzer.</summary>
+public sealed record RecordedSessionInput(Guid Id, string Label, string Intent, string EpisodesJson);
+
+/// <summary>
+/// Turns recorded episodes into proposed elements + flows. Takes every
+/// recording of a signature at once so the result is one consolidated
+/// element set, not one overlapping set per session.
+/// </summary>
+public interface IRecordingAnalyzer
+{
+    /// <param name="ignoreLearned">Hide elements previously learned from recordings (Origin = Recorded) from the model.</param>
+    Task<RecordingAnalysisResult> AnalyzeAsync(Signature signature, IReadOnlyList<RecordedSessionInput> sessions, bool ignoreLearned = false, CancellationToken ct = default);
 }

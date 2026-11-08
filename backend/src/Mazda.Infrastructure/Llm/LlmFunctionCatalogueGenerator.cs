@@ -305,9 +305,60 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
         single ACTION plan `[DoneTask(index=<from GetTasks>)]` — no
         Playwright to write at runtime, no DOM to interpret.
 
+        ── PER-ITEM ELEMENTS (list / listitem and per-item controls) ──
+        A signature describes a repeating container as a "list" element whose
+        selector matches EVERY item (e.g. `#list > li`), plus per-item elements
+        whose selector is that list selector followed by a path inside the item
+        (e.g. `#list > li h3.task-title`). Address item i in ONE of two ways:
+          • page-level, same index:  page.locator('#list > li h3.task-title').nth(i)
+            (only when that element exists exactly once in EVERY item — not for
+            elements that exist only in one mode, like an edit form), or
+          • scoped to the item:      const row = page.locator('#list > li').nth(i);
+                                     row.locator('h3.task-title')
+            Inside a scoped locator use ONLY the part after the list selector.
+            NEVER `row.locator('#list > li h3.task-title')`: a scoped locator
+            cannot match through the item itself, so that never resolves.
+        The same applies inside page.evaluate: `rowEl.querySelector('h3.task-title')`.
+        Prefer the scoped form whenever the element is conditional (edit forms,
+        per-mode buttons) or when reading several fields of one item.
+
+        ── OBSERVED BEHAVIOUR (when the input has an "Observed behaviour" block) ──
+        Recordings of a real user operating the live UI, condensed into
+        episodes: each user action with what the page did in response
+        (elements that appeared / disappeared / changed, requests fired,
+        URL changes, settle time). Treat it as AUTHORITATIVE for runtime
+        behaviour — it beats guesses from source code, and for third-party
+        components it is often the only truth available.
+          • Name actions after the TASKS seen in episode sequences (e.g. the
+            user clicked a combobox, an option list appeared, they clicked
+            an option → one action SelectEngine(engine)). Each recording
+            carries a `title`, the analyzer's `understanding` and, when
+            given, the user's `intent` — the user's own words for the task;
+            follow their vocabulary in names and descriptions. The episodes
+            remain the truth for HOW it works.
+          • After an action, wait for its OBSERVED effect instead of
+            sleeping: `await page.locator(<informational selector of what
+            appeared>).first().waitFor()`, or wait for the observed request:
+            `await page.waitForResponse(r => r.request().method() === 'POST'
+            && new URL(r.url()).pathname.startsWith('/api/items'))` (start
+            the wait BEFORE the triggering click via Promise.all). Turn
+            `{id}` path segments into a prefix / regex match. Never
+            `waitForTimeout`.
+          • If a floating listbox / menu appeared after clicking a control,
+            prefer __mzSelectOption on that control, or click the observed
+            option selector with `.filter({ hasText })`.
+          • Write STATE functions against elements that were observed to
+            change or appear (rows added, counters, toasts).
+          • Selectors still come verbatim from `elements` — the observed
+            block explains behaviour; it is not a selector source. Templated
+            request paths may come from it.
+
         ── FINAL CHECKS BEFORE YOU EMIT ──
+          • Per-item elements used inside a row locator with only their
+            in-item path (never the full list-prefixed selector)?
           • Every selector in every body appears verbatim in the input
-            signature? If not, drop that function.
+            signature (for per-item elements, the in-item part after the
+            list selector counts)? If not, drop that function.
           • Every action name reads as user-intent, not click-transcript?
             If not, rename or fold up.
           • Every state function returns something the planner could read
@@ -318,6 +369,7 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
     public async Task<FunctionCatalogueResult> GenerateAsync(
         Signature signature,
         IReadOnlyList<Signature>? dependencies = null,
+        IReadOnlyList<string>? recordedEpisodes = null,
         CancellationToken ct = default)
     {
         var opts = options.Value;
@@ -381,10 +433,19 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
               $"this; use it to understand intent and enum values):\n" +
               $"```tsx\n{signature.SourceCode}\n```";
 
+        // Recorded sessions: what the live UI actually did after each action.
+        // When there is no source code (recording-only signatures) this is
+        // the only grounding beyond the element list itself.
+        var observedBlock = recordedEpisodes is null || recordedEpisodes.Count == 0
+            ? string.Empty
+            : "\n\nObserved behaviour (recorded from real user sessions on the live UI — " +
+              "AUTHORITATIVE for runtime behaviour, timing, and what appears after each action):\n" +
+              string.Join("\n", recordedEpisodes.Select((e, i) => $"```json recording-{i + 1}\n{e}\n```"));
+
         var userMsg =
             $"Produce the function catalogue for this signature. Reuse every " +
             $"selector byte-for-byte from the `elements` list.\n\n" +
-            $"{payload}{sourceBlock}";
+            $"{payload}{sourceBlock}{observedBlock}";
 
         var completion = await chat.CompleteChatSafeAsync(
             new List<ChatMessage>

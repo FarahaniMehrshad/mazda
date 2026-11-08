@@ -4,6 +4,7 @@ using Mazda.Domain.Modules.Identity;
 using Mazda.Domain.Modules.Signatures;
 using Mazda.Domain.Modules.Generations;
 using Mazda.Domain.Modules.Mcp;
+using Mazda.Domain.Modules.Recordings;
 
 namespace Mazda.Infrastructure.Persistence.Repositories;
 
@@ -57,7 +58,10 @@ public class SignatureRepository(MazdaDbContext db) : ISignatureRepository
         return Task.CompletedTask;
     }
 
-    public async Task ReplaceElementsAsync(Signature signature, IEnumerable<SignatureElement> newElements, CancellationToken ct = default)
+    public Task ReplaceElementsAsync(Signature signature, IEnumerable<SignatureElement> newElements, CancellationToken ct = default)
+        => ReplaceElementsAsync(signature, newElements, ElementChangePolicy.InvalidateOnAnyChange, ct);
+
+    public async Task ReplaceElementsAsync(Signature signature, IEnumerable<SignatureElement> newElements, ElementChangePolicy policy, CancellationToken ct = default)
     {
         var sigId = signature.Id;
 
@@ -70,6 +74,13 @@ public class SignatureRepository(MazdaDbContext db) : ISignatureRepository
         var beforeHash = HashElements(signature.Elements);
         var afterHash = HashElements(newElementsList);
         var elementsChanged = beforeHash != afterHash;
+        if (elementsChanged && policy == ElementChangePolicy.InvalidateOnlyIfExistingSelectorsChanged)
+        {
+            // Additive merge: every selector that existing bodies / edges could
+            // reference is still there, so nothing derived from them is stale.
+            var after = newElementsList.Select(e => e.ElementSelector).ToHashSet(StringComparer.Ordinal);
+            elementsChanged = signature.Elements.Any(e => !after.Contains(e.ElementSelector));
+        }
 
         // 1. Wipe the change tracker. Every previous attempt failed because the
         //    parent's navigation snapshot kept old element references around, and
@@ -175,6 +186,64 @@ public class SignatureRepository(MazdaDbContext db) : ISignatureRepository
         using var sha = System.Security.Cryptography.SHA256.Create();
         var bytes = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(sb.ToString()));
         return Convert.ToHexString(bytes);
+    }
+}
+
+public class RecordingRepository(MazdaDbContext db) : IRecordingRepository
+{
+    public async Task AddAsync(RecordingSession session, CancellationToken ct = default)
+        => await db.RecordingSessions.AddAsync(session, ct);
+
+    public Task<RecordingSession?> FindByIdAsync(Guid id, Guid ownerId, CancellationToken ct = default)
+        => db.RecordingSessions.FirstOrDefaultAsync(r => r.Id == id && r.OwnerId == ownerId, ct);
+
+    public Task<RecordingSession?> FindByIdUnscopedAsync(Guid id, CancellationToken ct = default)
+        => db.RecordingSessions.FirstOrDefaultAsync(r => r.Id == id, ct);
+
+    public async Task<IReadOnlyList<RecordingSession>> ListBySignatureAsync(Guid signatureId, Guid ownerId, CancellationToken ct = default)
+        => await db.RecordingSessions
+            .Where(r => r.SignatureId == signatureId && r.OwnerId == ownerId)
+            .OrderByDescending(r => r.CreatedAt)
+            .ToListAsync(ct);
+
+    public Task<RecordingSession?> FindActiveForOwnerAsync(Guid ownerId, CancellationToken ct = default)
+        => db.RecordingSessions
+            .Where(r => r.OwnerId == ownerId &&
+                        (r.Status == RecordingStatus.Recording || r.Status == RecordingStatus.Stopping))
+            .OrderByDescending(r => r.CreatedAt)
+            .FirstOrDefaultAsync(ct);
+
+    public Task<int> CountBySignatureAsync(Guid signatureId, CancellationToken ct = default)
+        => db.RecordingSessions.CountAsync(r => r.SignatureId == signatureId, ct);
+
+    public async Task AddEventsAsync(IEnumerable<RecordingEvent> events, CancellationToken ct = default)
+        => await db.RecordingEvents.AddRangeAsync(events, ct);
+
+    public async Task<IReadOnlyList<RecordingEvent>> ListEventsAsync(Guid sessionId, int afterSeq, int take, CancellationToken ct = default)
+        => await db.RecordingEvents.AsNoTracking()
+            .Where(e => e.SessionId == sessionId && e.Seq > afterSeq)
+            .OrderBy(e => e.Seq)
+            .Take(take)
+            .ToListAsync(ct);
+
+    public async Task<IReadOnlyList<RecordingEvent>> ListAllEventsAsync(Guid sessionId, CancellationToken ct = default)
+        => await db.RecordingEvents.AsNoTracking()
+            .Where(e => e.SessionId == sessionId)
+            .OrderBy(e => e.Seq)
+            .ToListAsync(ct);
+
+    public async Task<IReadOnlyList<GroundingRecording>> ListGroundingEpisodesAsync(Guid signatureId, CancellationToken ct = default)
+        => await db.RecordingSessions.AsNoTracking()
+            .Where(r => r.SignatureId == signatureId && r.UseForGrounding &&
+                        r.Status == RecordingStatus.Completed && r.EpisodesJson != "")
+            .OrderByDescending(r => r.CreatedAt)
+            .Select(r => new GroundingRecording(r.Label, r.Intent, r.Understanding, r.EpisodesJson))
+            .ToListAsync(ct);
+
+    public Task RemoveAsync(RecordingSession session, CancellationToken ct = default)
+    {
+        db.RecordingSessions.Remove(session);
+        return Task.CompletedTask;
     }
 }
 

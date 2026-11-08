@@ -12,6 +12,11 @@ export interface SignatureElementDto {
   description: string;
   /** Optional structural / lifecycle / relational notes. May be empty. */
   logic?: string;
+  /**
+   * Provenance: "source" (analyzer, from uploaded code), "recorded" (learned
+   * from a "learn by watching" session) or "manual". Round-trip it on save.
+   */
+  origin?: "source" | "recorded" | "manual" | string;
 }
 
 export interface SignatureDto {
@@ -40,6 +45,8 @@ export interface SignatureDto {
    * its selectors. Empty when the signature stands alone.
    */
   dependencyIds: string[];
+  /** False for signatures created without uploaded source (learn-by-watching only). */
+  hasSourceCode?: boolean;
 }
 
 export interface SignatureDependencyDto {
@@ -311,4 +318,73 @@ export interface ExecutionEnvelopeBlob {
   steps: StepResultBlob[];
   capturedState: GatheredStateBlob;
   plan: PlanBlob;
+}
+
+// ── "Learn by watching" recordings ──────────────────────────────────
+
+export type RecordingStatus = "Recording" | "Stopping" | "Completed" | "Failed";
+
+export interface RecordingDto {
+  id: string;
+  signatureId: string;
+  /** Display name: a timestamp, then the analyzer's title — unless the user renamed it. */
+  label: string;
+  labelIsAuto: boolean;
+  /** Optional: what the user says they demonstrated (given to the analyzer as the goal). */
+  intent: string;
+  /** The analyzer's readback of what the session shows; empty until analyzed. */
+  understanding: string;
+  status: RecordingStatus;
+  startedAt: string;
+  endedAt: string | null;
+  startUrl: string;
+  allowedOrigins: string[];
+  captureBodies: boolean;
+  maskAllInputs: boolean;
+  eventCount: number;
+  actionCount: number;
+  truncated: boolean;
+  error: string;
+  hasEpisodes: boolean;
+  hasProposal: boolean;
+  appliedAt: string | null;
+  useForGrounding: boolean;
+}
+
+export interface RecordingEpisodesDto {
+  recordingId: string;
+  episodesJson: string;
+}
+
+export interface ProposedElementDto {
+  selector: string;
+  category: string;
+  elementType: string;
+  description: string;
+  logic: string;
+  matchesExisting: string | null;
+  evidence: number[];
+  /** False when it maps onto an element the signature already has (apply only enriches it). */
+  isNew: boolean;
+}
+
+export interface RecordingProposalDto {
+  recordingId: string;
+  elements: ProposedElementDto[];
+  flowsJson: string;
+  notes: string;
+  tokensUsed: number;
+  /** Every recording the proposal was derived from (joint analysis). */
+  sessionIds: string[];
+}
+
+export interface ApplyRecordingResultDto {
+  signature: SignatureDto;
+  addedElements: number;
+  enrichedElements: number;
+  addedNodes: number;
+  addedEdges: number;
+  functionsStale: boolean;
+  /** Previously learned elements replaced by a "rebuild from scratch" apply. */
+  removedElements: number;
 }

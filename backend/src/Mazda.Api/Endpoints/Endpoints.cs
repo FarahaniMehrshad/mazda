@@ -7,6 +7,7 @@ using Mazda.Application.Modules.Generations;
 using Mazda.Application.Modules.Identity;
 using Mazda.Application.Modules.Mcp;
 using Mazda.Application.Modules.Cdp;
+using Mazda.Application.Modules.Recordings;
 using Mazda.Application.Modules.Signatures;
 using Mazda.Infrastructure.Llm;
 
@@ -226,31 +227,88 @@ public static class Endpoints
         mcp.MapDelete("/{id:guid}", async (Guid id, ISender s) =>
             (await s.Send(new DeleteMcpToolCommand(id))).ToHttp());
 
+        // ── "Learn by watching" recordings ────────────────────────
+        // A recording is a long-lived recorder attached to the user's tab.
+        // Start/stop are quick; the live feed is the SSE stream below; once
+        // Completed, analyze proposes elements + flows and apply merges the
+        // accepted ones into the signature.
+        sigs.MapGet("/{id:guid}/recordings", async (Guid id, ISender s) =>
+            (await s.Send(new ListRecordingsQuery(id))).ToHttp());
+
+        sigs.MapPost("/{id:guid}/recordings", async (Guid id, [FromBody] StartRecordingBody body, ISender s) =>
+            (await s.Send(new StartRecordingCommand(
+                id, body.Label, body.Intent, body.AllowedOrigins, body.CaptureBodies ?? true, body.MaskAllInputs ?? false))).ToHttp());
+
+        // Analyze several (default: all completed) recordings of the signature
+        // together → one consolidated proposal. fresh = ignore elements learned
+        // from earlier recordings, so apply can replace them.
+        sigs.MapPost("/{id:guid}/recordings/analyze", async (Guid id, [FromBody] AnalyzeRecordingsBody? body, ISender s) =>
+            (await s.Send(new AnalyzeSignatureRecordingsCommand(id, body?.RecordingIds, body?.Fresh ?? false))).ToHttp());
+
+        var recs = app.MapGroup("/api/recordings").RequireAuthorization().WithTags("Recordings");
+
+        recs.MapGet("/{rid:guid}", async (Guid rid, ISender s) =>
+            (await s.Send(new GetRecordingQuery(rid))).ToHttp());
+
+        recs.MapPost("/{rid:guid}/stop", async (Guid rid, ISender s) =>
+            (await s.Send(new StopRecordingCommand(rid))).ToHttp());
+
+        recs.MapGet("/{rid:guid}/events", async (Guid rid, [FromQuery] int? after, [FromQuery] int? take, ISender s) =>
+            (await s.Send(new ListRecordingEventsQuery(rid, after ?? 0, take ?? 200))).ToHttp());
+
+        recs.MapGet("/{rid:guid}/episodes", async (Guid rid, ISender s) =>
+            (await s.Send(new GetRecordingEpisodesQuery(rid))).ToHttp());
+
+        recs.MapPost("/{rid:guid}/analyze", async (Guid rid, ISender s) =>
+            (await s.Send(new AnalyzeRecordingCommand(rid))).ToHttp());
+
+        recs.MapPost("/{rid:guid}/apply", async (Guid rid, [FromBody] ApplyRecordingBody body, ISender s) =>
+            (await s.Send(new ApplyRecordingCommand(
+                rid, body.AcceptedSelectors ?? Array.Empty<string>(), body.EnrichExisting ?? true, body.ApplyFlows ?? true,
+                body.ReplaceLearned ?? false))).ToHttp());
+
+        recs.MapPatch("/{rid:guid}", async (Guid rid, [FromBody] UpdateRecordingBody body, ISender s) =>
+            (await s.Send(new UpdateRecordingCommand(rid, body.Label, body.UseForGrounding, body.Intent))).ToHttp());
+
+        recs.MapDelete("/{rid:guid}", async (Guid rid, ISender s) =>
+            (await s.Send(new DeleteRecordingCommand(rid))).ToHttp());
+
         // SSE log stream. Anonymous — the generation id is an unguessable GUID and the
         // stream is read-only. EventSource cannot send Authorization headers anyway.
         app.MapGet("/api/generations/{id:guid}/execution/stream",
-            async (Guid id, IExecutionRegistry registry, HttpContext ctx, CancellationToken ct) =>
-            {
-                ctx.Response.Headers.ContentType = "text/event-stream";
-                ctx.Response.Headers.CacheControl = "no-cache";
-                ctx.Response.Headers["X-Accel-Buffering"] = "no";
-                await ctx.Response.Body.FlushAsync(ct);
+            (Guid id, IExecutionRegistry registry, HttpContext ctx, CancellationToken ct) =>
+                StreamRegistryAsync(id, registry, ctx, ct))
+            .WithTags("Generations");
 
-                await foreach (var line in registry.Subscribe(id, ct))
-                {
-                    // SSE: each event is "data: <payload>\n\n". Encode JSON so newlines
-                    // and ANSI bytes inside the line don't break the framing.
-                    var payload = System.Text.Json.JsonSerializer.Serialize(line);
-                    var bytes = Encoding.UTF8.GetBytes($"data: {payload}\n\n");
-                    await ctx.Response.Body.WriteAsync(bytes, ct);
-                    await ctx.Response.Body.FlushAsync(ct);
-                }
+        // Live recorder feed — same transport, keyed by recording id. Lines are
+        // `__MZ_REC__ {json}` compact events (bodies stripped).
+        app.MapGet("/api/recordings/{rid:guid}/stream",
+            (Guid rid, IExecutionRegistry registry, HttpContext ctx, CancellationToken ct) =>
+                StreamRegistryAsync(rid, registry, ctx, ct))
+            .WithTags("Recordings");
+    }
 
-                // Final event lets the client close cleanly.
-                var endBytes = Encoding.UTF8.GetBytes("event: end\ndata: \"\"\n\n");
-                await ctx.Response.Body.WriteAsync(endBytes, ct);
-                await ctx.Response.Body.FlushAsync(ct);
-            }).WithTags("Generations");
+    private static async Task StreamRegistryAsync(Guid id, IExecutionRegistry registry, HttpContext ctx, CancellationToken ct)
+    {
+        ctx.Response.Headers.ContentType = "text/event-stream";
+        ctx.Response.Headers.CacheControl = "no-cache";
+        ctx.Response.Headers["X-Accel-Buffering"] = "no";
+        await ctx.Response.Body.FlushAsync(ct);
+
+        await foreach (var line in registry.Subscribe(id, ct))
+        {
+            // SSE: each event is "data: <payload>\n\n". Encode JSON so newlines
+            // and ANSI bytes inside the line don't break the framing.
+            var payload = System.Text.Json.JsonSerializer.Serialize(line);
+            var bytes = Encoding.UTF8.GetBytes($"data: {payload}\n\n");
+            await ctx.Response.Body.WriteAsync(bytes, ct);
+            await ctx.Response.Body.FlushAsync(ct);
+        }
+
+        // Final event lets the client close cleanly.
+        var endBytes = Encoding.UTF8.GetBytes("event: end\ndata: \"\"\n\n");
+        await ctx.Response.Body.WriteAsync(endBytes, ct);
+        await ctx.Response.Body.FlushAsync(ct);
     }
 
     // Body records for endpoints whose model-binder needs a shaped payload.
@@ -265,6 +323,10 @@ public static class Endpoints
     public record TestFunctionBody(string? ArgsJson);
     public record AttachTabBody(string TargetId);
     public record CdpPortBody(int Port);
+    public record StartRecordingBody(string? Label, string? Intent, IReadOnlyList<string>? AllowedOrigins, bool? CaptureBodies, bool? MaskAllInputs);
+    public record ApplyRecordingBody(IReadOnlyList<string>? AcceptedSelectors, bool? EnrichExisting, bool? ApplyFlows, bool? ReplaceLearned);
+    public record AnalyzeRecordingsBody(IReadOnlyList<Guid>? RecordingIds, bool? Fresh);
+    public record UpdateRecordingBody(string? Label, bool? UseForGrounding, string? Intent);
     public record FixFunctionBody(
         string? UserHint, string? ErrorKind, string? ErrorMessage, string? ErrorStack,
         string? ArgsJson, string? PageUrl, string? PageTitle, string? LogTail);
