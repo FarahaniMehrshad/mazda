@@ -52,6 +52,10 @@ public class LlmRecordingAnalyzer(IOptions<LlmOptions> options) : IRecordingAnal
                                         elements it matched then (1 = unique,
                                         >1 = it matches several, e.g. one per row)
                             role, name, tag, text (DOM text), data (data-* attributes),
+                            attrs (identifying attributes, e.g. icon="close" vs
+                                   icon="pencil" on otherwise identical icon
+                                   components — prefer [attr="…"] selectors over
+                                   :nth-of-type when they tell siblings apart),
                             textTransform (CSS display transform of the text)
                             revealedBy  { on: "hover", host, hostCollection?, inner?,
                                         via } — the target is only visible while
@@ -108,6 +112,18 @@ public class LlmRecordingAnalyzer(IOptions<LlmOptions> options) : IRecordingAnal
           element ONCE (merge what every recording taught about it); `evidence` lists
           "<recording index>:<episode i>" references. Expect a compact set: one
           entry per distinct control or read target, plus the list/listitem pairs.
+
+        ── WHAT WAS ACTUALLY DONE ──
+          • Say what an interactive element DOES (removes, opens, saves…) only if
+            an episode's `target` IS that element — cite those episodes. A control
+            seen only in an outline or in effects was never used: describe what it
+            is (an icon, its attrs), not what it does.
+          • Sibling controls in one item (an edit pencil and a close ×) are
+            different elements. Tell them apart by `attrs`, classes or position as
+            recorded on the clicked target — never by which one has the nicer class.
+          • `matchesExisting` ONLY when the existing selector is the very control
+            the episode acted on, never a sibling in the same item. If unsure,
+            leave it null — a new element is cheap, a wrong merge is not.
 
         ── FLOWS ──
           One chain of states/transitions per demonstrated task (add, edit, delete,
@@ -245,7 +261,8 @@ public class LlmRecordingAnalyzer(IOptions<LlmOptions> options) : IRecordingAnal
                 Str(e["description"]) ?? string.Empty,
                 Str(e["logic"]) ?? string.Empty,
                 string.IsNullOrWhiteSpace(Str(e["matchesExisting"])) ? null : Str(e["matchesExisting"])!.Trim(),
-                ParseEvidence(e["evidence"])));
+                ParseEvidence(e["evidence"]),
+                ParseEvidenceRefs(e["evidence"])));
         }
 
         var flows = root["flows"] as JsonObject ?? new JsonObject { ["nodes"] = new JsonArray(), ["edges"] = new JsonArray() };
@@ -282,6 +299,24 @@ public class LlmRecordingAnalyzer(IOptions<LlmOptions> options) : IRecordingAnal
             }
         }
         return list.Where(x => x >= 0).Distinct().ToList();
+    }
+
+    /// <summary>"r:i" refs as given; a bare episode number means recording 0.</summary>
+    private static List<string> ParseEvidenceRefs(JsonNode? node)
+    {
+        var list = new List<string>();
+        foreach (var n in node as JsonArray ?? new JsonArray())
+        {
+            if (n is not JsonValue v) continue;
+            if (v.TryGetValue<int>(out var i)) list.Add($"0:{i}");
+            else if (v.TryGetValue<string>(out var s))
+            {
+                var parts = s.Split(':');
+                if (parts.Length == 2 && int.TryParse(parts[0], out var r) && int.TryParse(parts[1], out var j)) list.Add($"{r}:{j}");
+                else if (int.TryParse(s, out var k)) list.Add($"0:{k}");
+            }
+        }
+        return list.Distinct().ToList();
     }
 
     private static JsonNode? TryParse(string json)

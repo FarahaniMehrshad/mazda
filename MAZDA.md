@@ -614,6 +614,13 @@ did not change are marked `rerendered` and lose their outline.
   item + path, and outline paths under their item, or a combination of those.
   A bare row-relative path (`button`, `span.title`) only counts after a known
   anchor, never on its own.
+- **Acted-on check.** Each element's evidence (`"recording:episode"`) is
+  resolved to the targets the user actually clicked, typed into or dragged. An
+  interactive element whose selector doesn't fit any of them is flagged
+  `untried` ("never used in a recording", unchecked by default; its logic is
+  prefixed "behaviour inferred"). A `matchesExisting` pointing at a *learned*
+  element the evidence never touched is dropped, so a sibling control (the
+  pencil next to the ×) can't absorb what was learned about the one clicked.
   An ungrounded selector is rewritten to its `matchesExisting` target or
   dropped; it never survives as itself.
 
@@ -626,6 +633,15 @@ timestamp label until the user renames the recording (`LabelIsAuto`). The user
 compares intent with understanding, refines the intent and re-analyzes.
 Function generation receives each recording's title, intent and understanding
 alongside its episodes, so action names follow the user's wording.
+
+**Identifying attributes.** Besides test ids and `data-*`, the recorder keeps
+short semantic attributes (`icon`, `name`, `title`, `aria-label`,
+`formcontrolname`, … and any token-like input on a custom element) on targets,
+ancestors and outline items, and uses one in path steps:
+`morva-icons.icon-12[icon="close"]` instead of `:nth-of-type(2)`. Framework
+bookkeeping (`_ngcontent-*`, `ng-reflect-*`) is ignored. A click on an icon's
+`<svg>` resolves to the icon component around it (the first custom element or
+element with a key attribute), unless a real control wraps it closely.
 
 **Action boundary.** An action opens a mutation window on `pointerdown`, not on
 `click`, because many libraries (react-select, MUI, AntD) open popups on

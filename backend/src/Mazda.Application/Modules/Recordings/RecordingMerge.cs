@@ -34,6 +34,9 @@ public static class RecordingMerge
     public const int MaxDescription = 1000;
     public const int MaxLogic = 8000;
 
+    /// <summary>Prefix on elements no recording acted on — their behaviour is the analyzer's inference.</summary>
+    public const string UntriedNote = "Not exercised in recordings — behaviour inferred. ";
+
     private static string Clip(string s, int max) => s.Length <= max ? s : s[..(max - 1)] + "…";
 
     public static MergeResult Merge(
@@ -98,7 +101,7 @@ public static class RecordingMerge
                 Clip(string.IsNullOrWhiteSpace(p.ElementType) ? "element" : p.ElementType.Trim(), MaxType),
                 Clip(p.Description ?? string.Empty, MaxDescription),
                 order++,
-                Clip(p.Logic ?? string.Empty, MaxLogic),
+                Clip(p.Untried ? UntriedNote + p.Logic : p.Logic ?? string.Empty, MaxLogic),
                 ElementOrigin.Recorded));
         }
 

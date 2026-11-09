@@ -51,7 +51,9 @@ public record ProposedElementDto(
     string? MatchesExisting,
     IReadOnlyList<int> Evidence,
     /// False when the selector (or MatchesExisting) is already in the signature — applying only enriches it.
-    bool IsNew);
+    bool IsNew,
+    /// Interactive, but never acted on in the evidence: its behaviour is inferred.
+    bool Untried = false);
 
 public record RecordingProposalDto(
     /// Session the proposal is stored on (the newest analyzed one); apply through it.
@@ -429,7 +431,10 @@ public class AnalyzeSignatureRecordingsHandler(
             return Result.Failure<RecordingProposalDto>(Error.External($"Recording analyzer failed: {ExceptionMessage.Describe(ex)}"));
         }
 
-        var validated = ProposalValidator.Validate(result, picked.Select(r => r.EpisodesJson), known)
+        var recordedKnown = sig.Elements
+            .Where(e => e.Origin == Mazda.Domain.Modules.Signatures.ElementOrigin.Recorded)
+            .Select(e => e.ElementSelector).ToHashSet(StringComparer.Ordinal);
+        var validated = ProposalValidator.Validate(result, picked.Select(r => r.EpisodesJson), known, recordedKnown)
             with { SessionIds = picked.Select(r => r.Id).ToList(), Fresh = cmd.Fresh };
         if (skipped > 0)
             validated = validated with
@@ -472,14 +477,17 @@ public static class ProposalValidator
     /// apply can't later turn an invented selector into a new element.
     /// </summary>
     public static RecordingAnalysisResult Validate(
-        RecordingAnalysisResult result, IEnumerable<string> episodesJsons, IEnumerable<string> existingSelectors)
+        RecordingAnalysisResult result, IEnumerable<string> episodesJsons, IEnumerable<string> existingSelectors,
+        IReadOnlySet<string>? recordedExisting = null)
     {
+        var docs = episodesJsons.ToList();
         var existing = existingSelectors.ToHashSet(StringComparer.Ordinal);
         var observed = new HashSet<string>(StringComparer.Ordinal);
         var relative = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var doc in episodesJsons) Collect(doc, observed, relative);
+        foreach (var doc in docs) Collect(doc, observed, relative);
         var known = new HashSet<string>(observed, StringComparer.Ordinal);
         known.UnionWith(existing);
+        var episodes = IndexEpisodes(docs);
 
         var elements = new List<ProposedElement>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -487,16 +495,186 @@ public static class ProposalValidator
         {
             if (string.IsNullOrWhiteSpace(e.Selector)) continue;
             var match = e.MatchesExisting is { } m && existing.Contains(m) ? m : null;
+            var targets = EvidenceTargets(e, episodes);
+            var grounded = IsGrounded(e.Selector, known, relative);
+
+            // A learned element can only absorb this proposal if the user
+            // actually acted on IT in the evidence. Otherwise the model is
+            // pairing sibling controls ("close icon = the pencil element we
+            // learned earlier") and the merge would keep the wrong selector.
+            if (match is not null && grounded && recordedExisting is not null && recordedExisting.Contains(match)
+                && match != e.Selector && !Exercised(match, targets))
+                match = null;
+
             ProposedElement kept;
-            if (IsGrounded(e.Selector, known, relative)) kept = e with { MatchesExisting = match };
+            if (grounded) kept = e with { MatchesExisting = match };
             else if (match is not null) kept = e with { Selector = match, MatchesExisting = match };
             else continue;
+
+            var interactive = string.Equals(kept.Category, "interactive", StringComparison.OrdinalIgnoreCase);
+            kept = kept with { Untried = interactive && !Exercised(kept.Selector, targets) };
             if (seen.Add(kept.Selector)) elements.Add(kept);
         }
 
         var flowSelectors = existing.Concat(elements.Select(e => e.Selector)).ToHashSet(StringComparer.Ordinal);
         var (flows, _, _) = RecordingMerge.MergeFlows(null, result.FlowsJson ?? "{}", flowSelectors);
         return result with { Elements = elements, FlowsJson = flows };
+    }
+
+    // ── What was acted on ─────────────────────────────────────────────
+
+    /// <summary>(recording index, episode i) → episode object.</summary>
+    private static Dictionary<(int, int), JsonObject> IndexEpisodes(IReadOnlyList<string> docs)
+    {
+        var map = new Dictionary<(int, int), JsonObject>();
+        for (var r = 0; r < docs.Count; r++)
+        {
+            JsonNode? root;
+            try { root = JsonNode.Parse(docs[r]); } catch (JsonException) { continue; }
+            foreach (var ep in (root?["episodes"] as JsonArray ?? new JsonArray()).OfType<JsonObject>())
+                if (EpisodeBuilder.Int(ep["i"]) is { } i) map[(r, i)] = ep;
+        }
+        return map;
+    }
+
+    /// <summary>Targets (and drag destinations) of the element's evidence episodes.</summary>
+    private static List<JsonObject> EvidenceTargets(ProposedElement e, Dictionary<(int, int), JsonObject> episodes)
+    {
+        var eps = new List<JsonObject>();
+        if (e.EvidenceRefs is { Count: > 0 } refs)
+        {
+            foreach (var r in refs)
+            {
+                var parts = r.Split(':');
+                if (parts.Length == 2 && int.TryParse(parts[0], out var ri) && int.TryParse(parts[1], out var ei)
+                    && episodes.TryGetValue((ri, ei), out var ep)) eps.Add(ep);
+            }
+        }
+        else
+        {
+            // Legacy proposals: bare episode numbers, ambiguous across recordings.
+            foreach (var i in e.Evidence)
+                eps.AddRange(episodes.Where(kv => kv.Key.Item2 == i).Select(kv => kv.Value));
+        }
+        var targets = new List<JsonObject>();
+        foreach (var ep in eps)
+        {
+            if (EpisodeBuilder.Str(ep["action"]) is "hover" or "unhover" or "scroll") continue;   // not acting on a control
+            if (ep["target"] is JsonObject t) targets.Add(t);
+            if (ep["dest"] is JsonObject d) targets.Add(d);
+        }
+        return targets;
+    }
+
+    /// <summary>
+    /// Was <paramref name="selector"/> the thing acted on (or a container of
+    /// it) in one of these targets? Exact match against the target's
+    /// selectors, else its LAST compound must fit a compound of the target's
+    /// own paths or ancestors: every tag / id / class / attribute / pseudo it
+    /// names must be present there. `…morva-icons.applied-column-icon` does
+    /// not fit a click on `morva-icons.cursor-pointer.icon-12[icon="close"]`.
+    /// </summary>
+    public static bool Exercised(string selector, IReadOnlyList<JsonObject> targets)
+    {
+        if (targets.Count == 0) return false;
+        var sel = selector.Trim();
+        var bounds = TokenBounds(sel);
+        var leaf = bounds.Count == 0 ? null : Compound.Parse(sel[bounds[^1].Start..bounds[^1].End]);
+        var engineSel = sel.StartsWith("role=", StringComparison.Ordinal) || sel.StartsWith("text=", StringComparison.Ordinal);
+        foreach (var t in targets)
+        {
+            var paths = new List<string>();
+            if (EpisodeBuilder.Str(t["best"]) is { } b) paths.Add(b);
+            foreach (var c in (t["candidates"] as JsonArray ?? new JsonArray()).OfType<JsonObject>())
+                if (EpisodeBuilder.Str(c["selector"]) is { } cs) paths.Add(cs);
+            if (t["collection"] is JsonObject col && EpisodeBuilder.Str(col["item"]) is { } item)
+            {
+                paths.Add(item);
+                if (EpisodeBuilder.Str(col["inner"]) is { } inner) paths.Add($"{item} {inner}");
+            }
+            if (paths.Contains(sel, StringComparer.Ordinal)) return true;
+            if (leaf is null || engineSel) continue;
+
+            var compounds = new List<Compound>();
+            foreach (var p in paths)
+            {
+                if (p.StartsWith("role=", StringComparison.Ordinal) || p.StartsWith("text=", StringComparison.Ordinal)) continue;
+                foreach (var (s0, e0) in TokenBounds(p)) compounds.Add(Compound.Parse(p[s0..e0]));
+            }
+            compounds.Add(Compound.FromDescriptor(t));
+            foreach (var a in (t["ancestors"] as JsonArray ?? new JsonArray()).OfType<JsonObject>())
+                compounds.Add(Compound.FromDescriptor(a));
+            if (compounds.Any(c => leaf.FitsIn(c))) return true;
+        }
+        return false;
+    }
+
+    /// <summary>One compound selector (`tag#id.a.b[k="v"]:nth-of-type(2)`) as sets.</summary>
+    private sealed class Compound
+    {
+        public string? Tag, Id;
+        public readonly HashSet<string> Classes = new(StringComparer.Ordinal);
+        public readonly HashSet<string> Attrs = new(StringComparer.Ordinal);    // "k=v" or "k"
+        public readonly HashSet<string> Pseudos = new(StringComparer.Ordinal);
+
+        private static readonly System.Text.RegularExpressions.Regex Part = new(
+            @"\G(?:[a-zA-Z][\w-]*|\*|#[\w-]+|\.[\w-]+|\[[^\]]+\]|::?[\w-]+(?:\([^)]*\))?)",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        public static Compound Parse(string text)
+        {
+            var c = new Compound();
+            var s = text.Trim().TrimStart('>', '+', '~').Trim();
+            var pos = 0;
+            while (pos < s.Length)
+            {
+                var m = Part.Match(s, pos);
+                if (!m.Success || m.Length == 0) { pos++; continue; }
+                var v = m.Value;
+                if (v[0] == '#') c.Id = v[1..];
+                else if (v[0] == '.') c.Classes.Add(v[1..]);
+                else if (v[0] == '[') c.Attrs.Add(NormAttr(v[1..^1]));
+                else if (v[0] == ':') c.Pseudos.Add(v);
+                else if (v != "*") c.Tag = v.ToLowerInvariant();
+                pos += v.Length;
+            }
+            return c;
+        }
+
+        private static string NormAttr(string a)
+        {
+            var eq = a.IndexOf('=');
+            return eq < 0 ? a.Trim() : a[..eq].Trim() + "=" + a[(eq + 1)..].Trim().Trim('"', '\'');
+        }
+
+        /// <summary>From a recorder descriptor (target or ancestor): tag, classes, attrs.</summary>
+        public static Compound FromDescriptor(JsonObject d)
+        {
+            var c = new Compound { Tag = EpisodeBuilder.Str(d["tag"])?.ToLowerInvariant() };
+            foreach (var cl in (d["classes"] as JsonArray ?? new JsonArray()))
+                if (EpisodeBuilder.Str(cl) is { } x) c.Classes.Add(x);
+            if (d["attrs"] is JsonObject at)
+                foreach (var (k, v) in at)
+                {
+                    if (k == "id" && EpisodeBuilder.Str(v) is { } id) c.Id = id;
+                    else if (EpisodeBuilder.Str(v) is { } val) c.Attrs.Add($"{k}={val}");
+                }
+            return c;
+        }
+
+        public bool FitsIn(Compound t)
+        {
+            // An empty compound (bare combinator) fits nothing.
+            if (Tag is null && Id is null && Classes.Count == 0 && Attrs.Count == 0) return false;
+            if (Tag is not null && Tag != t.Tag) return false;
+            if (Id is not null && Id != t.Id) return false;
+            if (!Classes.IsSubsetOf(t.Classes)) return false;
+            if (!Pseudos.IsSubsetOf(t.Pseudos)) return false;
+            foreach (var a in Attrs)
+                if (!t.Attrs.Contains(a) && !(a.IndexOf('=') < 0 && t.Attrs.Any(x => x.StartsWith(a + "=", StringComparison.Ordinal))))
+                    return false;
+            return true;
+        }
     }
 
     /// <summary>
@@ -565,7 +743,8 @@ public static class ProposalValidator
             recordingId,
             p.Elements.Select(e => new ProposedElementDto(
                 e.Selector, e.Category, e.ElementType, e.Description, e.Logic, e.MatchesExisting, e.Evidence,
-                IsNew: !existing.Contains(e.Selector) && (e.MatchesExisting is null || !existing.Contains(e.MatchesExisting))))
+                IsNew: !existing.Contains(e.Selector) && (e.MatchesExisting is null || !existing.Contains(e.MatchesExisting)),
+                Untried: e.Untried))
              .ToList(),
             p.FlowsJson, p.Notes, p.TokensUsed, p.SessionIds ?? new[] { recordingId });
     }

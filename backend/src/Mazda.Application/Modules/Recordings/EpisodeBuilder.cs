@@ -437,6 +437,7 @@ public static class EpisodeBuilder
         if (Int(t["childCount"]) is { } cc) o["childCount"] = cc;
         CopyIf(t, o, "textTransform");
         CopyIf(t, o, "data");
+        CopyIf(t, o, "attrs");   // identifying attributes: icon="close", formcontrolname…
         CopyIf(t, o, "collection");
         CopyIf(t, o, "outline");
         CopyIf(t, o, "visible");

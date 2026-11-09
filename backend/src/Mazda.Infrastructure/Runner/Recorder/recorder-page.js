@@ -310,15 +310,54 @@
     return out;
   }
 
+  // Attributes that say WHAT an element is — `icon="close"` vs
+  // `icon="pencil"` on two otherwise identical icon components,
+  // `formcontrolname="title"`. Framework bookkeeping (_ngcontent-*,
+  // ng-reflect-*), state and presentation attributes are noise.
+  var KEY_ATTRS = ['icon', 'name', 'type', 'title', 'aria-label', 'placeholder', 'formcontrolname', 'for', 'alt'];
+  var NOISE_ATTR = /^(class|style|id|tabindex|role|href|src|srcset|width|height|viewbox|xmlns(:.*)?|fill|stroke|d|draggable|contenteditable|autocomplete|spellcheck|disabled|checked|selected|readonly|hidden|open|value|_ngcontent-.*|_nghost-.*|ng-.*|on.*|data-.*|aria-(?!label$).*|cdk.*|mat.*|tw-.*|v-.*|x-.*)$/i;
+
+  function keyAttrs(el) {
+    if (!el || !el.attributes) return null;
+    var custom = el.tagName.indexOf('-') > 0, out = null, n = 0;
+    for (var i = 0; i < el.attributes.length && n < 4; i++) {
+      var a = el.attributes[i], name = a.name.toLowerCase(), v = a.value;
+      if (!v || v.length > 40 || NOISE_ATTR.test(name)) continue;
+      if (KEY_ATTRS.indexOf(name) < 0) {
+        // Unknown attribute: only on custom elements (component inputs), and
+        // only token-like, non-numeric, non-generated values.
+        if (!custom || /\s/.test(v) || /^\d+$/.test(v)) continue;
+      }
+      if (name === 'type' && el.tagName !== 'INPUT') continue;
+      if (v.split(/[-_\s]+/).some(looksGenerated)) continue;
+      (out = out || {})[name] = v;
+      n++;
+    }
+    return out;
+  }
+
+  /** The attribute used in path steps: the first token-like key attribute. */
+  function stepAttr(el) {
+    var ka = keyAttrs(el);
+    if (!ka) return '';
+    for (var k in ka) {
+      if (k === 'type' || /\s/.test(ka[k])) continue;
+      return attrSel(k, ka[k]);
+    }
+    return '';
+  }
+
   function clsSel(el) {
     return stableClasses(el).map(function (c) { return '.' + cssEscape(c); }).join('');
   }
 
   // One step of a relative path: tag + stable classes (+ type for inputs).
-  function stepOf(el) {
+  function stepOf(el, noAttr) {
     var t = el.tagName.toLowerCase();
     var s = t + clsSel(el);
     if (t === 'input') s += attrSel('type', (el.getAttribute('type') || 'text').toLowerCase());
+    // `morva-icons.icon-12[icon="close"]` rather than `:nth-of-type(2)`.
+    if (!noAttr) s += stepAttr(el);
     return s;
   }
 
@@ -393,7 +432,8 @@
       if ((n >= 2 || listy) && !controlSiblings && cur.tagName !== 'OPTION') {
         var anchor = anchorSelector(p, 0);
         if (anchor) {
-          var item = anchor + ' > ' + stepOf(cur);
+          // No key attribute here: the item selector must match EVERY item.
+          var item = anchor + ' > ' + stepOf(cur, true);
           var out = { item: item, count: countSel(item, cur), index: idx };
           if (cur !== el) { var rel = relativePath(cur, el); if (rel) out.inner = rel; }
           return { info: out, node: cur };
@@ -423,10 +463,12 @@
         var data = dataAttrs(n);
         var role = (n.getAttribute('role') || '').trim();
         var cls = stableClasses(n);
-        if (!data && !role && !cls.length && !MEANINGFUL_TAG.test(n.tagName)) continue;
+        var nka = keyAttrs(n);
+        if (!data && !role && !cls.length && !nka && !MEANINGFUL_TAG.test(n.tagName)) continue;
         var item = { sel: relativePath(root, n), tag: n.tagName.toLowerCase() };
         var r = roleOf(n); if (r) item.role = r;
         if (data) item.data = data;
+        if (nka) item.attrs = nka;
         var t = n.tagName;
         if (t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA') {
           var nm = accName(n); if (nm) item.name = nm;
@@ -519,13 +561,8 @@
       var roleSel = 'role=' + d.role + '[name="' + d.name.replace(/"/g, '\\"') + '"]';
       if (!seen[roleSel]) { seen[roleSel] = 1; out.push({ kind: 'role', selector: roleSel, count: countRole(el, d.role, d.name) }); }
     }
-    var attrs = ['name', 'aria-label', 'placeholder', 'title', 'type'];
-    for (var j = 0; j < attrs.length; j++) {
-      var a = el.getAttribute(attrs[j]);
-      if (!a || a.length > 80) continue;
-      if (attrs[j] === 'type' && tag !== 'input') continue;
-      add('attr', tag + attrSel(attrs[j], a), true);
-    }
+    var ka = keyAttrs(el);
+    if (ka) for (var an in ka) add('attr', tag + attrSel(an, ka[an]), true);
     if (d.text && d.text.length <= 40 && d.text.indexOf('…') < 0 && !hidesText(el))
     {
       var textSel = 'text="' + d.text.replace(/"/g, '\\"') + '"';
@@ -566,6 +603,7 @@
       var a = { tag: cur.tagName.toLowerCase() };
       var r = roleOf(cur); if (r) a.role = r;
       var cls = stableClasses(cur); if (cls.length) a.classes = cls;
+      var aka = keyAttrs(cur); if (aka) a.attrs = aka;
       for (var k = 0; k < TESTID_ATTRS.length; k++) {
         var v = cur.getAttribute(TESTID_ATTRS[k]);
         if (v) { a.testid = v; break; }
@@ -595,6 +633,7 @@
       attrs[k] = v.length > 80 ? v.slice(0, 80) : v;
     });
     TESTID_ATTRS.forEach(function (k) { var v = el.getAttribute(k); if (v) attrs[k] = v; });
+    var dka = keyAttrs(el); if (dka) for (var dk in dka) attrs[dk] = dka[dk];
     if (Object.keys(attrs).length) d.attrs = attrs;
     var data = dataAttrs(el); if (data) d.data = data;
     d.candidates = candidates(el, { role: d.role, name: d.name, text: d.text, nameFromContent: fromContent });
@@ -656,18 +695,50 @@
 
   var INTERACTIVE_SEL = 'button,a[href],input,select,textarea,summary,label,option,[role],[onclick],[tabindex],[contenteditable=""],[contenteditable="true"]';
 
+  var SVG_INNER = /^(svg|path|use|g|circle|rect|line|polyline|polygon|ellipse|text|tspan|defs|symbol|image)$/i;
+  var CONTROL_SEL = 'button,a[href],input,select,textarea,[role=button],[role=link],[role=menuitem],[role=option],[role=tab],[role=checkbox],[role=switch],[role=radio]';
+
+  // A click on an icon lands on its <svg>/<path>/<img>. Frameworks bind the
+  // handler on the icon COMPONENT around it (<morva-icons icon="close">,
+  // <app-icon name="trash">) without role or tabindex, so nothing on the
+  // path looks interactive. The icon host is the first custom element, or
+  // element with a key attribute, above the graphic — unless a real control
+  // wraps it closely (<button><mat-icon><svg>), which then wins.
+  function iconHostOf(path) {
+    var i0 = -1;
+    for (var i = 0; i < path.length; i++) if (isElement(path[i])) { i0 = i; break; }
+    if (i0 < 0) return null;
+    var leaf = path[i0];
+    if (!(SVG_INNER.test(leaf.tagName) || /^(IMG|I)$/.test(leaf.tagName) || !clean(leaf.textContent))) return null;
+    for (var k = i0; k < path.length && k <= i0 + 4; k++) {
+      var n = path[k];
+      if (!isElement(n) || n === document.body) break;
+      if (SVG_INNER.test(n.tagName)) continue;
+      if (n.tagName.indexOf('-') > 0 || keyAttrs(n)) {
+        for (var u = k + 1; u < path.length && u <= k + 2; u++) {
+          try { if (isElement(path[u]) && path[u].matches(CONTROL_SEL)) return path[u]; } catch (_) { }
+        }
+        return n;
+      }
+    }
+    return null;
+  }
+
   function pickTarget(e) {
     var path = e.composedPath ? e.composedPath() : [e.target];
+    var iconHost = iconHostOf(path);
     for (var i = 0; i < path.length && i < 8; i++) {
       var n = path[i];
       if (!isElement(n)) continue;
+      if (n === iconHost) return n;
       try { if (n.matches(INTERACTIVE_SEL)) return n; } catch (_) { }
     }
+    if (iconHost) return iconHost;
     // Nothing interactive on the path: only accept a specific element, not
     // a click on page background (body / main / a section wrapper).
     for (var j = 0; j < path.length; j++) {
       var el = path[j];
-      if (!isElement(el)) continue;
+      if (!isElement(el) || SVG_INNER.test(el.tagName)) continue;   // never an SVG fragment
       if (/^(HTML|BODY|MAIN|SECTION|ARTICLE|HEADER|FOOTER|FORM)$/.test(el.tagName) && !el.id && !stableClasses(el).length) return null;
       return el;
     }

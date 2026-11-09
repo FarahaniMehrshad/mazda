@@ -805,7 +805,10 @@ function ProposalReview({
   onApplied: (msg: string) => void;
 }) {
   const apply = useApplyRecording(sigId);
-  const [accepted, setAccepted] = useState<Set<string>>(() => new Set(proposal.elements.map((e) => e.selector)));
+  // Controls no recording actually used start unchecked: their behaviour is a guess.
+  const [accepted, setAccepted] = useState<Set<string>>(
+    () => new Set(proposal.elements.filter((e) => !e.untried).map((e) => e.selector)),
+  );
   const [enrich, setEnrich] = useState(true);
   const [applyFlows, setApplyFlows] = useState(true);
   const [replaceLearned, setReplaceLearned] = useState(fresh);
@@ -978,6 +981,7 @@ function ProposalSection({
             <div style={{ display: "flex", gap: 6, alignItems: "flex-start" }}>
               <Pill tone={e.category === "informational" ? "info" : "orange"}>{e.category}</Pill>
               <Pill>{e.elementType}</Pill>
+              {e.untried && <Pill tone="warn">never used in a recording</Pill>}
             </div>
           </label>
         ))}

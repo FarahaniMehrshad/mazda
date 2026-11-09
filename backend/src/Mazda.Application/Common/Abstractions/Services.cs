@@ -628,7 +628,11 @@ public sealed record ProposedElement(
     /// Selector of the existing element this is the same control as, or null when new.
     string? MatchesExisting,
     /// Episode indices ("i") that evidence this element.
-    IReadOnlyList<int> Evidence);
+    IReadOnlyList<int> Evidence,
+    /// The same evidence as "recordingIndex:episode" — unambiguous in a joint analysis.
+    IReadOnlyList<string>? EvidenceRefs = null,
+    /// Interactive, but no evidence episode acted ON it: what it does is inferred, not observed.
+    bool Untried = false);
 
 public sealed record RecordingAnalysisResult(
     IReadOnlyList<ProposedElement> Elements,

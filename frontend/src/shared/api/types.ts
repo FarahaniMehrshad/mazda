@@ -366,6 +366,8 @@ export interface ProposedElementDto {
   evidence: number[];
   /** False when it maps onto an element the signature already has (apply only enriches it). */
   isNew: boolean;
+  /** Interactive, but no recording acted on it — what it does is inferred. */
+  untried?: boolean;
 }
 
 export interface RecordingProposalDto {
