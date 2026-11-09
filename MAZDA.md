@@ -643,6 +643,22 @@ Role selectors are emitted only when the name is one Playwright will compute.
 Names taken from text content count only for roles that allow it (button,
 link, option…), so you will never see `role=listbox[name="<its options' text>"]`.
 
+**Hover.** Icons and menus that only show on hover are captured in two ways:
+- *Hover episodes.* Hover opens no window by itself, so the recorder remembers
+  the element under the pointer. A mutation batch within 700 ms that touches
+  it (its ancestors, or a floating popup / tooltip) opens a `hover` window
+  retroactively; leaving that host can produce an `unhover`. The window becomes
+  an episode only if something beyond the host's own hover styling changed.
+  `EpisodeBuilder` folds a matching `unhover` into the hover
+  (`revertsOnLeave`) and collapses a sweep over list rows into one episode.
+- *`revealedBy` on targets.* A click / fill / drag target gets
+  `revealedBy: { on: "hover", host, hostCollection?, inner, via }` when it
+  appeared during the last hover (`js`), disappears when the host's hover
+  classes are removed for a moment (`class`), or matches a stylesheet rule
+  `<host>:hover <…>` that reveals it (`css`; pure CSS hover changes no DOM).
+The analyzer writes "Only visible while hovering …" into the element's logic,
+and generated functions `row.hover()` before `__mzClick`.
+
 **Privacy.**
 - Sensitive inputs are masked *in the page* before anything crosses the
   binding: password, card and OTP autocomplete fields, name/label patterns,

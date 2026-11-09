@@ -41,7 +41,11 @@ public class LlmRecordingAnalyzer(IOptions<LlmOptions> options) : IRecordingAnal
                       reads like a description.
             An episode is one user action
             and what the page did in response:
-              action      click | fill | select | key | drag | scroll | navigate
+              action      click | fill | select | key | drag | scroll | navigate |
+                          hover (moving the pointer onto `target` visibly changed the
+                          page — icons, buttons, tooltips appeared) | unhover (moving
+                          off it did). `revertsOnLeave: true` on a hover = its effects
+                          went away again when the pointer left (transient).
               target      the element acted on:
                             best        a selector unique on the page at that moment
                             candidates  observed selectors, with `count` = number of
@@ -49,6 +53,12 @@ public class LlmRecordingAnalyzer(IOptions<LlmOptions> options) : IRecordingAnal
                                         >1 = it matches several, e.g. one per row)
                             role, name, tag, text (DOM text), data (data-* attributes),
                             textTransform (CSS display transform of the text)
+                            revealedBy  { on: "hover", host, hostCollection?, inner?,
+                                        via } — the target is only visible while
+                                        `host` (each item of `hostCollection`) is
+                                        hovered: via css (a :hover rule), class (the
+                                        host gets a class on hover) or js (rendered
+                                        on hover)
                             collection  present when the target sits in a REPEATED
                                         set: { item: selector matching EVERY item,
                                         count, index (0-based), inner: path from the

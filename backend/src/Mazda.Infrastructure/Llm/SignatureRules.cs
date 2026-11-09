@@ -73,6 +73,14 @@ internal static class SignatureRules
              For conditional elements say (a) the condition, (b) what occupies the
              slot otherwise (e.g. "the item's edit form REPLACES its display view
              until Save / Cancel"), (c) siblings gated by the same condition.
+             HOVER: a target with `revealedBy.on = "hover"`, or one that appeared in a
+             hover episode, MUST say so: "Only visible while hovering <host> (per item:
+             its row); hover it first." Name the host by its selector. When it is
+             rendered on hover (`via: "js"`, or it appeared in a hover episode) add
+             "Created on hover — only the hovered item has one; address it inside that
+             item." A tooltip or
+             popover that a hover shows is an informational element whose logic says
+             which element's hover shows it and that it vanishes on leave.
           4. RELATIONSHIPS — enables / disables / replaces / is mutually exclusive
              with another element.
           5. ORDER — sort rule of a list, where new items are inserted.

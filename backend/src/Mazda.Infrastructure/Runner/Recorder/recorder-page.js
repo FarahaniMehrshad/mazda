@@ -14,6 +14,11 @@
 //   { kind: 'mutations', actionId, data: { appeared, disappeared, changed, text, settleMs } }
 //   { kind: 'ambient',   data: { count } }                mutations outside any action window
 //
+// Hover: a 'hover' / 'unhover' action is emitted only when moving the
+// pointer onto / off an element visibly changes the DOM (see "Hover" below).
+// Click / fill / drag targets carry `revealedBy: { on: 'hover', host, … }`
+// when they are only visible while an ancestor is hovered.
+//
 // Privacy: values of sensitive inputs (passwords, card fields, OTP, anything
 // under [data-mz-mask]/[data-private]/[data-sensitive]) never leave the page —
 // they are replaced by "•••" here, before the binding is called.
@@ -598,7 +603,10 @@
     if (fromContent && d.role && !CONTENT_NAME_ROLES.test(d.role)) { if (!d.text) d.text = d.name; delete d.name; }
     if (isFloating(el)) d.floating = true;
     try { if (el.getRootNode() instanceof ShadowRoot) d.inShadow = true; } catch (_) { }
-    if (!light) d.ancestors = ancestors(el);
+    if (!light) {
+      d.ancestors = ancestors(el);
+      var rv = revealedBy(el); if (rv) d.revealedBy = rv;
+    }
     if (el.children) d.childCount = el.children.length;
     // Repeated set this element belongs to (row, card, option…), with the
     // set's own inner structure — so a script can address item i.
@@ -678,20 +686,38 @@
 
   var WATCHED_ATTRS = /^(class|hidden|disabled|open|checked|selected|value|style|aria-.+|data-(?!v-|reactid|testid|test-id|test$|cy|qa|mz-).+)$/;
 
-  var observer = new MutationObserver(function (recs) {
+  function onRecords(recs) {
+    // An open `unhover` window only owns changes inside the host being left;
+    // anything else (the next item's mouseenter reaction, which arrives as a
+    // separate batch) closes it and may start a new hover.
+    if (cur && cur.hover && cur.hover.type === 'unhover') {
+      var mine = [], other = [];
+      var rv = lastHover && lastHover.host === cur.hover.el ? lastHover.revealed : null;
+      for (var i = 0; i < recs.length; i++) (leaveRelated(recs[i], cur.hover.el, rv) ? mine : other).push(recs[i]);
+      if (other.length) {
+        for (var m = 0; m < mine.length; m++) cur.recs.push(mine[m]);
+        if (mine.length) cur.lastMut = now();
+        closeWindow();
+        recs = other;
+      }
+    }
+    if (!cur && recs.length) recs = maybePromoteHover(recs);   // returns what it didn't consume
+    if (!recs.length) return;
     if (!cur) { ambient += recs.length; return; }
     for (var i = 0; i < recs.length && cur.recs.length < MAX_RECORDS; i++) cur.recs.push(recs[i]);
     cur.lastMut = now();
-  });
+  }
+  var observer = new MutationObserver(onRecords);
 
-  function openWindow(id) {
+  function openWindow(id, hover) {
     closeWindow();
-    cur = { id: id, t0: now(), lastMut: now(), recs: [], timer: 0 };
+    cur = { id: id, t0: now(), lastMut: now(), recs: [], timer: 0, hover: hover || null };
     var w = cur;
+    var maxMs = hover ? HOVER_MAX_MS : MAX_WINDOW_MS;
     function tick() {
       if (cur !== w) return;
       var t = now();
-      if ((t - w.lastMut >= QUIET_MS && t - w.t0 >= QUIET_MS) || t - w.t0 >= MAX_WINDOW_MS) { closeWindow(); return; }
+      if ((t - w.lastMut >= QUIET_MS && t - w.t0 >= QUIET_MS) || t - w.t0 >= maxMs) { closeWindow(); return; }
       w.timer = setTimeout(tick, 100);
     }
     w.timer = setTimeout(tick, 100);
@@ -704,6 +730,7 @@
     clearTimeout(w.timer);
     // Pick up records the observer has queued but not yet delivered.
     try { var pending = observer.takeRecords(); for (var i = 0; i < pending.length; i++) w.recs.push(pending[i]); } catch (_) { }
+    if (w.hover) { finishHover(w); return; }
     var summary = summarize(w.recs);
     if (!Object.keys(summary).length) return;   // nothing observable happened
     summary.settleMs = Math.round(w.lastMut - w.t0);
@@ -821,6 +848,305 @@
     if (disappeared.length) out.disappeared = disappeared;
     if (changedOut.length) out.changed = changedOut;
     if (textOut.length) out.text = textOut;
+    return out;
+  }
+
+  // ── Hover ─────────────────────────────────────────────────────────
+  //
+  // Hover has no click to open a window, so mutations it causes would be
+  // counted as ambient noise. Instead the pointer's last element is kept as a
+  // candidate, and a mutation batch arriving within HOVER_FRESH_MS that
+  // touches it (its ancestors, or a floating popup / tooltip) opens a hover
+  // window retroactively. The window only becomes an episode if something
+  // visible beyond the host's own :hover styling changed.
+  //
+  // Pure CSS :hover changes no DOM at all; that case is covered at click
+  // time by revealedBy(), which checks the stylesheets.
+
+  var HOVER_FRESH_MS = 700, HOVER_REPEAT_MS = 1500, HOVER_MAX_MS = 1500;
+  var hoverCand = null;     // { el, t }  last element the pointer entered
+  var leaveCand = null;     // { el, t }  host the pointer just left
+  var lastHover = null;     // { host, revealed: WeakSet, classAdds: [], left }
+  var lastPromo = { el: null, type: '', t: -1e9 };
+
+  function chainTop(el) {
+    var top = el;
+    for (var i = 0; i < 6; i++) {
+      var p = parentOf(top);
+      if (!p || p === document.body || p === document.documentElement) break;
+      top = p;
+    }
+    return top;
+  }
+
+  function recTarget(r) {
+    var t = r.target;
+    return isElement(t) ? t : (t && t.parentElement) || null;
+  }
+
+  function isPopupNode(n) {
+    if (!isElement(n)) return false;
+    try { if (/^(tooltip|dialog|menu|listbox)$/.test(n.getAttribute('role') || '')) return true; } catch (_) { }
+    return isFloating(n);
+  }
+
+  function hoverRelated(recs, el, removedOk) {
+    var top = chainTop(el);
+    for (var i = 0; i < recs.length; i++) {
+      var r = recs[i], t = recTarget(r);
+      if (t && top.contains(t)) return true;
+      if (r.type === 'childList') {
+        for (var a = 0; a < r.addedNodes.length; a++) if (isPopupNode(r.addedNodes[a])) return true;
+        if (removedOk) for (var b = 0; b < r.removedNodes.length; b++) if (removedOk.has(r.removedNodes[b])) return true;
+      }
+    }
+    return false;
+  }
+
+  function leaveRelated(r, host, revealed) {
+    var t = recTarget(r);
+    if (t && host.contains(t)) return true;
+    if (r.type === 'childList' && revealed)
+      for (var i = 0; i < r.removedNodes.length; i++) if (revealed.has(r.removedNodes[i])) return true;
+    return false;
+  }
+
+  function repeatedPromo(el, type, t) {
+    if (lastPromo.el === el && lastPromo.type === type && t - lastPromo.t < HOVER_REPEAT_MS) return true;
+    lastPromo = { el: el, type: type, t: t };
+    return false;
+  }
+
+  // Moving from one item straight onto the next fires mouseleave(old) and
+  // mouseenter(new) in the same task, so ONE mutation batch holds both
+  // reactions. Split it: records inside the host being left form the
+  // `unhover`; the rest may start the new `hover`.
+  function maybePromoteHover(recs) {
+    if (pending) return recs;
+    var t = now(), rest = recs;
+    if (leaveCand && t - leaveCand.t < HOVER_FRESH_MS) {
+      var host = leaveCand.el, revealed = lastHover && lastHover.host === host ? lastHover.revealed : null;
+      var mine = [], other = [];
+      for (var i = 0; i < recs.length; i++) (leaveRelated(recs[i], host, revealed) ? mine : other).push(recs[i]);
+      if (mine.length && !repeatedPromo(host, 'unhover', t)) {
+        leaveCand = null;
+        openWindow(docId + ':' + (++seqN), { type: 'unhover', el: host, of: lastHover && lastHover.host === host ? lastHover.id : null });
+        for (var m = 0; m < mine.length; m++) cur.recs.push(mine[m]);
+        cur.lastMut = now();
+        rest = other;
+        if (!rest.length) return rest;
+        closeWindow();   // the rest belongs to whatever the pointer entered
+      }
+    }
+    if (hoverCand && t - hoverCand.t < HOVER_FRESH_MS && hoverCand.el.isConnected
+        && hoverRelated(rest, hoverCand.el, null) && !repeatedPromo(hoverCand.el, 'hover', t)) {
+      var el = hoverCand.el;
+      hoverCand = null;
+      openWindow(docId + ':' + (++seqN), { type: 'hover', el: el });
+    }
+    return rest;
+  }
+
+  // The element whose hover the change belongs to: the repeated item (row,
+  // card) under the pointer if the change is inside it, else the lowest
+  // ancestor containing a changed node, else the pointed element itself.
+  function hoverHostFor(el, recs) {
+    var targets = [];
+    for (var i = 0; i < recs.length && targets.length < 50; i++) { var t = recTarget(recs[i]); if (t) targets.push(t); }
+    function containsAny(a) { for (var k = 0; k < targets.length; k++) if (a.contains(targets[k])) return true; return false; }
+    var col = collectionOf(el);
+    if (col && containsAny(col.node)) return col.node;
+    var a = el;
+    for (var d = 0; a && d < 6; d++, a = parentOf(a)) {
+      if (a === document.body || a === document.documentElement) break;
+      if (containsAny(a)) return a;
+    }
+    return el;
+  }
+
+  function finishHover(w) {
+    var type = w.hover.type;
+    var host = type === 'unhover' ? w.hover.el : hoverHostFor(w.hover.el, w.recs);
+    var revealed = new WeakSet(), classAdds = [], firstClass = null;
+    for (var i = 0; i < w.recs.length; i++) {
+      var r = w.recs[i];
+      if (r.type === 'childList') {
+        r.addedNodes.forEach(function (n) { if (isElement(n)) revealed.add(n); });
+      } else if (r.type === 'attributes' && isElement(r.target)) {
+        if (r.target === host && r.attributeName === 'class') { if (firstClass === null) firstClass = r.oldValue || ''; }
+        else if (/^(class|style|hidden)$/.test(r.attributeName)) revealed.add(r.target);
+      }
+    }
+    if (firstClass !== null) {
+      var before = firstClass.split(/\s+/);
+      classAdds = Array.prototype.filter.call(host.classList, function (c) { return before.indexOf(c) < 0; });
+    }
+    if (type === 'hover') lastHover = { id: w.id, host: host, revealed: revealed, classAdds: classAdds, left: false };
+    else if (lastHover && lastHover.host === host) lastHover.left = true;
+
+    var summary = summarize(w.recs);
+    var hostSel = bestSelector(host);
+    var meaningful = !!(summary.appeared || summary.disappeared || summary.text) ||
+      (summary.changed || []).some(function (c) { return c.selector !== hostSel; });
+    if (!meaningful) { ambient += w.recs.length; return; }   // only the host's own hover styling
+    var act = { type: type, target: describe(host, 'brief') };
+    // Links the leave to its hover even when the host's selector changed
+    // (its text included the button that has now gone).
+    if (type === 'unhover' && w.hover.of) act.hoverOf = w.hover.of;
+    emit('action', act, w.id);
+    summary.settleMs = Math.round(w.lastMut - w.t0);
+    emit('mutations', summary, w.id);
+  }
+
+  on(document, 'pointerover', function (e) {
+    if (e.buttons || pending) return;
+    var el = e.composedPath ? e.composedPath()[0] : e.target;
+    if (!isElement(el)) return;
+    // Moving on to another item ends the current hover window, so a sweep
+    // over rows becomes one episode per row instead of one blurred one.
+    if (cur && cur.hover && cur.hover.type === 'hover') {
+      if (!cur.hover.scope) { var c = collectionOf(cur.hover.el); cur.hover.scope = c ? c.node : cur.hover.el; }
+      if (!cur.hover.scope.contains(el)) closeWindow();
+    }
+    var t = now();
+    hoverCand = { el: el, t: t };
+    if (lastHover && !lastHover.left && !lastHover.leaving && lastHover.host.isConnected && !lastHover.host.contains(el)) {
+      lastHover.leaving = true;
+      leaveCand = { el: lastHover.host, t: t };
+    }
+  });
+
+  // ── Hover dependence of a target ──────────────────────────────────
+  //
+  // Called when describing a click / fill / drag target. Three ways an
+  // element can depend on hover:
+  //   js    – it (or an ancestor below the host) appeared / was un-hidden
+  //           during the last hover window;
+  //   class – the host got classes on hover (`is-hovered`) and removing them
+  //           makes the target invisible (checked synchronously, restored);
+  //   css   – a stylesheet rule `<host>:hover <…target>` reveals it.
+
+  function shownNow(el, stopAt) {
+    try {
+      var r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return false;
+      for (var a = el; a && isElement(a); a = a.parentElement) {
+        var cs = getComputedStyle(a);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) < 0.05) return false;
+        if (a === stopAt) break;
+      }
+      return true;
+    } catch (_) { return true; }
+  }
+
+  function classHoverHost(el) {
+    var lh = lastHover;
+    if (!lh || !lh.classAdds.length || !shownNow(el, lh.host)) return null;
+    var removed = [], hidden = false;
+    try {
+      lh.classAdds.forEach(function (c) { if (lh.host.classList.contains(c)) { lh.host.classList.remove(c); removed.push(c); } });
+      hidden = removed.length > 0 && !shownNow(el, lh.host);
+    } catch (_) { } finally {
+      removed.forEach(function (c) { lh.host.classList.add(c); });
+      // Our own probe must not show up as page mutations.
+      try {
+        var recs = observer.takeRecords().filter(function (r) {
+          return !(r.type === 'attributes' && r.target === lh.host && r.attributeName === 'class');
+        });
+        if (recs.length) onRecords(recs);
+      } catch (_) { }
+    }
+    return hidden ? lh.host : null;
+  }
+
+  var hoverIdx = [], hoverIdxKey = '', hoverIdxAt = -1e9;
+
+  function styleKey() {
+    var n = 0, sheets = document.styleSheets;
+    for (var i = 0; i < sheets.length; i++) { try { n += sheets[i].cssRules.length; } catch (_) { } }
+    return sheets.length + ':' + n;
+  }
+
+  // Does a :hover rule make something visible (rather than hide it)?
+  function reveals(st) {
+    if (!st) return false;
+    var op = st.getPropertyValue('opacity'), vis = st.getPropertyValue('visibility'), dis = st.getPropertyValue('display');
+    var pe = st.getPropertyValue('pointer-events'), mh = st.getPropertyValue('max-height');
+    return (op !== '' && parseFloat(op) > 0) || vis === 'visible' || (dis !== '' && dis !== 'none') ||
+      (pe !== '' && pe !== 'none') || (mh !== '' && !/^0(px)?$/.test(mh.trim()));
+  }
+
+  // `.row:hover .del, .card:hover > .actions` → [{ host: '.row', base: '.row .del' }, …]
+  function hoverParts(selText) {
+    var out = [];
+    selText.split(',').forEach(function (part) {
+      part = part.trim();
+      var at = part.indexOf(':hover');
+      if (at < 0 || part.indexOf('&') >= 0 || /:not\([^)]*:hover/.test(part)) return;
+      var end = at, depth = 0;
+      for (; end < part.length; end++) {
+        var ch = part[end];
+        if (ch === '(' || ch === '[') depth++;
+        else if (ch === ')' || ch === ']') depth--;
+        else if (depth === 0 && (ch === ' ' || ch === '>' || ch === '+' || ch === '~')) break;
+      }
+      var rest = part.slice(end).trim();
+      if (!rest) return;   // styles the hovered element itself
+      var host = part.slice(0, end).replace(/:hover/g, '').trim();
+      var base = (host + ' ' + rest).replace(/:hover/g, '');
+      if (host) out.push({ host: host, base: base });
+    });
+    return out;
+  }
+
+  function buildHoverIndex() {
+    var out = [], budget = 20000;
+    function walk(rules) {
+      for (var i = 0; i < rules.length && budget > 0; i++, budget--) {
+        var r = rules[i];
+        if (r.selectorText && r.selectorText.indexOf(':hover') >= 0 && reveals(r.style))
+          Array.prototype.push.apply(out, hoverParts(r.selectorText));
+        if (r.cssRules && r.cssRules.length) walk(r.cssRules);   // @media, @supports, @layer
+      }
+    }
+    var sheets = document.styleSheets;
+    for (var i = 0; i < sheets.length; i++) { try { walk(sheets[i].cssRules); } catch (_) { /* cross-origin sheet */ } }
+    return out;
+  }
+
+  function cssHoverHost(el) {
+    var t = now();
+    if (t - hoverIdxAt > 2000) {
+      hoverIdxAt = t;
+      var key = styleKey();
+      if (key !== hoverIdxKey) { hoverIdxKey = key; hoverIdx = buildHoverIndex(); }
+    }
+    if (!hoverIdx.length) return null;
+    for (var a = el, d = 0; a && isElement(a) && d < 4; a = a.parentElement, d++) {
+      for (var i = 0; i < hoverIdx.length; i++) {
+        var h = hoverIdx[i];
+        try {
+          if (!a.matches(h.base)) continue;
+          var host = a.parentElement && a.parentElement.closest(h.host);
+          if (host && host !== document.body && host !== document.documentElement) return host;
+        } catch (_) { /* selector the engine can't match() */ }
+      }
+    }
+    return null;
+  }
+
+  function revealedBy(el) {
+    var host = null, via = null, lh = lastHover;
+    if (lh && !lh.left && lh.host.isConnected && lh.host !== el && lh.host.contains(el)) {
+      for (var a = el; a && a !== lh.host; a = a.parentElement) if (lh.revealed.has(a)) { host = lh.host; via = 'js'; break; }
+      if (!host && classHoverHost(el)) { host = lh.host; via = 'class'; }
+    }
+    if (!host) { var h = cssHoverHost(el); if (h) { host = h; via = 'css'; } }
+    if (!host) return null;
+    var out = { on: 'hover', via: via, host: bestSelector(host) };
+    var col = collectionOf(host);
+    if (col && col.node === host) out.hostCollection = col.info.item;
+    var rel = relativePath(host, el); if (rel) out.inner = rel;
     return out;
   }
 

@@ -177,7 +177,9 @@ public static class EpisodeBuilder
             {
                 ["t"] = ep.T,
                 ["action"] = type,
+                ["_aid"] = ep.Id,   // internal: hover ↔ unhover linking; stripped below
             };
+            CopyIf(ep.Action, o, "hoverOf");
             CopyIf(ep.Action, o, "value");
             CopyIf(ep.Action, o, "label");
             CopyIf(ep.Action, o, "key");
@@ -213,6 +215,18 @@ public static class EpisodeBuilder
         foreach (var ep in shaped)
         {
             var prev = merged.LastOrDefault();
+            // Leaving a host that a recent hover changed: the hover's effects
+            // were transient. Say so on the hover instead of a separate episode
+            // (an unhover with no matching hover is kept — something vanished).
+            if (Str(ep["action"]) == "unhover")
+            {
+                var of = Str(ep["hoverOf"]);
+                var leftHost = BestOf(ep);
+                var hover = merged.TakeLast(4).LastOrDefault(m => Str(m["action"]) == "hover"
+                    && (of is not null ? Str(m["_aid"]) == of : leftHost is not null && BestOf(m) == leftHost));
+                if (hover is not null) { hover["revertsOnLeave"] = true; continue; }
+                ep.Remove("hoverOf");
+            }
             // Clicking a field / native <select> right before filling / choosing
             // in it is part of that same interaction.
             if (prev is not null && Str(prev["action"]) == "click" && Str(ep["action"]) is "fill" or "select"
@@ -268,6 +282,7 @@ public static class EpisodeBuilder
             // Put "i" first for readability.
             var ep = collapsed[i];
             var copy = new JsonObject { ["i"] = i };
+            ep.Remove("_aid");
             foreach (var kv in ep.ToList()) { ep.Remove(kv.Key); copy[kv.Key] = kv.Value; }
             collapsed[i] = copy;
         }
@@ -425,6 +440,9 @@ public static class EpisodeBuilder
         CopyIf(t, o, "collection");
         CopyIf(t, o, "outline");
         CopyIf(t, o, "visible");
+        // { on: "hover", via: js|class|css, host, hostCollection?, inner? }:
+        // only visible while `host` is hovered — a script must hover it first.
+        CopyIf(t, o, "revealedBy");
         if (candidates is not null)
             o["candidates"] = new JsonArray(candidates.OfType<JsonObject>().Take(6).Select(c =>
             {
@@ -586,7 +604,13 @@ public static class EpisodeBuilder
     /// <summary>Equality key for collapsing repeats: action, target and the shape (not content) of effects.</summary>
     private static string ShapeKey(JsonObject ep)
     {
-        var parts = new List<string> { Str(ep["action"]) ?? "", BestOf(ep) ?? "", Str(ep["value"]) ?? "", Str(ep["key"]) ?? "" };
+        // Hovering row after row of one list is one behaviour, not N: key
+        // hovers by the collection, not the individual row.
+        var who = Str(ep["action"]) is "hover" or "unhover"
+            && (ep["target"] as JsonObject)?["collection"] is JsonObject hc && Str(hc["item"]) is { } hItem
+            ? "col:" + hItem
+            : BestOf(ep) ?? "";
+        var parts = new List<string> { Str(ep["action"]) ?? "", who, Str(ep["value"]) ?? "", Str(ep["key"]) ?? "", ep["revertsOnLeave"] is null ? "" : "~leave" };
         if (ep["effects"] is JsonObject fx)
         {
             if (fx["appeared"] is JsonArray ap)

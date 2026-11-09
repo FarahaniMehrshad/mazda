@@ -345,8 +345,9 @@ function buildRows(events: RecEvent[]): FeedRow[] {
         break;
       case "action": {
         const r = get(e.actionId ?? `s${e.seq}`, e.t);
-        const verb = d.type === "key" ? `press ${d.key}` : d.type;
+        const verb = d.type === "key" ? `press ${d.key}` : d.type === "hover" ? "hovered" : d.type === "unhover" ? "left" : d.type;
         r.title = d.type === "drag" ? `drag ${targetLabel(d.target)} → ${targetLabel(d.dest)}` : `${verb} ${targetLabel(d.target)}`;
+        if (d.target?.revealedBy?.on === "hover") r.title += ` (needs hover on ${d.target.revealedBy.host})`;
         if (d.value !== undefined && d.value !== null) r.value = String(d.value);
         if (d.label) r.value = String(d.label);
         r.masked = !!d.masked;
@@ -762,6 +763,10 @@ function EpisodesView({ id }: { id: string }) {
           {ep.action} {targetLabel(ep.target)}
           {ep.value !== undefined && <span style={{ color: "var(--orange-100)" }}> "{ep.value}"</span>}
           {ep.count > 1 && <span style={{ color: "var(--text-4)" }}> ×{ep.count}</span>}
+          {ep.revertsOnLeave && <span style={{ color: "var(--text-4)" }}> · while hovering</span>}
+          {ep.target?.revealedBy?.on === "hover" && (
+            <span style={{ color: "var(--orange-100)" }}> · needs hover on {ep.target.revealedBy.hostCollection ?? ep.target.revealedBy.host}</span>
+          )}
           {ep.effects?.appeared?.length > 0 && <span style={{ color: "var(--text-3)" }}> · +{ep.effects.appeared.length} appeared</span>}
           {ep.network?.length > 0 && (
             <span style={{ color: "#a8cce6" }}> · {ep.network.map((n: any) => `${n.method} ${n.path}`).join(", ")}</span> // eslint-disable-line @typescript-eslint/no-explicit-any

@@ -344,6 +344,19 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
             the wait BEFORE the triggering click via Promise.all). Turn
             `{id}` path segments into a prefix / regex match. Never
             `waitForTimeout`.
+          • HOVER-REVEALED targets (`revealedBy.on = "hover"` in the episodes,
+            or element logic "Only visible while hovering …"): hover the host
+            first, then click through __mzClick —
+                const row = page.locator(<item selector>).nth(i);
+                await row.hover();
+                await __mzClick(row.locator(<in-item path>));
+            ALWAYS address the revealed element inside the hovered item
+            (`row.locator(...)`), NEVER `page.locator(<list-prefixed
+            selector>).nth(i)`: when it is rendered on hover (`via: "js"`,
+            "appears on hover") only the hovered item has one, so a
+            page-level `.nth(i)` counts revealed copies, not rows.
+            For a hover that shows a tooltip / popover, hover the trigger and
+            wait for the observed popup before reading it.
           • If a floating listbox / menu appeared after clicking a control,
             prefer __mzSelectOption on that control, or click the observed
             option selector with `.filter({ hasText })`.
@@ -354,6 +367,8 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
             request paths may come from it.
 
         ── FINAL CHECKS BEFORE YOU EMIT ──
+          • Every hover-revealed target hovered first and addressed through
+            the hovered item's locator (never page-level `.nth(i)`)?
           • Per-item elements used inside a row locator with only their
             in-item path (never the full list-prefixed selector)?
           • Every selector in every body appears verbatim in the input
