@@ -852,6 +852,9 @@
         if (entry) entry.to = newVal;
         else if (changed.size < 120) changed.set(changed.size, { el: r.target, attr: key, from: r.oldValue, to: newVal });
       } else if (r.type === 'characterData') {
+        // Text nodes only: frameworks rewrite COMMENT nodes constantly
+        // (Angular dev mode: <!--bindings={"ng-reflect-ng-if": …}-->).
+        if (r.target.nodeType !== 3) continue;
         var parent = r.target.parentElement;
         if (!parent || hidesText(parent)) continue;
         var nv = clean(r.target.textContent, 120), ov = clean(r.oldValue, 120);

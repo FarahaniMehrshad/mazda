@@ -91,7 +91,9 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
                   `boolean`, `array`, `object`)
                 - a `description` (1 sentence, what it means to a caller)
                 - an `enum` when values are constrained (use the exact strings
-                  the UI accepts)
+                  the UI accepts) AND the full set of values is known — see
+                  OPTION SETS: values merely observed in a recording are
+                  examples, never an enum
                 - correct membership in `required`
           3. Argument names are lowerCamelCase. They become variable names in
              the function body via destructuring, so match exactly.
@@ -305,6 +307,49 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
         single ACTION plan `[DoneTask(index=<from GetTasks>)]` — no
         Playwright to write at runtime, no DOM to interpret.
 
+        ── OPTION SETS (menus, listboxes, palettes, segmented choices) ──
+        When the user picks one of N options (a floating menu, a listbox, an
+        icon palette), the recording usually shows only the few options the
+        user hovered or chose. The element logic / collection `count` tells you
+        how many there really are.
+          • Observed names are EXAMPLES, not the domain. Unless EVERY option's
+            label is known (a native <select> whose options were captured, or
+            source code that declares the list), NO `enum`: put the observed
+            names in the parameter description as examples.
+          • The action takes `name` (string) and/or `index` (integer, 0-based
+            in the option set) — both optional, the body throws when neither is
+            given. Match `name` trimmed and case / whitespace-insensitively:
+            exact first, then contains. Read each option's label the SAME way
+            it was observed: its visible text, an attribute (aria-label, title,
+            attrs), or — when names only show as a tooltip — hover each option
+            in turn and read the tooltip. When nothing matches, throw an Error
+            listing the available names.
+          • ALWAYS emit a state function `Get<Thing>Options` that opens the set
+            if it is closed, returns EVERY option as `{ index, name, group }`
+            (`group` = the section title the option sits under, READ FROM THE
+            DOM per option — e.g. in `evaluate`, the closest preceding
+            section-title element of the option's container; never a constant;
+            '' if the set has no sections) and closes it
+            again (Escape) if it opened it. The planner reads it to pick a
+            name or an index.
+          Example — an icon palette whose names only appear as tooltips:
+            GetCardOptions:
+              const opened = !(await menu.isVisible());
+              if (opened) { await __mzClick(trigger); await menu.waitFor(); }
+              const icons = menu.locator(<option selector>);
+              const out = [];
+              for (let i = 0; i < await icons.count(); i++) {
+                await icons.nth(i).hover();
+                const tip = page.locator(<tooltip selector>).last();
+                await tip.waitFor({ state: 'visible', timeout: 1500 }).catch(() => {});
+                const group = await icons.nth(i).evaluate(el => { /* walk up / back to the nearest section title */ … });
+                out.push({ index: i, name: ((await tip.textContent().catch(() => '')) ?? '').trim(), group });
+              }
+              if (opened) await page.keyboard.press('Escape');
+              return out;
+            AddCard({ name?, index? }): same label reading to resolve `name` to
+            an index, then click option `index`.
+
         ── PER-ITEM ELEMENTS (list / listitem and per-item controls) ──
         A signature describes a repeating container as a "list" element whose
         selector matches EVERY item (e.g. `#list > li`), plus per-item elements
@@ -367,6 +412,8 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
             request paths may come from it.
 
         ── FINAL CHECKS BEFORE YOU EMIT ──
+          • Every option set has a Get…Options state function, and its action
+            takes name and/or index — no enum of merely observed values?
           • Every hover-revealed target hovered first and addressed through
             the hovered item's locator (never page-level `.nth(i)`)?
           • Per-item elements used inside a row locator with only their

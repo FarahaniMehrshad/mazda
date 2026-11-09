@@ -508,12 +508,25 @@ public static class EpisodeBuilder
                 foreach (var a in ap.OfType<JsonObject>()) ((JsonArray)fx["appeared"]!).Add(ShapeTarget(a));
             foreach (var key in new[] { "disappeared", "changed", "text" })
                 if (b[key] is JsonArray arr)
-                    foreach (var item in arr) ((JsonArray)fx[key]!).Add(item?.DeepClone());
+                    foreach (var item in arr)
+                    {
+                        if (key == "text" && IsFrameworkComment(item as JsonObject)) continue;
+                        ((JsonArray)fx[key]!).Add(item?.DeepClone());
+                    }
         }
         foreach (var key in new[] { "appeared", "disappeared", "changed", "text" })
             if (((JsonArray)fx[key]!).Count == 0) fx.Remove(key);
         return fx;
     }
+
+    /// <summary>
+    /// Angular dev-mode comment rewrites (<c>bindings={"ng-reflect-ng-if": …}</c>)
+    /// that recordings made before the recorder ignored comment nodes contain.
+    /// </summary>
+    private static bool IsFrameworkComment(JsonObject? t)
+        => t is not null && (IsBindings(Str(t["to"])) || IsBindings(Str(t["from"])));
+
+    private static bool IsBindings(string? s) => s is not null && s.StartsWith("bindings={", StringComparison.Ordinal);
 
     private static JsonObject UnionEffects(JsonObject? a, JsonObject? b)
     {

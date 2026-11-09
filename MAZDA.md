@@ -634,6 +634,14 @@ compares intent with understanding, refines the intent and re-analyzes.
 Function generation receives each recording's title, intent and understanding
 alongside its episodes, so action names follow the user's wording.
 
+**Option sets.** A recording usually shows only the few options of a menu or
+palette the user hovered or picked. The analyzer records the set's total size
+and where labels come from (text, attribute, or a hover tooltip); the
+catalogue generator treats observed names as examples, never an `enum`, and
+emits a `Get…Options` state function listing every option
+(`{index, name, group}`) plus an action taking `name` and/or `index`. Angular
+dev-mode comment rewrites (`bindings={…}`) are not recorded as text changes.
+
 **Identifying attributes.** Besides test ids and `data-*`, the recorder keeps
 short semantic attributes (`icon`, `name`, `title`, `aria-label`,
 `formcontrolname`, … and any token-like input on a custom element) on targets,

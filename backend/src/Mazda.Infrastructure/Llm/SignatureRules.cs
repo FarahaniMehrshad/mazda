@@ -57,6 +57,12 @@ internal static class SignatureRules
           (c) ONE representative element per per-item CONTROL (each item's edit /
               delete / checkbox), again matching it in every item, with logic
               saying it is per-item and how to address item i.
+          (d) An OPTION SET (menu, listbox, icon palette): its list element's logic
+              states the TOTAL number of options, any grouping (section titles),
+              and WHERE each option's label comes from — visible text, an
+              attribute, or a tooltip shown on hover — and that the names seen in
+              the recording are only a sample ("29 options; names appear as a
+              hover tooltip; observed: A, B, C").
         A selector that matches only the one item the user happened to touch
         (contains that item's text, or a position like :nth-of-type(2) on the
         item) is WRONG for any of these.
