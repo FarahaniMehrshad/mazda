@@ -9,6 +9,14 @@ namespace Mazda.Application.Common.Abstractions;
 public interface IUnitOfWork
 {
     Task<int> SaveChangesAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Runs <paramref name="work"/> inside one database transaction, committing
+    /// only if it completes. Needed where a repository issues immediate SQL
+    /// (ExecuteDelete) before SaveChanges — without it a failing save leaves
+    /// the delete committed and the aggregate half-written.
+    /// </summary>
+    Task<T> InTransactionAsync<T>(Func<CancellationToken, Task<T>> work, CancellationToken ct = default);
 }
 
 public interface IUserRepository
@@ -136,4 +144,14 @@ public interface IRecordingRepository
     /// <summary>EpisodesJson of completed, grounding-enabled sessions for a signature, newest first.</summary>
     Task<IReadOnlyList<GroundingRecording>> ListGroundingEpisodesAsync(Guid signatureId, CancellationToken ct = default);
     Task RemoveAsync(RecordingSession session, CancellationToken ct = default);
+
+    /// <summary>
+    /// Recording → Stopping, as one conditional UPDATE. False when the session
+    /// already left Recording (the host finalized it meanwhile) — a plain
+    /// tracked save would overwrite that terminal state.
+    /// </summary>
+    Task<bool> TryMarkStoppingAsync(Guid id, CancellationToken ct = default);
+
+    /// <summary>Recording/Stopping → Failed, conditionally (an orphan with no live process).</summary>
+    Task<bool> TryMarkOrphanFailedAsync(Guid id, string message, CancellationToken ct = default);
 }

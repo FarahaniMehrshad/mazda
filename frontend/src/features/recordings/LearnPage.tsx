@@ -166,7 +166,7 @@ export function LearnPage() {
                     Capture request/response bodies (truncated, secrets redacted)
                   </Toggle>
                   <Toggle checked={maskAll} onChange={setMaskAll}>
-                    Mask every typed value (passwords are always masked)
+                    Mask every typed value, including rich-text editors and request bodies (passwords are always masked)
                   </Toggle>
                   <BtnPrimary onClick={onStart} disabled={!attached || start.isPending}>
                     {start.isPending ? "Attaching…" : "● Start recording"}
@@ -402,6 +402,10 @@ function RecordingFeed({ recordingId, onEnd }: { recordingId: string; onEnd: () 
     // EventSource can't send Authorization; the stream is anonymous and keyed
     // by the unguessable recording id, same as run execution streams.
     const es = new EventSource(`/api/recordings/${recordingId}/stream`);
+    // On a dropped connection EventSource reconnects and the server replays
+    // the whole backlog; seq numbers are strictly increasing, so anything at
+    // or below the last one seen is a replay.
+    let lastSeq = -1;
     es.onmessage = (m) => {
       let line: string;
       try {
@@ -410,8 +414,11 @@ function RecordingFeed({ recordingId, onEnd }: { recordingId: string; onEnd: () 
         line = m.data;
       }
       const evt = parseRecEvent(line);
-      if (evt) setEvents((xs) => [...xs, evt]);
-      else if (line.trim()) setErrors((xs) => [...xs.slice(-20), line]);
+      if (evt) {
+        if (evt.seq <= lastSeq) return;
+        lastSeq = evt.seq;
+        setEvents((xs) => [...xs, evt]);
+      } else if (line.trim()) setErrors((xs) => (xs.includes(line) ? xs : [...xs.slice(-20), line]));
     };
     es.addEventListener("end", () => {
       es.close();

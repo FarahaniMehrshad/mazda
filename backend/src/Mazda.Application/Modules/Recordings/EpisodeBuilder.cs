@@ -227,6 +227,21 @@ public static class EpisodeBuilder
             {
                 ep["effects"] = UnionEffects(prev["effects"] as JsonObject, ep["effects"] as JsonObject);
                 if (ep["effects"] is JsonObject eo && EffectCount(eo) == 0) ep.Remove("effects");
+                // Type-ahead search fires a request per pause: the earlier
+                // fill's requests and navigation belong to the merged fill.
+                if (prev["network"] is JsonArray pn && pn.Count > 0)
+                {
+                    var net = new JsonArray();
+                    var rids = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var src in new[] { pn, ep["network"] as JsonArray })
+                        foreach (var n in src ?? new JsonArray())
+                            if (n is JsonObject no && (Str(no["rid"]) is not { } rid || rids.Add(rid)))
+                                net.Add(no.DeepClone());
+                    ep["network"] = net;
+                }
+                if (ep["urlAfter"] is null && prev["urlAfter"] is { } pua) ep["urlAfter"] = pua.DeepClone();
+                if (prev["urlBefore"] is { } pub) ep["urlBefore"] = pub.DeepClone();
+                if ((Int(prev["settleMs"]) ?? 0) > (Int(ep["settleMs"]) ?? 0)) ep["settleMs"] = Int(prev["settleMs"]);
                 merged[^1] = ep;
                 continue;
             }
@@ -370,8 +385,16 @@ public static class EpisodeBuilder
         }
         if (Size() <= budget) return true;
 
-        // 5. Drop the tail until it fits.
-        while (episodes.Count > 1 && Size() > budget) episodes.RemoveAt(episodes.Count - 1);
+        // 5. Drop the tail until it fits. Measure once and subtract each
+        //    episode's own size (+1 for its separating comma) instead of
+        //    re-serializing the whole document per removal.
+        var size = Size();
+        while (episodes.Count > 1 && size > budget)
+        {
+            var last = episodes[^1];
+            size -= (last?.ToJsonString(Compact).Length ?? 4) + 1;
+            episodes.RemoveAt(episodes.Count - 1);
+        }
         doc["episodesTruncated"] = true;
         return true;
     }

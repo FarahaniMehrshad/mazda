@@ -53,19 +53,40 @@ public static class UrlTemplater
     {
         if (string.IsNullOrWhiteSpace(url)) return url ?? string.Empty;
         var q = url.IndexOf('?');
+        var h0 = url.IndexOf('#');
+        if (h0 >= 0 && (q < 0 || h0 < q)) return url[..h0] + RedactFragment(url[h0..]);
         if (q < 0) return url;
         var hash = url.IndexOf('#', q);
         var query = hash < 0 ? url[(q + 1)..] : url[(q + 1)..hash];
-        var tail = hash < 0 ? "" : url[hash..];
-        var parts = query.Split('&').Select(kv =>
-        {
-            var eq = kv.IndexOf('=');
-            if (eq < 0) return kv;
-            var key = kv[..eq];
-            return SensitiveKey.IsMatch(Uri.UnescapeDataString(key)) ? $"{key}=***" : kv;
-        });
-        return url[..(q + 1)] + string.Join('&', parts) + tail;
+        var tail = hash < 0 ? "" : RedactFragment(url[hash..]);
+        return url[..(q + 1)] + RedactPairs(query) + tail;
     }
+
+    /// <summary>
+    /// OAuth implicit / hybrid flows return tokens in the fragment
+    /// (<c>#access_token=…&amp;id_token=…</c>). A fragment that looks like
+    /// key=value pairs gets the same key-based redaction as a query string.
+    /// </summary>
+    private static string RedactFragment(string hashAndRest)
+    {
+        if (hashAndRest.Length <= 1 || !hashAndRest.Contains('=')) return hashAndRest;
+        var body = hashAndRest[1..];
+        // "#/route?x=1" (hash routers): redact the query part only.
+        var q = body.IndexOf('?');
+        return q >= 0
+            ? "#" + body[..(q + 1)] + RedactPairs(body[(q + 1)..])
+            : "#" + RedactPairs(body);
+    }
+
+    private static string RedactPairs(string query) => string.Join('&', query.Split('&').Select(kv =>
+    {
+        var eq = kv.IndexOf('=');
+        if (eq < 0) return kv;
+        var key = kv[..eq];
+        string decoded;
+        try { decoded = Uri.UnescapeDataString(key); } catch (UriFormatException) { decoded = key; }
+        return SensitiveKey.IsMatch(decoded) ? $"{key}=***" : kv;
+    }));
 
     public static string? Origin(string? url)
     {
@@ -141,12 +162,13 @@ public static class PayloadSanitizer
             catch (JsonException)
             {
                 // Truncated JSON (the recorder clips bodies) won't parse. Fall
-                // back to a regex pass over "key":"value" pairs.
-                return Regex.Replace(body,
-                    "\"([^\"]{1,60})\"\\s*:\\s*\"[^\"]*\"",
+                // back to a regex pass over "key": value pairs — strings (incl.
+                // escaped quotes, or cut off at the end), numbers, literals.
+                return TruncatedPair.Replace(body,
                     m => SensitiveKey.IsMatch(m.Groups[1].Value) ? $"\"{m.Groups[1].Value}\":\"***\"" : m.Value);
             }
         }
+        if (Multipart.IsMatch(body)) return RedactMultipart(body);
         if (body.Contains('=') && !body.Contains(' ') && !body.Contains('\n'))
         {
             return string.Join('&', body.Split('&').Select(kv =>
@@ -160,6 +182,39 @@ public static class PayloadSanitizer
         return body;
     }
 
+    private static readonly Regex TruncatedPair = new(
+        "\"([^\"\\\\]{1,60})\"\\s*:\\s*(\"(?:[^\"\\\\]|\\\\.)*(?:\"|$)|-?[\\d.eE+-]+|true|false|null)",
+        RegexOptions.Compiled);
+
+    /// <summary>Keys whose whole value — object or array included — is a credential.</summary>
+    private static readonly Regex CredentialKey = new(
+        @"pass(word)?|passwd|secret|token|auth|credential|api[-_]?key|cookie|private[-_]?key",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex Multipart = new(@"Content-Disposition:\s*form-data", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex PartName = new("name=\"([^\"]*)\"", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>multipart/form-data: blank the value lines of parts whose field name is sensitive.</summary>
+    private static string RedactMultipart(string body)
+    {
+        var lines = body.Split('\n');
+        var redacting = false;   // inside a sensitive part
+        var inValue = false;     // past that part's header block
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i].TrimEnd('\r');
+            if (line.StartsWith("--", StringComparison.Ordinal)) { redacting = false; inValue = false; continue; }
+            if (!inValue && line.StartsWith("Content-Disposition", StringComparison.OrdinalIgnoreCase))
+            {
+                redacting = PartName.Match(line) is { Success: true } m && SensitiveKey.IsMatch(m.Groups[1].Value);
+                continue;
+            }
+            if (!inValue && line.Length == 0) { inValue = true; continue; }
+            if (inValue && redacting) lines[i] = lines[i].EndsWith('\r') ? "***\r" : "***";
+        }
+        return string.Join('\n', lines);
+    }
+
     private static void Redact(JsonNode node)
     {
         switch (node)
@@ -167,7 +222,10 @@ public static class PayloadSanitizer
             case JsonObject obj:
                 foreach (var key in obj.Select(kv => kv.Key).ToList())
                 {
-                    if (SensitiveKey.IsMatch(key) && obj[key] is not JsonObject and not JsonArray)
+                    // Scalars under any sensitive key; whole subtrees under a
+                    // credential key ({"token": {"access": "…"}}). A key like
+                    // "cards" keeps its structure — that's usually UI data.
+                    if (SensitiveKey.IsMatch(key) && (obj[key] is not JsonObject and not JsonArray || CredentialKey.IsMatch(key)))
                         obj[key] = "***";
                     else if (obj[key] is { } child)
                         Redact(child);

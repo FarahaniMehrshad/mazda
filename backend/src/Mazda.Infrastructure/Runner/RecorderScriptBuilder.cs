@@ -178,7 +178,9 @@ internal static class RecorderScriptBuilder
             if (inflight.size >= 500) return;
             inflight.set(e.requestId, {
               rid: e.requestId, method: e.request.method, url: e.request.url, type: e.type, start: Date.now(), actionId: correlate(),
-              reqBody: CFG.captureBodies ? clip(e.request.postData, 2048) : undefined,
+              // "Mask all inputs": request bodies are what the user typed,
+              // serialized — drop them. Response bodies are server data and stay.
+              reqBody: CFG.captureBodies && !CFG.maskAll ? clip(e.request.postData, 2048) : undefined,
             });
           });
           cdp.on('Network.responseReceived', (e: any) => {

@@ -216,6 +216,30 @@ public class RecordingRepository(MazdaDbContext db) : IRecordingRepository
     public Task<int> CountBySignatureAsync(Guid signatureId, CancellationToken ct = default)
         => db.RecordingSessions.CountAsync(r => r.SignatureId == signatureId, ct);
 
+    public async Task<bool> TryMarkStoppingAsync(Guid id, CancellationToken ct = default)
+    {
+        var now = DateTime.UtcNow;
+        var n = await db.RecordingSessions
+            .Where(r => r.Id == id && r.Status == RecordingStatus.Recording)
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(r => r.Status, RecordingStatus.Stopping)
+                .SetProperty(r => r.UpdatedAt, now), ct);
+        return n == 1;
+    }
+
+    public async Task<bool> TryMarkOrphanFailedAsync(Guid id, string message, CancellationToken ct = default)
+    {
+        var now = DateTime.UtcNow;
+        var n = await db.RecordingSessions
+            .Where(r => r.Id == id && (r.Status == RecordingStatus.Recording || r.Status == RecordingStatus.Stopping))
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(r => r.Status, RecordingStatus.Failed)
+                .SetProperty(r => r.Error, message)
+                .SetProperty(r => r.EndedAt, now)
+                .SetProperty(r => r.UpdatedAt, now), ct);
+        return n == 1;
+    }
+
     public async Task AddEventsAsync(IEnumerable<RecordingEvent> events, CancellationToken ct = default)
         => await db.RecordingEvents.AddRangeAsync(events, ct);
 

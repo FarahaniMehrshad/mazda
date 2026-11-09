@@ -99,6 +99,21 @@
     return SENSITIVE_RE.test(hay);
   }
 
+  // Text the user typed into a rich-text editor surfaces as DOM text, not as
+  // an input value — so masking must also cover text inside editable hosts.
+  var EDITABLE_SEL = '[contenteditable=""],[contenteditable="true"],[contenteditable="plaintext-only"]';
+  function editableHost(el) {
+    try { return el.closest ? el.closest(EDITABLE_SEL) : null; } catch (_) { return null; }
+  }
+
+  /** True when an element's visible text must not be recorded. */
+  function hidesText(el) {
+    if (!isElement(el)) return false;
+    if (isSensitive(el)) return true;
+    var host = editableHost(el);
+    return !!host && (cfg.maskAll || isSensitive(host));
+  }
+
   function maskValue(el, v) {
     v = v == null ? '' : String(v);
     if (cfg.maskAll || isSensitive(el)) return { value: '•••', masked: true, length: v.length };
@@ -174,7 +189,7 @@
     }
     if (tag === 'img') return clean(el.getAttribute('alt') || '');
     var title = el.getAttribute('title');
-    if (isSensitive(el)) return title ? clean(title) : '';
+    if (hidesText(el)) return title ? clean(title) : '';
     var content = clean(el.innerText || el.textContent || '');
     if (content) { nameFromContent = true; return content; }
     return title ? clean(title) : '';
@@ -186,7 +201,26 @@
   // Ids that are framework-generated and change between renders/sessions.
   var GENERATED_ID = /\d{3,}|^:r|^(mat|mui|rc|ember|react-select|radix|headlessui|downshift|el|v|cdk|ng)-.*\d|[a-f0-9]{8,}/i;
   // Hashed (CSS-modules / CSS-in-JS) and transient state classes.
-  var HASHED_CLASS = /^(css|sc|jss|emotion|styled)-|^[a-z]{1,3}-[a-zA-Z0-9]{5,}$|_[a-zA-Z0-9]{5,}$|__[a-zA-Z0-9]{5,}$|\d{3,}/;
+  // Build-generated classes (CSS-in-JS, CSS modules) change between builds.
+  // Their hash parts mix digits or scatter capitals: `sc-bdVaJa`,
+  // `css-1x2y3z`, `Button_root__a1B2c`. Hand-written names — BEM
+  // (`card__title`, `card--active`), Bootstrap (`btn-primary`), snake_case
+  // (`user_name`) — are made of words and stay usable.
+  var GENERATED_PREFIX = /^(css|sc|jss|emotion|styled|jsx|svelte|tw)-/;
+  function looksGenerated(seg) {
+    if (seg.length < 5) return false;
+    if (/\d/.test(seg) && /[a-zA-Z]/.test(seg)) return true;
+    var caps = (seg.slice(1).match(/[A-Z]/g) || []).length;
+    return seg.length <= 8 && caps >= 2;
+  }
+  var HASHED_CLASS = {
+    test: function (c) {
+      if (GENERATED_PREFIX.test(c) || /\d{3,}/.test(c)) return true;
+      var segs = c.split(/[-_]+/);
+      for (var i = 0; i < segs.length; i++) if (looksGenerated(segs[i])) return true;
+      return false;
+    }
+  };
   var STATE_CLASS = /(^|[-_])(active|focus(ed)?|hover(ed)?|open(ed)?|selected|checked|disabled|visible|hidden|show(n)?|expanded|collapsed|current|is-|has-)/i;
 
   function stableClasses(el) {
@@ -393,8 +427,8 @@
           var nm = accName(n); if (nm) item.name = nm;
           if (n.type === 'checkbox' || n.type === 'radio') item.checked = !!n.checked;
           else if (!isSensitive(n) && !cfg.maskAll) item.value = clean(n.value, 40);
-          if (t === 'SELECT') item.options = Array.prototype.slice.call(n.options, 0, 10).map(function (o) { return o.value; });
-        } else if (!isSensitive(n)) {
+          if (t === 'SELECT' && !cfg.maskAll && !isSensitive(n)) item.options = Array.prototype.slice.call(n.options, 0, 10).map(function (o) { return o.value; });
+        } else if (!hidesText(n)) {
           var tx = domText(n, 40); if (tx) item.text = tx;
           var tt = textTransform(n); if (tt && tx) item.textTransform = tt;
         }
@@ -407,13 +441,31 @@
   // Playwright role / text selectors can't be counted with
   // querySelectorAll; approximate the engine so "best selector" logic sees
   // that role=button[name="Edit"] matches one button PER ROW.
+  // Counting role/text matches walks the DOM and reads innerText (forces
+  // layout) — on a big table that's real time spent inside the user's click.
+  // Each synchronous turn (one pointerdown, one mutation flush) gets a small
+  // budget; past it counts are reported as unknown (null), which selector
+  // ranking already treats as "not proven unique".
+  var COUNT_BUDGET_MS = 25;
+  var countDeadline = 0;
+  function countingAllowed() {
+    var now = performance.now();
+    if (!countDeadline) {
+      countDeadline = now + COUNT_BUDGET_MS;
+      Promise.resolve().then(function () { countDeadline = 0; });
+    }
+    return now <= countDeadline;
+  }
+
   function countRole(el, role, name) {
+    if (!countingAllowed()) return null;
     var saved = nameFromContent;
     try {
       var root = rootOf(el), pool = root.querySelectorAll(el.tagName.toLowerCase() + ',[role="' + role + '"]');
-      if (pool.length > 500) return null;
+      if (pool.length > 300) return null;
       var n = 0;
       for (var i = 0; i < pool.length; i++) {
+        if ((i & 15) === 15 && !countingAllowed()) return null;
         var p = pool[i];
         if (!p.getClientRects().length && p.tagName !== 'INPUT') continue;   // hidden: the engine skips it
         if (roleOf(p) === role && accName(p) === name) n++;
@@ -423,11 +475,18 @@
   }
 
   function countText(el, text) {
+    if (!countingAllowed()) return null;
     try {
       var pool = rootOf(el).querySelectorAll(el.tagName.toLowerCase());
-      if (pool.length > 500) return null;
+      if (pool.length > 300) return null;
       var n = 0;
-      for (var i = 0; i < pool.length; i++) if (domText(pool[i], 80) === text) n++;
+      for (var i = 0; i < pool.length; i++) {
+        if ((i & 15) === 15 && !countingAllowed()) return null;
+        // Cheap textContent pre-check before domText's innerText (layout).
+        var tc = pool[i].textContent;
+        if (!tc || tc.length < text.length * 0.5) continue;
+        if (domText(pool[i], 80) === text) n++;
+      }
       return n;
     } catch (_) { return null; }
   }
@@ -462,7 +521,7 @@
       if (attrs[j] === 'type' && tag !== 'input') continue;
       add('attr', tag + attrSel(attrs[j], a), true);
     }
-    if (d.text && d.text.length <= 40 && d.text.indexOf('…') < 0 && !isSensitive(el))
+    if (d.text && d.text.length <= 40 && d.text.indexOf('…') < 0 && !hidesText(el))
     {
       var textSel = 'text="' + d.text.replace(/"/g, '\\"') + '"';
       if (!seen[textSel]) { seen[textSel] = 1; out.push({ kind: 'text', selector: textSel, count: countText(el, d.text) }); }
@@ -518,7 +577,7 @@
     var r = roleOf(el); if (r) d.role = r;
     var n = accName(el); if (n) d.name = n;
     var fromContent = nameFromContent;
-    if (!isSensitive(el)) {
+    if (!hidesText(el)) {
       var t = domText(el, 80);
       if (t && t !== d.name) d.text = t;
       var tt = textTransform(el); if (tt && t) d.textTransform = tt;
@@ -570,7 +629,7 @@
     }
     var cls = stableClasses(el);
     if (cls.length) { b.classes = cls; if (!b.selector) b.selector = b.tag + cls.map(function (c) { return '.' + cssEscape(c); }).join(''); }
-    if (!isSensitive(el)) { var t = domText(el, 60); if (t) b.text = t; }
+    if (!hidesText(el)) { var t = domText(el, 60); if (t) b.text = t; }
     var data = dataAttrs(el); if (data) b.data = data;
     return b;
   }
@@ -684,7 +743,7 @@
           // Text node swapped — React/Vue text updates look like this.
           var before = r.removedNodes.length ? clean(r.removedNodes[0].textContent, 120) : '';
           var after = clean(r.addedNodes[0].textContent, 120);
-          if (before !== after && !isSensitive(r.target)) text.push({ el: r.target, from: before, to: after });
+          if (before !== after && !hidesText(r.target)) text.push({ el: r.target, from: before, to: after });
         }
       } else if (r.type === 'attributes') {
         if (!WATCHED_ATTRS.test(r.attributeName) || !isElement(r.target)) continue;
@@ -696,7 +755,7 @@
         else if (changed.size < 120) changed.set(changed.size, { el: r.target, attr: key, from: r.oldValue, to: newVal });
       } else if (r.type === 'characterData') {
         var parent = r.target.parentElement;
-        if (!parent || isSensitive(parent)) continue;
+        if (!parent || hidesText(parent)) continue;
         var nv = clean(r.target.textContent, 120), ov = clean(r.oldValue, 120);
         if (nv !== ov) text.push({ el: parent, from: ov, to: nv });
       }

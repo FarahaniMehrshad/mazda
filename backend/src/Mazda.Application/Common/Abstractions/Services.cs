@@ -539,6 +539,12 @@ public interface IExecutionRegistry
     IAsyncEnumerable<string> Subscribe(Guid generationId, CancellationToken ct);
 
     bool IsRunning(Guid generationId);
+
+    /// <summary>True when a feed for this id is held (started and not yet forgotten).</summary>
+    bool Exists(Guid id);
+
+    /// <summary>Drop a finished feed's buffered lines. Open subscribers are completed.</summary>
+    void Forget(Guid id);
 }
 
 /// <summary>

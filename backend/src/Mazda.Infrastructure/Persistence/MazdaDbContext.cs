@@ -37,6 +37,15 @@ public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContex
     }
 
     Task<int> IUnitOfWork.SaveChangesAsync(CancellationToken ct) => base.SaveChangesAsync(ct);
+
+    async Task<T> IUnitOfWork.InTransactionAsync<T>(Func<CancellationToken, Task<T>> work, CancellationToken ct)
+    {
+        if (Database.CurrentTransaction is not null) return await work(ct);
+        await using var tx = await Database.BeginTransactionAsync(ct);
+        var result = await work(ct);
+        await tx.CommitAsync(ct);
+        return result;
+    }
 }
 
 internal class UserSettingsConfig : IEntityTypeConfiguration<UserSettings>

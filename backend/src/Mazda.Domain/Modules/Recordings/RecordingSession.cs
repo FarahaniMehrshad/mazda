@@ -59,6 +59,9 @@ public class RecordingSession : Entity
     /// <summary>Feed this session's episodes to the function-catalogue generator.</summary>
     public bool UseForGrounding { get; private set; } = true;
 
+    public const int MaxLabel = 200;
+    public const int MaxUrl = 2000;
+
     private RecordingSession() { }
 
     public static RecordingSession Start(
@@ -75,7 +78,8 @@ public class RecordingSession : Entity
             Label = string.IsNullOrWhiteSpace(label) ? $"Recording {DateTime.UtcNow:yyyy-MM-dd HH:mm}" : label.Trim(),
             LabelIsAuto = string.IsNullOrWhiteSpace(label),
             Intent = intent?.Trim() ?? string.Empty,
-            StartUrl = startUrl ?? string.Empty,
+            // Column is 2000 chars; deep links with long state can exceed it.
+            StartUrl = startUrl is { Length: > MaxUrl } ? startUrl[..(MaxUrl - 1)] + "…" : startUrl ?? string.Empty,
             AllowedOriginsJson = string.IsNullOrWhiteSpace(allowedOriginsJson) ? "[]" : allowedOriginsJson,
             CaptureBodies = captureBodies,
             MaskAllInputs = maskAllInputs,
@@ -90,7 +94,7 @@ public class RecordingSession : Entity
     public void Rename(string label)
     {
         if (string.IsNullOrWhiteSpace(label)) return;
-        Label = label.Trim();
+        Label = label.Trim().Length > MaxLabel ? label.Trim()[..MaxLabel] : label.Trim();
         LabelIsAuto = false;
         Touch();
     }

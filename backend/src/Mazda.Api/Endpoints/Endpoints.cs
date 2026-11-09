@@ -281,28 +281,35 @@ public static class Endpoints
             .WithTags("Generations");
 
         // Live recorder feed — same transport, keyed by recording id. Lines are
-        // `__MZ_REC__ {json}` compact events (bodies stripped).
+        // `__MZ_REC__ {json}` compact events (bodies stripped). Only feeds the
+        // recorder host registered are streamed: an unknown or already-evicted
+        // id gets an immediate `end` (the client then reads the stored
+        // recording) instead of allocating an empty feed that never ends.
         app.MapGet("/api/recordings/{rid:guid}/stream",
             (Guid rid, IExecutionRegistry registry, HttpContext ctx, CancellationToken ct) =>
-                StreamRegistryAsync(rid, registry, ctx, ct))
+                StreamRegistryAsync(rid, registry, ctx, ct, requireKnown: true))
             .WithTags("Recordings");
     }
 
-    private static async Task StreamRegistryAsync(Guid id, IExecutionRegistry registry, HttpContext ctx, CancellationToken ct)
+    private static async Task StreamRegistryAsync(
+        Guid id, IExecutionRegistry registry, HttpContext ctx, CancellationToken ct, bool requireKnown = false)
     {
         ctx.Response.Headers.ContentType = "text/event-stream";
         ctx.Response.Headers.CacheControl = "no-cache";
         ctx.Response.Headers["X-Accel-Buffering"] = "no";
         await ctx.Response.Body.FlushAsync(ct);
 
-        await foreach (var line in registry.Subscribe(id, ct))
+        if (!requireKnown || registry.Exists(id))
         {
-            // SSE: each event is "data: <payload>\n\n". Encode JSON so newlines
-            // and ANSI bytes inside the line don't break the framing.
-            var payload = System.Text.Json.JsonSerializer.Serialize(line);
-            var bytes = Encoding.UTF8.GetBytes($"data: {payload}\n\n");
-            await ctx.Response.Body.WriteAsync(bytes, ct);
-            await ctx.Response.Body.FlushAsync(ct);
+            await foreach (var line in registry.Subscribe(id, ct))
+            {
+                // SSE: each event is "data: <payload>\n\n". Encode JSON so newlines
+                // and ANSI bytes inside the line don't break the framing.
+                var payload = System.Text.Json.JsonSerializer.Serialize(line);
+                var bytes = Encoding.UTF8.GetBytes($"data: {payload}\n\n");
+                await ctx.Response.Body.WriteAsync(bytes, ct);
+                await ctx.Response.Body.FlushAsync(ct);
+            }
         }
 
         // Final event lets the client close cleanly.

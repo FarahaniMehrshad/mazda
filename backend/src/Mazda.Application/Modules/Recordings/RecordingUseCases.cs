@@ -120,6 +120,8 @@ public class StartRecordingHandler(
     ICurrentUser me,
     IUnitOfWork uow) : IRequestHandler<StartRecordingCommand, Result<RecordingDto>>
 {
+    internal const string OrphanMessage = "The recorder process is no longer running.";
+
     public async Task<Result<RecordingDto>> Handle(StartRecordingCommand cmd, CancellationToken ct)
     {
         if (me.UserId is null) return Result.Failure<RecordingDto>(Error.Validation("Not authenticated."));
@@ -136,9 +138,9 @@ public class StartRecordingHandler(
             if (host.IsActive(active.Id))
                 return Result.Failure<RecordingDto>(Error.Conflict(
                     "A recording is already in progress. Stop it before starting another."));
-            // DB says live but no process backs it — an orphan. Close it out.
-            active.MarkFailed("The recorder process is no longer running.", active.EventCount, active.ActionCount);
-            await uow.SaveChangesAsync(ct);
+            // DB says live but no process backs it — an orphan. Close it out
+            // (conditionally: the host may have just finalized it).
+            await recordings.TryMarkOrphanFailedAsync(active.Id, OrphanMessage, ct);
         }
 
         var (target, error) = await CdpTargetResolver.ResolveValidatedAsync(userSettings, cdp, owner, ct);
@@ -192,8 +194,7 @@ public record StopRecordingCommand(Guid Id) : IRequest<Result<RecordingDto>>;
 public class StopRecordingHandler(
     IRecordingRepository recordings,
     IRecordingHost host,
-    ICurrentUser me,
-    IUnitOfWork uow) : IRequestHandler<StopRecordingCommand, Result<RecordingDto>>
+    ICurrentUser me) : IRequestHandler<StopRecordingCommand, Result<RecordingDto>>
 {
     public async Task<Result<RecordingDto>> Handle(StopRecordingCommand cmd, CancellationToken ct)
     {
@@ -204,16 +205,20 @@ public class StopRecordingHandler(
 
         // Returns immediately: the host flushes, builds episodes and persists
         // Completed in the background. The client waits for the SSE `end`.
+        //
+        // Both writes are conditional UPDATEs, never a tracked save of `r`:
+        // the host may finalize (Completed/Failed) between our read and our
+        // write — tab closed or a cap hit at the same moment — and a tracked
+        // save would put the session back to Stopping/Failed for good.
         if (!host.IsActive(r.Id))
         {
-            r.MarkFailed("The recorder process is no longer running.", r.EventCount, r.ActionCount);
-            await uow.SaveChangesAsync(ct);
+            if (await recordings.TryMarkOrphanFailedAsync(r.Id, StartRecordingHandler.OrphanMessage, ct))
+                r.MarkFailed(StartRecordingHandler.OrphanMessage, r.EventCount, r.ActionCount);
             return Result.Success(r.ToDto());
         }
-        // Persist Stopping BEFORE signalling: the host's terminal write must be
-        // the last one, or a fast exit could be overwritten back to Stopping.
-        r.MarkStopping();
-        await uow.SaveChangesAsync(ct);
+        // Stopping is persisted BEFORE signalling, so the host's terminal
+        // write is always the last one.
+        if (await recordings.TryMarkStoppingAsync(r.Id, ct)) r.MarkStopping();
         host.RequestStop(r.Id);
         return Result.Success(r.ToDto());
     }
@@ -282,6 +287,16 @@ public class GetRecordingEpisodesHandler(IRecordingRepository recordings, ICurre
 
 public record UpdateRecordingCommand(Guid Id, string? Label, bool? UseForGrounding, string? Intent = null) : IRequest<Result<RecordingDto>>;
 
+public class UpdateRecordingValidator : AbstractValidator<UpdateRecordingCommand>
+{
+    public UpdateRecordingValidator()
+    {
+        RuleFor(x => x.Id).NotEmpty();
+        RuleFor(x => x.Label).MaximumLength(Mazda.Domain.Modules.Recordings.RecordingSession.MaxLabel);
+        RuleFor(x => x.Intent).MaximumLength(2000);
+    }
+}
+
 public class UpdateRecordingHandler(IRecordingRepository recordings, ICurrentUser me, IUnitOfWork uow)
     : IRequestHandler<UpdateRecordingCommand, Result<RecordingDto>>
 {
@@ -348,6 +363,9 @@ public class AnalyzeSignatureRecordingsHandler(
     ICurrentUser me,
     IUnitOfWork uow) : IRequestHandler<AnalyzeSignatureRecordingsCommand, Result<RecordingProposalDto>>
 {
+    /// <summary>Episode characters sent in one analysis (~60–70k tokens).</summary>
+    public const int AnalyzeBudgetChars = 240_000;
+
     public async Task<Result<RecordingProposalDto>> Handle(AnalyzeSignatureRecordingsCommand cmd, CancellationToken ct)
     {
         if (me.UserId is null) return Result.Failure<RecordingProposalDto>(Error.Validation("Not authenticated."));
@@ -366,6 +384,25 @@ public class AnalyzeSignatureRecordingsHandler(
                 cmd.RecordingIds is { Count: 1 }
                     ? "This recording isn't Completed or captured no interactions."
                     : "No completed recordings with interactions to analyze."));
+
+        // Total prompt budget: each session is ≤60k chars of episodes, so
+        // "analyze all" over many sessions would overflow the model's context.
+        // Keep the newest sessions that fit (the newest always does) and say
+        // which were left out.
+        var skipped = 0;
+        if (picked.Sum(r => r.EpisodesJson.Length) > AnalyzeBudgetChars)
+        {
+            var kept = new List<Mazda.Domain.Modules.Recordings.RecordingSession>();
+            var total = 0;
+            foreach (var r in Enumerable.Reverse(picked))
+            {
+                if (kept.Count > 0 && total + r.EpisodesJson.Length > AnalyzeBudgetChars) { skipped++; continue; }
+                kept.Add(r);
+                total += r.EpisodesJson.Length;
+            }
+            kept.Reverse();
+            picked = kept;
+        }
 
         // Elements the analyzer should treat as known. Fresh = forget what
         // earlier recordings taught; source-derived and manual ones stay.
@@ -394,6 +431,12 @@ public class AnalyzeSignatureRecordingsHandler(
 
         var validated = ProposalValidator.Validate(result, picked.Select(r => r.EpisodesJson), known)
             with { SessionIds = picked.Select(r => r.Id).ToList(), Fresh = cmd.Fresh };
+        if (skipped > 0)
+            validated = validated with
+            {
+                Notes = $"{skipped} older recording(s) were left out to fit the analyzer's input limit; " +
+                        "analyze them separately or delete ones you no longer need.\n" + validated.Notes,
+            };
 
         // Each session's readback: what the analyzer understood + its title.
         foreach (var u in validated.Sessions ?? Array.Empty<SessionUnderstanding>())
@@ -433,7 +476,8 @@ public static class ProposalValidator
     {
         var existing = existingSelectors.ToHashSet(StringComparer.Ordinal);
         var observed = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var doc in episodesJsons) observed.UnionWith(ObservedSelectors(doc));
+        var relative = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var doc in episodesJsons) Collect(doc, observed, relative);
         var known = new HashSet<string>(observed, StringComparer.Ordinal);
         known.UnionWith(existing);
 
@@ -444,7 +488,7 @@ public static class ProposalValidator
             if (string.IsNullOrWhiteSpace(e.Selector)) continue;
             var match = e.MatchesExisting is { } m && existing.Contains(m) ? m : null;
             ProposedElement kept;
-            if (IsGrounded(e.Selector, known)) kept = e with { MatchesExisting = match };
+            if (IsGrounded(e.Selector, known, relative)) kept = e with { MatchesExisting = match };
             else if (match is not null) kept = e with { Selector = match, MatchesExisting = match };
             else continue;
             if (seen.Add(kept.Selector)) elements.Add(kept);
@@ -455,8 +499,13 @@ public static class ProposalValidator
         return result with { Elements = elements, FlowsJson = flows };
     }
 
-    /// <summary>True when the selector, split at combinators outside quotes / brackets, can be covered by known pieces.</summary>
-    public static bool IsGrounded(string selector, IReadOnlySet<string> known)
+    /// <summary>
+    /// True when the selector, split at combinators outside quotes / brackets,
+    /// can be covered by known pieces. <paramref name="suffixOnly"/> pieces
+    /// (row-relative outline paths such as <c>button</c> or <c>span.title</c>)
+    /// only count AFTER a known anchor — alone they match anything.
+    /// </summary>
+    public static bool IsGrounded(string selector, IReadOnlySet<string> known, IReadOnlySet<string>? suffixOnly = null)
     {
         var sel = selector.Trim();
         if (known.Contains(sel)) return true;
@@ -471,7 +520,8 @@ public static class ProposalValidator
             for (var j = i; j < bounds.Count && !r; j++)
             {
                 var piece = sel[bounds[i].Start..bounds[j].End].Trim();
-                if (known.Contains(piece) && From(j + 1)) r = true;
+                var ok = known.Contains(piece) || (i > 0 && suffixOnly is not null && suffixOnly.Contains(piece));
+                if (ok && From(j + 1)) r = true;
             }
             memo[i] = r;
             return r;
@@ -529,15 +579,22 @@ public static class ProposalValidator
     public static HashSet<string> ObservedSelectors(string episodesJson)
     {
         var set = new HashSet<string>(StringComparer.Ordinal);
+        Collect(episodesJson, set, new HashSet<string>(StringComparer.Ordinal));
+        return set;
+    }
+
+    /// <summary>Fills <paramref name="set"/> with standalone selectors and <paramref name="relative"/> with bare row-relative paths.</summary>
+    private static void Collect(string episodesJson, HashSet<string> set, HashSet<string> relative)
+    {
         JsonNode? root;
-        try { root = JsonNode.Parse(episodesJson); } catch (JsonException) { return set; }
+        try { root = JsonNode.Parse(episodesJson); } catch (JsonException) { return; }
 
         void AddOutline(JsonArray outline, IEnumerable<string?> bases)
         {
             foreach (var item in outline.OfType<JsonObject>())
             {
                 if (EpisodeBuilder.Str(item["sel"]) is not { Length: > 0 } rel) continue;
-                set.Add(rel);
+                relative.Add(rel);
                 foreach (var b in bases)
                     if (!string.IsNullOrEmpty(b)) set.Add($"{b} {rel}");
             }
@@ -555,13 +612,13 @@ public static class ProposalValidator
                     {
                         colItem = item;
                         set.Add(item);
-                        if (EpisodeBuilder.Str(col["inner"]) is { } inner) { set.Add(inner); set.Add($"{item} {inner}"); }
+                        if (EpisodeBuilder.Str(col["inner"]) is { } inner) { relative.Add(inner); set.Add($"{item} {inner}"); }
                         if (col["itemOutline"] is JsonArray io) AddOutline(io, new[] { item });
                     }
                     if (o["outline"] is JsonArray ol) AddOutline(ol, new[] { best, colItem });
                     // itemChanges rows: {item, sel, ...}
                     if (EpisodeBuilder.Str(o["item"]) is { } chItem && EpisodeBuilder.Str(o["sel"]) is { Length: > 0 } chSel)
-                    { set.Add(chItem); set.Add($"{chItem} {chSel}"); }
+                    { set.Add(chItem); relative.Add(chSel); set.Add($"{chItem} {chSel}"); }
                     foreach (var (k, v) in o)
                     {
                         if (k is "selector" or "best" && EpisodeBuilder.Str(v) is { } s) set.Add(s);
@@ -575,7 +632,6 @@ public static class ProposalValidator
             }
         }
         Walk(root);
-        return set;
     }
 }
 
@@ -626,12 +682,18 @@ public class ApplyRecordingHandler(
         // selectors, so the same policy invalidates them (flows are re-set
         // below from the proposal). ReplaceElementsAsync clears the change
         // tracker, so sessions are re-loaded afterwards.
-        await signatures.ReplaceElementsAsync(sig, merge.Elements, ElementChangePolicy.InvalidateOnlyIfExistingSelectorsChanged, ct);
-        if (merge.FlowsJson is not null) sig.SetUserFlows(merge.FlowsJson);
+        // One transaction: ReplaceElementsAsync deletes the old rows with
+        // immediate SQL, so a failing insert must roll that delete back
+        // instead of leaving the signature with no elements.
+        await uow.InTransactionAsync(async tct =>
+        {
+            await signatures.ReplaceElementsAsync(sig, merge.Elements, ElementChangePolicy.InvalidateOnlyIfExistingSelectorsChanged, tct);
+            if (merge.FlowsJson is not null) sig.SetUserFlows(merge.FlowsJson);
 
-        foreach (var sid in (proposal.SessionIds ?? Array.Empty<Guid>()).Append(cmd.Id).Distinct())
-            (await recordings.FindByIdAsync(sid, owner, ct))?.MarkApplied();
-        await uow.SaveChangesAsync(ct);
+            foreach (var sid in (proposal.SessionIds ?? Array.Empty<Guid>()).Append(cmd.Id).Distinct())
+                (await recordings.FindByIdAsync(sid, owner, tct))?.MarkApplied();
+            return await uow.SaveChangesAsync(tct);
+        }, ct);
 
         var changed = merge.AddedElements > 0 || merge.EnrichedElements > 0 || merge.RemovedElements > 0;
         return Result.Success(new ApplyRecordingResultDto(

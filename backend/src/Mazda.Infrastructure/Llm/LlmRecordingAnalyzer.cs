@@ -190,7 +190,13 @@ public class LlmRecordingAnalyzer(IOptions<LlmOptions> options) : IRecordingAnal
                     ["description"] = e.ElementDescription,
                     ["logic"] = string.IsNullOrWhiteSpace(e.ElementLogic) ? null : e.ElementLogic,
                 }).ToArray()),
-                ["userFlows"] = ignoreLearned ? null : TryParse(signature.UserFlowsJson),
+                // Fresh: the flows recordings taught are forgotten with their
+                // elements; source-derived / hand-written flows stay as context.
+                ["userFlows"] = TryParse(ignoreLearned
+                    ? Mazda.Application.Modules.Recordings.RecordingMerge.StripLearnedFlows(
+                        signature.UserFlowsJson,
+                        known.Select(e => e.ElementSelector).ToHashSet(StringComparer.Ordinal))
+                    : signature.UserFlowsJson),
             },
             ["recordings"] = recordings,
         };

@@ -601,11 +601,19 @@ did not change are marked `rerendered` and lose their outline.
   mandatory list + listitem pairs for repeating containers, read-target
   criteria and logic notes. These are the source analyzers' rules, restated
   for observation.
-- **`fresh`.** With `fresh`, previously learned elements are hidden from the
-  model. Applying with `replaceLearned` then replaces them rather than adding
-  overlapping variants.
+- **`fresh`.** With `fresh`, previously learned elements and the flow edges
+  recordings added (`source: "recorded"`) are hidden from the model. Applying
+  with `replaceLearned` then replaces them rather than adding overlapping
+  variants. Source-derived and hand-written flows are kept either way. The
+  apply runs in one database transaction, and LLM values are clipped to the
+  column limits.
+- **Budget.** One analysis sends at most 240k characters of episodes. When
+  more recordings are selected, the newest ones that fit are used and the
+  proposal notes say how many were left out.
 - **Validation.** `ProposalValidator` accepts observed selectors, collection
   item + path, and outline paths under their item, or a combination of those.
+  A bare row-relative path (`button`, `span.title`) only counts after a known
+  anchor, never on its own.
   An ungrounded selector is rewritten to its `matchesExisting` target or
   dropped; it never survives as itself.
 
@@ -639,7 +647,14 @@ link, option…), so you will never see `role=listbox[name="<its options' text>"
 - Sensitive inputs are masked *in the page* before anything crosses the
   binding: password, card and OTP autocomplete fields, name/label patterns,
   and `[data-mz-mask|data-private|data-sensitive]`.
-- Bodies and URLs are redacted again server-side, by key.
+- Text typed into rich-text (`contenteditable`) editors is treated as input
+  too: it is never used as a name or text candidate, and with "mask every
+  typed value" it never appears in text mutations. That setting also drops
+  `<select>` option values and request bodies (response bodies are kept).
+- Bodies and URLs are redacted again server-side, by key: JSON (including
+  truncated JSON, and whole subtrees under credential keys such as `token`),
+  form-encoded and multipart bodies, query strings, and key=value URL
+  fragments (`#access_token=…`).
 - Headers are never stored.
 - An origin allowlist applies to both the page script and the network capture.
   It defaults to the attached tab's origin.
@@ -652,6 +667,11 @@ link, option…), so you will never see `role=listbox[name="<its options' text>"
   can still be analyzed.
 - An API restart marks orphaned sessions Failed on boot.
 - Caps are 30 min, 5,000 events and 20 MB.
+- Stop and orphan clean-up are conditional status updates, so they can never
+  overwrite a session the recorder has just finalized.
+- The live feed is kept in memory for 2 minutes after the session ends; the
+  stored events are the record. A stream request for an unknown recording
+  ends immediately.
 
 **Re-analysis keeps recorded elements.** Re-analyze interactive and the
 informational pass rebuild elements from source. Both preserve

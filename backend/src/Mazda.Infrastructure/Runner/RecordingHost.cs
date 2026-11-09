@@ -38,6 +38,7 @@ public sealed class RecordingHost : IRecordingHost
     private readonly ILogger<RecordingHost> _log;
 
     private static readonly TimeSpan GracefulStop = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan FeedRetention = TimeSpan.FromMinutes(2);
     private const int BatchSize = 100;
     private static readonly TimeSpan BatchInterval = TimeSpan.FromSeconds(1);
 
@@ -119,6 +120,11 @@ public sealed class RecordingHost : IRecordingHost
             // Only after the terminal state is persisted.
             _registry.Complete(sessionId, completion);
             if (_active.TryRemove(sessionId, out var a)) a.Cts.Dispose();
+            // The live feed is only for watching; once finished, the stored
+            // events are the record. Keep it briefly for late subscribers
+            // (they get the backlog + end), then free it — a 30-minute
+            // session can hold thousands of lines.
+            _ = Task.Delay(FeedRetention).ContinueWith(_ => _registry.Forget(sessionId), TaskScheduler.Default);
         }
     }
 

@@ -26,6 +26,16 @@ public sealed record MergeResult(
 /// </summary>
 public static class RecordingMerge
 {
+    // Column limits of signature_elements (MazdaDbContext). LLM output is
+    // clipped to them here: one over-long value would otherwise fail the
+    // whole apply at SaveChanges.
+    public const int MaxSelector = 500;
+    public const int MaxType = 40;
+    public const int MaxDescription = 1000;
+    public const int MaxLogic = 8000;
+
+    private static string Clip(string s, int max) => s.Length <= max ? s : s[..(max - 1)] + "…";
+
     public static MergeResult Merge(
         Signature signature,
         IReadOnlyList<ProposedElement> proposal,
@@ -60,10 +70,13 @@ public static class RecordingMerge
                 if (string.IsNullOrWhiteSpace(note)) continue;
                 var current = bySelector[matchKey].ElementLogic;
                 if (current.Contains(note, StringComparison.Ordinal)) continue;
-                extraLogic[matchKey] = note.Trim();
+                extraLogic[matchKey] = Clip(note.Trim(), MaxLogic);
                 continue;
             }
 
+            // A selector longer than the column can't be stored, and one that
+            // long is not a selector a function should depend on anyway.
+            if (p.Selector.Length > MaxSelector) continue;
             if (addedSelectors.Add(p.Selector)) added.Add(p);
         }
 
@@ -82,21 +95,28 @@ public static class RecordingMerge
             elements.Add(SignatureElement.Create(
                 p.Selector,
                 SignatureMapper.ParseCategory(p.Category),
-                string.IsNullOrWhiteSpace(p.ElementType) ? "element" : p.ElementType,
-                p.Description,
+                Clip(string.IsNullOrWhiteSpace(p.ElementType) ? "element" : p.ElementType.Trim(), MaxType),
+                Clip(p.Description ?? string.Empty, MaxDescription),
                 order++,
-                p.Logic,
+                Clip(p.Logic ?? string.Empty, MaxLogic),
                 ElementOrigin.Recorded));
         }
 
         string? flows = null;
         int addedNodes = 0, addedEdges = 0;
+        var selectors = elements.Select(e => e.ElementSelector).ToHashSet(StringComparer.Ordinal);
+        // Replace-learned drops only what recordings taught: edges marked
+        // `source: recorded` and anything pointing at a removed selector.
+        // Source-derived and hand-edited flows survive. The base is computed
+        // even when flows aren't applied — removing selectors makes the
+        // repository wipe UserFlowsJson, and the caller re-sets it from here.
+        var baseFlows = replaceLearned
+            ? StripLearnedFlows(signature.UserFlowsJson, selectors)
+            : signature.UserFlowsJson;
         if (applyFlows && !string.IsNullOrWhiteSpace(proposalFlowsJson))
-        {
-            var selectors = elements.Select(e => e.ElementSelector).ToHashSet(StringComparer.Ordinal);
-            // Replacing learned elements invalidates the learned flow graph too.
-            (flows, addedNodes, addedEdges) = MergeFlows(replaceLearned ? null : signature.UserFlowsJson, proposalFlowsJson, selectors);
-        }
+            (flows, addedNodes, addedEdges) = MergeFlows(baseFlows, proposalFlowsJson, selectors);
+        else if (replaceLearned)
+            flows = baseFlows;
 
         return new MergeResult(elements, flows, added.Count, extraLogic.Count, addedNodes, addedEdges, removed);
     }
@@ -123,7 +143,9 @@ public static class RecordingMerge
         {
             var id = Id(n);
             if (id is null || nodeIds.Contains(id)) continue;
-            nodes.Add(n.DeepClone());
+            var nc = (JsonObject)n.DeepClone();
+            nc["source"] = "recorded";
+            nodes.Add(nc);
             nodeIds.Add(id);
             addedNodes++;
         }
@@ -162,6 +184,34 @@ public static class RecordingMerge
 
         return (existing.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), addedNodes, addedEdges);
     }
+
+    /// <summary>
+    /// The flow graph minus what recordings contributed: edges tagged
+    /// <c>source: recorded</c>, edges whose selector is no longer an element,
+    /// and recorded nodes no remaining edge touches. Untagged (source-derived
+    /// or hand-written) nodes and edges are kept as they are.
+    /// </summary>
+    public static string StripLearnedFlows(string? json, IReadOnlySet<string>? keptSelectors = null)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return string.Empty;
+        var g = ParseGraph(json);
+        var edges = (JsonArray)g["edges"]!;
+        foreach (var e in edges.OfType<JsonObject>().ToList())
+        {
+            var sel = EpisodeBuilder.Str(e["elementselector"]);
+            if (IsRecorded(e) || (keptSelectors is not null && sel is not null && !keptSelectors.Contains(sel)))
+                edges.Remove(e);
+        }
+        var used = edges.OfType<JsonObject>()
+            .SelectMany(e => new[] { EpisodeBuilder.Str(e["from"]), EpisodeBuilder.Str(e["to"]) })
+            .OfType<string>().ToHashSet(StringComparer.Ordinal);
+        var nodes = (JsonArray)g["nodes"]!;
+        foreach (var n in nodes.OfType<JsonObject>().ToList())
+            if (IsRecorded(n) && (Id(n) is not { } nid || !used.Contains(nid))) nodes.Remove(n);
+        return g.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    private static bool IsRecorded(JsonObject o) => EpisodeBuilder.Str(o["source"]) == "recorded";
 
     private static JsonObject ParseGraph(string? json)
     {
