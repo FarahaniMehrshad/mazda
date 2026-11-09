@@ -185,6 +185,30 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
         Allowed throws: argument problems only (neither name nor index given,
         unknown name — list the available names).
 
+        ── RESOLVE BY WAITING, NOT BY CHECKING — HARD RULE ──
+        A function may start while the previous step's UI is still rendering
+        (a panel opening, a list loading). Playwright locators WAIT for their
+        element; snapshots don't. So:
+          • Find targets with locators — `.filter({ hasText })`, `.nth(i)`,
+            `getByRole` — and interact; the action's auto-wait does the
+            rest. Prefer `page.locator(<slot>).filter({ hasText: /base|محور/ })
+            .first()` over reading all titles and searching them.
+          • Before reading a list with `evaluateAll` / `allTextContents` /
+            `count()` to turn a name into an index (or to range-check one),
+            WAIT for it first: `await list.first().waitFor({ timeout: 10000 })`.
+            A snapshot taken too early is empty — never throw because of it.
+          • No `if (!(await x.isVisible())) throw …` style pre-checks, no
+            range checks against a snapshot. The only throws: missing
+            arguments, and a name that is still not found AFTER the list was
+            waited for (list the names).
+          • Triggers that TOGGLE (a menu / dropdown / panel button): open it
+            only if it isn't already open — `if (!(await menu.isVisible()))
+            await __mzClick(trigger);` — a previous step may have left it open.
+          • Every action whose click / drag / fill was observed to fire a
+            request (POST/PUT/PATCH/DELETE in the episodes) awaits that
+            `waitForResponse` (created before the trigger), so the next step
+            starts once the server has answered.
+
         ── SELECTOR DISCIPLINE ──
         Every selector string in every body MUST be a byte-for-byte match of
         a value that appears as `elementSelector` in the input signature
@@ -437,6 +461,9 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
             request paths may come from it.
 
         ── FINAL CHECKS BEFORE YOU EMIT ──
+          • Does any function read a list (evaluateAll / count / allTextContents)
+            without first waiting for it, or throw on such a snapshot?
+          • Does every action whose interaction fires a request wait for it?
           • Does any action end with a wait / check on the UI (a locator
             `.waitFor`, `waitForFunction`, a before/after comparison, expect)
             instead of only `waitForResponse`? Remove it.
@@ -566,15 +593,16 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
 
         // NO POST-CONDITIONS guard: one repair round for actions that assert
         // or wait on the UI, then strip what is still left at the tail.
+        var observedRequests = ObservedRequests(recordedEpisodes);
         var flagged = parsed
-            .Where(f => CatalogueBodyLint.IsAction(f.Kind) && CatalogueBodyLint.Issues(f.Body).Count > 0)
+            .Where(f => CatalogueBodyLint.IsAction(f.Kind) && CatalogueBodyLint.Issues(f.Body, observedRequests).Count > 0)
             .ToList();
         if (flagged.Count > 0)
         {
             try
             {
                 var report = string.Join("\n\n", flagged.Select(f =>
-                    $"- {f.Name}: " + string.Join("; ", CatalogueBodyLint.Issues(f.Body)) +
+                    $"- {f.Name}: " + string.Join("; ", CatalogueBodyLint.Issues(f.Body, observedRequests)) +
                     $"\n```ts\n{f.Body}\n```"));
                 var repair = await chat.CompleteChatSafeAsync(
                     new List<ChatMessage>
@@ -583,11 +611,14 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
                         new UserChatMessage(userMsg),
                         new AssistantChatMessage(raw),
                         new UserChatMessage(
-                            "These ACTION functions break the NO ASSERTIONS / NO POST-CONDITIONS hard rule:\n\n" +
+                            "These ACTION functions break the NO ASSERTIONS / NO POST-CONDITIONS or the " +
+                            "RESOLVE BY WAITING hard rule:\n\n" +
                             report + "\n\n" +
                             "Rewrite ONLY these functions. Keep name, kind, description, parameters, returns and " +
-                            "preconditions; fix the body so that after its last interaction it only awaits " +
-                            "waitForResponse promises created before the trigger — no locator.waitFor, " +
+                            "preconditions; fix the body so that it finds targets with waiting locators " +
+                            "(wait for a list before reading it, no throws on snapshots), awaits the " +
+                            "requests its interactions fire (waitForResponse created before the trigger), " +
+                            "and after its last interaction waits for nothing else — no locator.waitFor, " +
                             "waitForFunction, waitForTimeout, expect, or before/after checks. " +
                             "Return {\"functions\": [...]} with just these functions."),
                     },
@@ -608,6 +639,38 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
         }
 
         return new FunctionCatalogueResult(parsed, tokens);
+    }
+
+    /// <summary>
+    /// Mutating requests (POST/PUT/PATCH/DELETE) the recordings saw, with the
+    /// selectors of what the user acted on just before — so the lint can tell
+    /// when an action skips waiting for the request its click triggers.
+    /// </summary>
+    private static List<CatalogueBodyLint.ObservedRequest> ObservedRequests(IReadOnlyList<string>? docs)
+    {
+        var list = new List<CatalogueBodyLint.ObservedRequest>();
+        foreach (var raw in docs ?? Array.Empty<string>())
+        {
+            System.Text.Json.Nodes.JsonNode? root;
+            try { root = System.Text.Json.Nodes.JsonNode.Parse(raw); } catch (JsonException) { continue; }
+            // Grounding docs wrap the episode document: { title, …, episodes: { episodes: [...] } }.
+            var eps = root?["episodes"] as System.Text.Json.Nodes.JsonArray
+                      ?? root?["episodes"]?["episodes"] as System.Text.Json.Nodes.JsonArray;
+            foreach (var ep in eps?.OfType<System.Text.Json.Nodes.JsonObject>() ?? Enumerable.Empty<System.Text.Json.Nodes.JsonObject>())
+            {
+                if (ep["target"] is not System.Text.Json.Nodes.JsonObject t) continue;
+                var req = (ep["network"] as System.Text.Json.Nodes.JsonArray)?.OfType<System.Text.Json.Nodes.JsonObject>()
+                    .FirstOrDefault(n => (n["method"]?.GetValue<string>() ?? "") is "POST" or "PUT" or "PATCH" or "DELETE");
+                if (req is null) continue;
+                var sels = new List<string>();
+                if (t["best"]?.GetValue<string>() is { } b) sels.Add(b);
+                foreach (var c in (t["candidates"] as System.Text.Json.Nodes.JsonArray)?.OfType<System.Text.Json.Nodes.JsonObject>() ?? Enumerable.Empty<System.Text.Json.Nodes.JsonObject>())
+                    if (c["selector"]?.GetValue<string>() is { } cs) sels.Add(cs);
+                if (t["collection"]?["item"]?.GetValue<string>() is { } item) sels.Add(item);
+                list.Add(new CatalogueBodyLint.ObservedRequest(sels, $"{req["method"]?.GetValue<string>()} {req["path"]?.GetValue<string>()}"));
+            }
+        }
+        return list;
     }
 
     /// <summary>

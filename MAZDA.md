@@ -651,6 +651,16 @@ afterwards — the planner reads state functions for that. Waits that the
 option) are fine. `CatalogueBodyLint` enforces it: violating actions get one
 LLM repair round, then any trailing UI wait still left is stripped.
 
+**Resolve by waiting, settle between steps.** Functions find targets with
+waiting locators (`filter({ hasText })`, `nth`) and wait for a list before
+reading it to turn a name into an index; they don't throw on instant
+snapshots, open toggling menus only when closed, and await the requests their
+interactions fire. `CatalogueBodyLint` flags snapshot-then-throw bodies and
+actions that skip a request the recording showed. Between plan steps the
+execute harness runs `__mzSettle`: it waits until no XHR/fetch has been in
+flight and the DOM has been quiet for 300 ms (cap 5 s) — a pause, never a
+failure.
+
 **Identifying attributes.** Besides test ids and `data-*`, the recorder keeps
 short semantic attributes (`icon`, `name`, `title`, `aria-label`,
 `formcontrolname`, … and any token-like input on a custom element) on targets,

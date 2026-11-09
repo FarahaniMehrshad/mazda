@@ -32,10 +32,43 @@ internal static class CatalogueBodyLint
 
     public static bool IsAction(string kind) => string.Equals(kind, "action", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>A request the recording saw after interacting with one of these selectors.</summary>
+    public sealed record ObservedRequest(IReadOnlyList<string> TargetSelectors, string Request);
+
+    private static readonly Regex Snapshot = new(
+        @"\.evaluateAll\s*\(|\.allTextContents\s*\(|\.allInnerTexts\s*\(|\.count\s*\(\s*\)",
+        RegexOptions.Compiled);
+    private static readonly Regex AnyWait = new(@"\.waitFor\s*\(|\bwaitForSelector\s*\(|\bwaitForResponse\s*\(", RegexOptions.Compiled);
+
     /// <summary>Human-readable violations; empty when the body is clean.</summary>
-    public static IReadOnlyList<string> Issues(string body)
+    public static IReadOnlyList<string> Issues(string body, IReadOnlyList<ObservedRequest>? observed = null)
     {
         var issues = new List<string>();
+        var statements = Split(body);
+
+        // Snapshot read, nothing waited for before it, then a throw: an early
+        // run (previous step still rendering) reads an empty list and fails.
+        for (var i = 0; i < statements.Count; i++)
+        {
+            if (!Snapshot.IsMatch(statements[i])) continue;
+            if (statements.Take(i).Any(st => AnyWait.IsMatch(st))) break;
+            if (statements.Skip(i).Any(st => Regex.IsMatch(st, @"\bthrow\b")))
+                issues.Add($"reads the page without waiting first and throws on that snapshot: `{Shorten(statements[i])}` — wait for the list (or use a locator filter) before reading it");
+            break;
+        }
+
+        // The recording showed a request after interacting with a control
+        // this body uses, but the body never waits for any response.
+        if (observed is { Count: > 0 } && !Regex.IsMatch(body, @"\bwaitForResponse\s*\("))
+        {
+            foreach (var o in observed)
+            {
+                var hit = o.TargetSelectors.FirstOrDefault(sel => sel.Length >= 12 && body.Contains(sel, StringComparison.Ordinal));
+                if (hit is null) continue;
+                issues.Add($"the recording shows `{o.Request}` after interacting with `{Shorten(hit)}`, but the body never awaits waitForResponse for it");
+                break;
+            }
+        }
         foreach (Match m in Forbidden.Matches(body))
         {
             var what = m.Value.TrimEnd('(', ' ');

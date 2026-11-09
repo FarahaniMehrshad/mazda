@@ -148,6 +148,7 @@ internal static class FunctionHarnessBuilder
         // to preserve whatever shape the LLM emitted.
         sb.AppendLine($"  const __mz_plan = {BuildPlanLiteral(plan)};");
         sb.AppendLine();
+        AppendSettleHelper(sb);
 
         sb.AppendLine("  const __mz_emit = (evt: unknown) => {");
         sb.AppendLine($"    console.log({JsString(EventLinePrefix)} + JSON.stringify(evt));");
@@ -159,6 +160,10 @@ internal static class FunctionHarnessBuilder
         // The interpreter reconstructs "skipped" entries for steps after the
         // failure using the plan and the events it observed.
         sb.AppendLine("  for (const __mz_step of __mz_plan.steps) {");
+        // Let the previous step's effects land (requests answered, the UI
+        // done re-rendering) before the next step looks at the page. Never
+        // fails the run: it only waits, capped.
+        sb.AppendLine("    await __mzSettle(page);");
         sb.AppendLine("    const __mz_t0 = Date.now();");
         sb.AppendLine("    __mz_emit({ type: 'step-started', id: __mz_step.id, call: __mz_step.call, args: __mz_step.args ?? {} });");
         sb.AppendLine("    const __mz_handler = __mz_actions[__mz_step.call];");
@@ -184,6 +189,40 @@ internal static class FunctionHarnessBuilder
         sb.AppendLine("  __mz_emit({ type: 'run-complete' });");
         AppendPostamble(sb);
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// <c>__mzSettle(page)</c>: wait until no XHR / fetch has been in flight
+    /// for 300 ms and the DOM has been quiet for 300 ms, at most 5 s in
+    /// total. A pause, not a check — it resolves either way. Long-polling or
+    /// stuck requests only cost the cap.
+    /// </summary>
+    private static void AppendSettleHelper(StringBuilder sb)
+    {
+        sb.AppendLine("  const __mz_inflight = new Set<any>();");
+        sb.AppendLine("  page.on('request', (r: any) => { if (['xhr', 'fetch'].includes(r.resourceType())) __mz_inflight.add(r); });");
+        sb.AppendLine("  page.on('requestfinished', (r: any) => __mz_inflight.delete(r));");
+        sb.AppendLine("  page.on('requestfailed', (r: any) => __mz_inflight.delete(r));");
+        sb.AppendLine("  const __mzSettle = async (p: Page, maxMs = 5000) => {");
+        sb.AppendLine("    const end = Date.now() + maxMs;");
+        sb.AppendLine("    let quietSince = Date.now();");
+        sb.AppendLine("    while (Date.now() < end) {");
+        sb.AppendLine("      if (__mz_inflight.size > 0) quietSince = Date.now();");
+        sb.AppendLine("      else if (Date.now() - quietSince >= 300) break;");
+        sb.AppendLine("      await new Promise((r) => setTimeout(r, 50));");
+        sb.AppendLine("    }");
+        sb.AppendLine("    const left = Math.max(0, end - Date.now());");
+        sb.AppendLine("    if (left === 0) return;");
+        sb.AppendLine("    await p.evaluate((ms: number) => new Promise<void>((resolve) => {");
+        sb.AppendLine("      let quiet: any = null;");
+        sb.AppendLine("      const done = () => { obs.disconnect(); clearTimeout(quiet); clearTimeout(cap); resolve(); };");
+        sb.AppendLine("      const obs = new MutationObserver(() => { clearTimeout(quiet); quiet = setTimeout(done, 300); });");
+        sb.AppendLine("      obs.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });");
+        sb.AppendLine("      quiet = setTimeout(done, 300);");
+        sb.AppendLine("      const cap = setTimeout(done, ms);");
+        sb.AppendLine("    }), left).catch(() => {});");
+        sb.AppendLine("  };");
+        sb.AppendLine();
     }
 
     /// <summary>
