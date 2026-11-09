@@ -161,6 +161,30 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
           9. Keep bodies focused. If a body grows past ~30 lines, you are
              probably folding two functions into one — split them.
 
+        ── NO ASSERTIONS / NO POST-CONDITIONS — HARD RULE (action functions) ──
+        An action PERFORMS interactions. It never checks what the UI shows
+        afterwards — the planner reads state functions for that. A check that
+        fails because the page renders slightly differently breaks an action
+        that actually worked.
+          ✗ expect(...) in any form, and every matcher (.toBe… / .toHave… /
+            .toContainText …)
+          ✗ page.waitForTimeout(...)
+          ✗ page.waitForFunction(...)
+          ✗ comparing state before / after (counts, texts) and throwing
+          ✗ waiting for something to appear / disappear / become visible /
+            hidden / detached AFTER the last interaction, e.g.
+              await page.locator('div.chart-container').waitFor({ state: 'visible' });
+              await rows.nth(i).waitFor({ state: 'detached' });
+        After the LAST interaction the ONLY allowed waits are
+        `page.waitForResponse(...)` for the requests that interaction fires —
+        create the promise BEFORE the trigger (Promise.all, or `const done =
+        page.waitForResponse(...)` first), await it after, then end.
+        Allowed BEFORE a later interaction in the same function: waiting for
+        what that next interaction needs (the menu / popup it clicks into,
+        the tooltip it reads to resolve a `name`).
+        Allowed throws: argument problems only (neither name nor index given,
+        unknown name — list the available names).
+
         ── SELECTOR DISCIPLINE ──
         Every selector string in every body MUST be a byte-for-byte match of
         a value that appears as `elementSelector` in the input signature
@@ -348,7 +372,8 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
               if (opened) await page.keyboard.press('Escape');
               return out;
             AddCard({ name?, index? }): same label reading to resolve `name` to
-            an index, then click option `index`.
+            an index, then click option `index` (plus waitForResponse for any
+            request the click fires — nothing after that).
 
         ── PER-ITEM ELEMENTS (list / listitem and per-item controls) ──
         A signature describes a repeating container as a "list" element whose
@@ -381,14 +406,14 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
             given, the user's `intent` — the user's own words for the task;
             follow their vocabulary in names and descriptions. The episodes
             remain the truth for HOW it works.
-          • After an action, wait for its OBSERVED effect instead of
-            sleeping: `await page.locator(<informational selector of what
-            appeared>).first().waitFor()`, or wait for the observed request:
-            `await page.waitForResponse(r => r.request().method() === 'POST'
-            && new URL(r.url()).pathname.startsWith('/api/items'))` (start
-            the wait BEFORE the triggering click via Promise.all). Turn
-            `{id}` path segments into a prefix / regex match. Never
-            `waitForTimeout`.
+          • An action waits for the REQUESTS it was observed to fire, never for
+            UI effects: `await page.waitForResponse(r => r.request().method()
+            === 'POST' && new URL(r.url()).pathname.startsWith('/api/items'))`,
+            created BEFORE the triggering click (Promise.all). Turn `{id}`
+            path segments into a prefix / regex match. Observed UI effects
+            (what appeared, toasts, counters) are for STATE functions and for
+            knowing what to click next — never something an action waits on
+            (see NO POST-CONDITIONS). Never `waitForTimeout`.
           • HOVER-REVEALED targets (`revealedBy.on = "hover"` in the episodes,
             or element logic "Only visible while hovering …"): hover the host
             first, then click through __mzClick —
@@ -412,6 +437,9 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
             request paths may come from it.
 
         ── FINAL CHECKS BEFORE YOU EMIT ──
+          • Does any action end with a wait / check on the UI (a locator
+            `.waitFor`, `waitForFunction`, a before/after comparison, expect)
+            instead of only `waitForResponse`? Remove it.
           • Every option set has a Get…Options state function, and its action
             takes name and/or index — no enum of merely observed values?
           • Every hover-revealed target hovered first and addressed through
@@ -534,6 +562,49 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
             throw new InvalidOperationException(
                 $"Function catalogue generator returned non-JSON content. First 200 chars: " +
                 $"{raw[..Math.Min(200, raw.Length)]}", ex);
+        }
+
+        // NO POST-CONDITIONS guard: one repair round for actions that assert
+        // or wait on the UI, then strip what is still left at the tail.
+        var flagged = parsed
+            .Where(f => CatalogueBodyLint.IsAction(f.Kind) && CatalogueBodyLint.Issues(f.Body).Count > 0)
+            .ToList();
+        if (flagged.Count > 0)
+        {
+            try
+            {
+                var report = string.Join("\n\n", flagged.Select(f =>
+                    $"- {f.Name}: " + string.Join("; ", CatalogueBodyLint.Issues(f.Body)) +
+                    $"\n```ts\n{f.Body}\n```"));
+                var repair = await chat.CompleteChatSafeAsync(
+                    new List<ChatMessage>
+                    {
+                        new SystemChatMessage(SystemPrompt),
+                        new UserChatMessage(userMsg),
+                        new AssistantChatMessage(raw),
+                        new UserChatMessage(
+                            "These ACTION functions break the NO ASSERTIONS / NO POST-CONDITIONS hard rule:\n\n" +
+                            report + "\n\n" +
+                            "Rewrite ONLY these functions. Keep name, kind, description, parameters, returns and " +
+                            "preconditions; fix the body so that after its last interaction it only awaits " +
+                            "waitForResponse promises created before the trigger — no locator.waitFor, " +
+                            "waitForFunction, waitForTimeout, expect, or before/after checks. " +
+                            "Return {\"functions\": [...]} with just these functions."),
+                    },
+                    new ChatCompletionOptions { ResponseFormat = ChatResponseFormat.CreateJsonObjectFormat() },
+                    ct);
+                tokens += repair.Value.Usage?.TotalTokenCount ?? 0;
+                var fixedFns = ParseAndValidate(LlmComponentAnalyzer.StripCodeFences(repair.Value.Content[0].Text ?? "{}"))
+                    .ToDictionary(f => f.Name, StringComparer.Ordinal);
+                parsed = parsed.Select(f => fixedFns.TryGetValue(f.Name, out var nf) && CatalogueBodyLint.IsAction(nf.Kind) ? nf : f).ToList();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Repair is best-effort; the strip below still applies.
+            }
+            parsed = parsed.Select(f => CatalogueBodyLint.IsAction(f.Kind) && CatalogueBodyLint.Issues(f.Body).Count > 0
+                ? f with { Body = CatalogueBodyLint.StripTrailingUiWaits(f.Body) }
+                : f).ToList();
         }
 
         return new FunctionCatalogueResult(parsed, tokens);

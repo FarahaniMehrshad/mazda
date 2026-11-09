@@ -642,6 +642,15 @@ emits a `Get…Options` state function listing every option
 (`{index, name, group}`) plus an action taking `name` and/or `index`. Angular
 dev-mode comment rewrites (`bindings={…}`) are not recorded as text changes.
 
+**Actions don't check outcomes.** A catalogue action performs its
+interactions and then waits only for the network responses they trigger
+(`waitForResponse`, registered before the click). No `expect`, no
+`waitForTimeout` / `waitForFunction`, no waiting for what the UI shows
+afterwards — the planner reads state functions for that. Waits that the
+*next* interaction in the same function needs (a menu before clicking an
+option) are fine. `CatalogueBodyLint` enforces it: violating actions get one
+LLM repair round, then any trailing UI wait still left is stripped.
+
 **Identifying attributes.** Besides test ids and `data-*`, the recorder keeps
 short semantic attributes (`icon`, `name`, `title`, `aria-label`,
 `formcontrolname`, … and any token-like input on a custom element) on targets,
