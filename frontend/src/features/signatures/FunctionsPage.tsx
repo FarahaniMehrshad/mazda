@@ -106,6 +106,7 @@ export function FunctionsPage() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 10 }}>
+            <BtnGhost onClick={() => navigate(`/signatures/${id}/learn`)}>Learn by watching</BtnGhost>
             <BtnGhost onClick={() => setEditing("new")}>+ Add function</BtnGhost>
             <BtnPrimary onClick={onGenerate} disabled={generate.isPending}>
               {generate.isPending ? "Regenerating…" : fns.data && fns.data.length > 0 ? "Regenerate all" : "Generate catalogue"}

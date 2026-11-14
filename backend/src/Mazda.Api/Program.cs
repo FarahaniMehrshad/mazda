@@ -243,6 +243,73 @@ using (var scope = app.Services.CreateScope())
             ON signature_functions(signature_id, "order");
         """);
 
+    // "Learn by watching": recording sessions + their raw event log, and the
+    // provenance column that lets re-analysis keep recorded elements.
+    // Column naming follows the EF mapping: "Id"/"CreatedAt"/"UpdatedAt" are
+    // the unmapped (PascalCase) base-entity columns, everything else is
+    // explicitly snake_case.
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE signature_elements
+            ADD COLUMN IF NOT EXISTS origin varchar(20) NOT NULL DEFAULT 'Source';
+
+        CREATE TABLE IF NOT EXISTS recording_sessions (
+            "Id"               uuid          PRIMARY KEY,
+            owner_id           uuid          NOT NULL,
+            signature_id       uuid          NOT NULL REFERENCES signatures("Id") ON DELETE CASCADE,
+            label              varchar(200)  NOT NULL DEFAULT '',
+            status             varchar(20)   NOT NULL,
+            started_at         timestamptz   NOT NULL DEFAULT NOW(),
+            ended_at           timestamptz   NULL,
+            start_url          varchar(2000) NOT NULL DEFAULT '',
+            allowed_origins    text          NOT NULL DEFAULT '[]',
+            capture_bodies     boolean       NOT NULL DEFAULT TRUE,
+            mask_all_inputs    boolean       NOT NULL DEFAULT FALSE,
+            cdp_port           integer       NOT NULL DEFAULT 9222,
+            target_id          varchar(200)  NOT NULL DEFAULT '',
+            event_count        integer       NOT NULL DEFAULT 0,
+            action_count       integer       NOT NULL DEFAULT 0,
+            truncated          boolean       NOT NULL DEFAULT FALSE,
+            error              text          NOT NULL DEFAULT '',
+            episodes_json      text          NOT NULL DEFAULT '',
+            proposal_json      text          NOT NULL DEFAULT '',
+            applied_at         timestamptz   NULL,
+            use_for_grounding  boolean       NOT NULL DEFAULT TRUE,
+            "CreatedAt"        timestamptz   NOT NULL DEFAULT NOW(),
+            "UpdatedAt"        timestamptz   NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS ix_recording_sessions_sig_created
+            ON recording_sessions(signature_id, "CreatedAt");
+        CREATE INDEX IF NOT EXISTS ix_recording_sessions_owner_status
+            ON recording_sessions(owner_id, status);
+
+        CREATE TABLE IF NOT EXISTS recording_events (
+            "Id"          uuid         PRIMARY KEY,
+            session_id    uuid         NOT NULL REFERENCES recording_sessions("Id") ON DELETE CASCADE,
+            seq           integer      NOT NULL,
+            t_ms          bigint       NOT NULL,
+            kind          varchar(20)  NOT NULL,
+            action_id     varchar(64)  NULL,
+            payload_json  text         NOT NULL DEFAULT '{{}}'
+        );
+        CREATE INDEX IF NOT EXISTS ix_recording_events_session_seq
+            ON recording_events(session_id, seq);
+
+        -- User intent (optional) and the analyzer's readback per session.
+        ALTER TABLE recording_sessions
+            ADD COLUMN IF NOT EXISTS label_is_auto boolean NOT NULL DEFAULT TRUE,
+            ADD COLUMN IF NOT EXISTS intent        text    NOT NULL DEFAULT '',
+            ADD COLUMN IF NOT EXISTS understanding text    NOT NULL DEFAULT '';
+
+        -- A recorder is an in-process child of the API. If the API went down
+        -- mid-session the process died with it, so any session still marked
+        -- live is an orphan.
+        UPDATE recording_sessions
+           SET status = 'Failed',
+               error  = 'The API restarted while this recording was in progress.',
+               ended_at = NOW()
+         WHERE status IN ('Recording', 'Stopping');
+        """);
+
     // Per-user settings. Today it holds only the CDP attachment — which port
     // Chrome is debugging on and which tab (by CDP targetId) MAZDA drives.
     // Before this, every harness took the first page Chrome reported, which is
@@ -343,6 +410,10 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+
+// Give live "learn by watching" recorders a chance to flush on shutdown.
+app.Lifetime.ApplicationStopping.Register(() =>
+    app.Services.GetRequiredService<Mazda.Application.Common.Abstractions.IRecordingHost>().StopAll());
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "mazda-api" }));
 app.MapMazdaEndpoints();

@@ -2,6 +2,7 @@ using FluentValidation;
 using MediatR;
 using Mazda.Application.Common;
 using Mazda.Application.Common.Abstractions;
+using Mazda.Application.Modules.Recordings;
 using Mazda.Application.Modules.Cdp;
 using Mazda.Domain.Common;
 using Mazda.Domain.Modules.Signatures;
@@ -126,6 +127,7 @@ public class GenerateFunctionCatalogueValidator
 
 public class GenerateFunctionCatalogueHandler(
     ISignatureRepository repo,
+    IRecordingRepository recordings,
     IEffectiveSignatureResolver resolver,
     IFunctionCatalogueGenerator generator,
     ICurrentUser me,
@@ -150,7 +152,14 @@ public class GenerateFunctionCatalogueHandler(
         if (sig.Elements.Count == 0)
             return Result.Failure<IReadOnlyList<SignatureFunctionDto>>(
                 Error.Validation("Cannot generate a function catalogue for a signature with no elements. " +
-                                 "Complete the Upload / Interactable / Informational steps first."));
+                                 "Complete the Upload / Interactable / Informational steps first, " +
+                                 "or record a session on the Learn page and apply it."));
+
+        // Recorded episodes are behavioural grounding: what actually appeared
+        // after each action and which requests fired. Newest first, capped so
+        // a pile of long sessions can't blow the context window.
+        var recordedEpisodes = RecordingGrounding.Compose(
+            await recordings.ListGroundingEpisodesAsync(sig.Id, ct));
 
         // Resolve transitive dependencies so bodies that need to reach into an
         // embedded component's selectors get accurate context. The resolver
@@ -170,7 +179,7 @@ public class GenerateFunctionCatalogueHandler(
         FunctionCatalogueResult result;
         try
         {
-            result = await generator.GenerateAsync(sig, deps, ct);
+            result = await generator.GenerateAsync(sig, deps, recordedEpisodes, ct);
         }
         catch (InvalidOperationException ex)
         {

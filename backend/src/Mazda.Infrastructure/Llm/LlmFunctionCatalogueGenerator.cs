@@ -91,7 +91,9 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
                   `boolean`, `array`, `object`)
                 - a `description` (1 sentence, what it means to a caller)
                 - an `enum` when values are constrained (use the exact strings
-                  the UI accepts)
+                  the UI accepts) AND the full set of values is known — see
+                  OPTION SETS: values merely observed in a recording are
+                  examples, never an enum
                 - correct membership in `required`
           3. Argument names are lowerCamelCase. They become variable names in
              the function body via destructuring, so match exactly.
@@ -158,6 +160,54 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
              signature, don't emit the function.
           9. Keep bodies focused. If a body grows past ~30 lines, you are
              probably folding two functions into one — split them.
+
+        ── NO ASSERTIONS / NO POST-CONDITIONS — HARD RULE (action functions) ──
+        An action PERFORMS interactions. It never checks what the UI shows
+        afterwards — the planner reads state functions for that. A check that
+        fails because the page renders slightly differently breaks an action
+        that actually worked.
+          ✗ expect(...) in any form, and every matcher (.toBe… / .toHave… /
+            .toContainText …)
+          ✗ page.waitForTimeout(...)
+          ✗ page.waitForFunction(...)
+          ✗ comparing state before / after (counts, texts) and throwing
+          ✗ waiting for something to appear / disappear / become visible /
+            hidden / detached AFTER the last interaction, e.g.
+              await page.locator('div.chart-container').waitFor({ state: 'visible' });
+              await rows.nth(i).waitFor({ state: 'detached' });
+        After the LAST interaction the ONLY allowed waits are
+        `page.waitForResponse(...)` for the requests that interaction fires —
+        create the promise BEFORE the trigger (Promise.all, or `const done =
+        page.waitForResponse(...)` first), await it after, then end.
+        Allowed BEFORE a later interaction in the same function: waiting for
+        what that next interaction needs (the menu / popup it clicks into,
+        the tooltip it reads to resolve a `name`).
+        Allowed throws: argument problems only (neither name nor index given,
+        unknown name — list the available names).
+
+        ── RESOLVE BY WAITING, NOT BY CHECKING — HARD RULE ──
+        A function may start while the previous step's UI is still rendering
+        (a panel opening, a list loading). Playwright locators WAIT for their
+        element; snapshots don't. So:
+          • Find targets with locators — `.filter({ hasText })`, `.nth(i)`,
+            `getByRole` — and interact; the action's auto-wait does the
+            rest. Prefer `page.locator(<slot>).filter({ hasText: /base|محور/ })
+            .first()` over reading all titles and searching them.
+          • Before reading a list with `evaluateAll` / `allTextContents` /
+            `count()` to turn a name into an index (or to range-check one),
+            WAIT for it first: `await list.first().waitFor({ timeout: 10000 })`.
+            A snapshot taken too early is empty — never throw because of it.
+          • No `if (!(await x.isVisible())) throw …` style pre-checks, no
+            range checks against a snapshot. The only throws: missing
+            arguments, and a name that is still not found AFTER the list was
+            waited for (list the names).
+          • Triggers that TOGGLE (a menu / dropdown / panel button): open it
+            only if it isn't already open — `if (!(await menu.isVisible()))
+            await __mzClick(trigger);` — a previous step may have left it open.
+          • Every action whose click / drag / fill was observed to fire a
+            request (POST/PUT/PATCH/DELETE in the episodes) awaits that
+            `waitForResponse` (created before the trigger), so the next step
+            starts once the server has answered.
 
         ── SELECTOR DISCIPLINE ──
         Every selector string in every body MUST be a byte-for-byte match of
@@ -305,9 +355,127 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
         single ACTION plan `[DoneTask(index=<from GetTasks>)]` — no
         Playwright to write at runtime, no DOM to interpret.
 
+        ── OPTION SETS (menus, listboxes, palettes, segmented choices) ──
+        When the user picks one of N options (a floating menu, a listbox, an
+        icon palette), the recording usually shows only the few options the
+        user hovered or chose. The element logic / collection `count` tells you
+        how many there really are.
+          • Observed names are EXAMPLES, not the domain. Unless EVERY option's
+            label is known (a native <select> whose options were captured, or
+            source code that declares the list), NO `enum`: put the observed
+            names in the parameter description as examples.
+          • The action takes `name` (string) and/or `index` (integer, 0-based
+            in the option set) — both optional, the body throws when neither is
+            given. Match `name` trimmed and case / whitespace-insensitively:
+            exact first, then contains. Read each option's label the SAME way
+            it was observed: its visible text, an attribute (aria-label, title,
+            attrs), or — when names only show as a tooltip — hover each option
+            in turn and read the tooltip. When nothing matches, throw an Error
+            listing the available names.
+          • ALWAYS emit a state function `Get<Thing>Options` that opens the set
+            if it is closed, returns EVERY option as `{ index, name, group }`
+            (`group` = the section title the option sits under, READ FROM THE
+            DOM per option — e.g. in `evaluate`, the closest preceding
+            section-title element of the option's container; never a constant;
+            '' if the set has no sections) and closes it
+            again (Escape) if it opened it. The planner reads it to pick a
+            name or an index.
+          Example — an icon palette whose names only appear as tooltips:
+            GetCardOptions:
+              const opened = !(await menu.isVisible());
+              if (opened) { await __mzClick(trigger); await menu.waitFor(); }
+              const icons = menu.locator(<option selector>);
+              const out = [];
+              for (let i = 0; i < await icons.count(); i++) {
+                await icons.nth(i).hover();
+                const tip = page.locator(<tooltip selector>).last();
+                await tip.waitFor({ state: 'visible', timeout: 1500 }).catch(() => {});
+                const group = await icons.nth(i).evaluate(el => { /* walk up / back to the nearest section title */ … });
+                out.push({ index: i, name: ((await tip.textContent().catch(() => '')) ?? '').trim(), group });
+              }
+              if (opened) await page.keyboard.press('Escape');
+              return out;
+            AddCard({ name?, index? }): same label reading to resolve `name` to
+            an index, then click option `index` (plus waitForResponse for any
+            request the click fires — nothing after that).
+
+        ── PER-ITEM ELEMENTS (list / listitem and per-item controls) ──
+        A signature describes a repeating container as a "list" element whose
+        selector matches EVERY item (e.g. `#list > li`), plus per-item elements
+        whose selector is that list selector followed by a path inside the item
+        (e.g. `#list > li h3.task-title`). Address item i in ONE of two ways:
+          • page-level, same index:  page.locator('#list > li h3.task-title').nth(i)
+            (only when that element exists exactly once in EVERY item — not for
+            elements that exist only in one mode, like an edit form), or
+          • scoped to the item:      const row = page.locator('#list > li').nth(i);
+                                     row.locator('h3.task-title')
+            Inside a scoped locator use ONLY the part after the list selector.
+            NEVER `row.locator('#list > li h3.task-title')`: a scoped locator
+            cannot match through the item itself, so that never resolves.
+        The same applies inside page.evaluate: `rowEl.querySelector('h3.task-title')`.
+        Prefer the scoped form whenever the element is conditional (edit forms,
+        per-mode buttons) or when reading several fields of one item.
+
+        ── OBSERVED BEHAVIOUR (when the input has an "Observed behaviour" block) ──
+        Recordings of a real user operating the live UI, condensed into
+        episodes: each user action with what the page did in response
+        (elements that appeared / disappeared / changed, requests fired,
+        URL changes, settle time). Treat it as AUTHORITATIVE for runtime
+        behaviour — it beats guesses from source code, and for third-party
+        components it is often the only truth available.
+          • Name actions after the TASKS seen in episode sequences (e.g. the
+            user clicked a combobox, an option list appeared, they clicked
+            an option → one action SelectEngine(engine)). Each recording
+            carries a `title`, the analyzer's `understanding` and, when
+            given, the user's `intent` — the user's own words for the task;
+            follow their vocabulary in names and descriptions. The episodes
+            remain the truth for HOW it works.
+          • An action waits for the REQUESTS it was observed to fire, never for
+            UI effects: `await page.waitForResponse(r => r.request().method()
+            === 'POST' && new URL(r.url()).pathname.startsWith('/api/items'))`,
+            created BEFORE the triggering click (Promise.all). Turn `{id}`
+            path segments into a prefix / regex match. Observed UI effects
+            (what appeared, toasts, counters) are for STATE functions and for
+            knowing what to click next — never something an action waits on
+            (see NO POST-CONDITIONS). Never `waitForTimeout`.
+          • HOVER-REVEALED targets (`revealedBy.on = "hover"` in the episodes,
+            or element logic "Only visible while hovering …"): hover the host
+            first, then click through __mzClick —
+                const row = page.locator(<item selector>).nth(i);
+                await row.hover();
+                await __mzClick(row.locator(<in-item path>));
+            ALWAYS address the revealed element inside the hovered item
+            (`row.locator(...)`), NEVER `page.locator(<list-prefixed
+            selector>).nth(i)`: when it is rendered on hover (`via: "js"`,
+            "appears on hover") only the hovered item has one, so a
+            page-level `.nth(i)` counts revealed copies, not rows.
+            For a hover that shows a tooltip / popover, hover the trigger and
+            wait for the observed popup before reading it.
+          • If a floating listbox / menu appeared after clicking a control,
+            prefer __mzSelectOption on that control, or click the observed
+            option selector with `.filter({ hasText })`.
+          • Write STATE functions against elements that were observed to
+            change or appear (rows added, counters, toasts).
+          • Selectors still come verbatim from `elements` — the observed
+            block explains behaviour; it is not a selector source. Templated
+            request paths may come from it.
+
         ── FINAL CHECKS BEFORE YOU EMIT ──
+          • Does any function read a list (evaluateAll / count / allTextContents)
+            without first waiting for it, or throw on such a snapshot?
+          • Does every action whose interaction fires a request wait for it?
+          • Does any action end with a wait / check on the UI (a locator
+            `.waitFor`, `waitForFunction`, a before/after comparison, expect)
+            instead of only `waitForResponse`? Remove it.
+          • Every option set has a Get…Options state function, and its action
+            takes name and/or index — no enum of merely observed values?
+          • Every hover-revealed target hovered first and addressed through
+            the hovered item's locator (never page-level `.nth(i)`)?
+          • Per-item elements used inside a row locator with only their
+            in-item path (never the full list-prefixed selector)?
           • Every selector in every body appears verbatim in the input
-            signature? If not, drop that function.
+            signature (for per-item elements, the in-item part after the
+            list selector counts)? If not, drop that function.
           • Every action name reads as user-intent, not click-transcript?
             If not, rename or fold up.
           • Every state function returns something the planner could read
@@ -318,6 +486,7 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
     public async Task<FunctionCatalogueResult> GenerateAsync(
         Signature signature,
         IReadOnlyList<Signature>? dependencies = null,
+        IReadOnlyList<string>? recordedEpisodes = null,
         CancellationToken ct = default)
     {
         var opts = options.Value;
@@ -381,10 +550,19 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
               $"this; use it to understand intent and enum values):\n" +
               $"```tsx\n{signature.SourceCode}\n```";
 
+        // Recorded sessions: what the live UI actually did after each action.
+        // When there is no source code (recording-only signatures) this is
+        // the only grounding beyond the element list itself.
+        var observedBlock = recordedEpisodes is null || recordedEpisodes.Count == 0
+            ? string.Empty
+            : "\n\nObserved behaviour (recorded from real user sessions on the live UI — " +
+              "AUTHORITATIVE for runtime behaviour, timing, and what appears after each action):\n" +
+              string.Join("\n", recordedEpisodes.Select((e, i) => $"```json recording-{i + 1}\n{e}\n```"));
+
         var userMsg =
             $"Produce the function catalogue for this signature. Reuse every " +
             $"selector byte-for-byte from the `elements` list.\n\n" +
-            $"{payload}{sourceBlock}";
+            $"{payload}{sourceBlock}{observedBlock}";
 
         var completion = await chat.CompleteChatSafeAsync(
             new List<ChatMessage>
@@ -413,7 +591,86 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
                 $"{raw[..Math.Min(200, raw.Length)]}", ex);
         }
 
+        // NO POST-CONDITIONS guard: one repair round for actions that assert
+        // or wait on the UI, then strip what is still left at the tail.
+        var observedRequests = ObservedRequests(recordedEpisodes);
+        var flagged = parsed
+            .Where(f => CatalogueBodyLint.IsAction(f.Kind) && CatalogueBodyLint.Issues(f.Body, observedRequests).Count > 0)
+            .ToList();
+        if (flagged.Count > 0)
+        {
+            try
+            {
+                var report = string.Join("\n\n", flagged.Select(f =>
+                    $"- {f.Name}: " + string.Join("; ", CatalogueBodyLint.Issues(f.Body, observedRequests)) +
+                    $"\n```ts\n{f.Body}\n```"));
+                var repair = await chat.CompleteChatSafeAsync(
+                    new List<ChatMessage>
+                    {
+                        new SystemChatMessage(SystemPrompt),
+                        new UserChatMessage(userMsg),
+                        new AssistantChatMessage(raw),
+                        new UserChatMessage(
+                            "These ACTION functions break the NO ASSERTIONS / NO POST-CONDITIONS or the " +
+                            "RESOLVE BY WAITING hard rule:\n\n" +
+                            report + "\n\n" +
+                            "Rewrite ONLY these functions. Keep name, kind, description, parameters, returns and " +
+                            "preconditions; fix the body so that it finds targets with waiting locators " +
+                            "(wait for a list before reading it, no throws on snapshots), awaits the " +
+                            "requests its interactions fire (waitForResponse created before the trigger), " +
+                            "and after its last interaction waits for nothing else — no locator.waitFor, " +
+                            "waitForFunction, waitForTimeout, expect, or before/after checks. " +
+                            "Return {\"functions\": [...]} with just these functions."),
+                    },
+                    new ChatCompletionOptions { ResponseFormat = ChatResponseFormat.CreateJsonObjectFormat() },
+                    ct);
+                tokens += repair.Value.Usage?.TotalTokenCount ?? 0;
+                var fixedFns = ParseAndValidate(LlmComponentAnalyzer.StripCodeFences(repair.Value.Content[0].Text ?? "{}"))
+                    .ToDictionary(f => f.Name, StringComparer.Ordinal);
+                parsed = parsed.Select(f => fixedFns.TryGetValue(f.Name, out var nf) && CatalogueBodyLint.IsAction(nf.Kind) ? nf : f).ToList();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Repair is best-effort; the strip below still applies.
+            }
+            parsed = parsed.Select(f => CatalogueBodyLint.IsAction(f.Kind) && CatalogueBodyLint.Issues(f.Body).Count > 0
+                ? f with { Body = CatalogueBodyLint.StripTrailingUiWaits(f.Body) }
+                : f).ToList();
+        }
+
         return new FunctionCatalogueResult(parsed, tokens);
+    }
+
+    /// <summary>
+    /// Mutating requests (POST/PUT/PATCH/DELETE) the recordings saw, with the
+    /// selectors of what the user acted on just before — so the lint can tell
+    /// when an action skips waiting for the request its click triggers.
+    /// </summary>
+    private static List<CatalogueBodyLint.ObservedRequest> ObservedRequests(IReadOnlyList<string>? docs)
+    {
+        var list = new List<CatalogueBodyLint.ObservedRequest>();
+        foreach (var raw in docs ?? Array.Empty<string>())
+        {
+            System.Text.Json.Nodes.JsonNode? root;
+            try { root = System.Text.Json.Nodes.JsonNode.Parse(raw); } catch (JsonException) { continue; }
+            // Grounding docs wrap the episode document: { title, …, episodes: { episodes: [...] } }.
+            var eps = root?["episodes"] as System.Text.Json.Nodes.JsonArray
+                      ?? root?["episodes"]?["episodes"] as System.Text.Json.Nodes.JsonArray;
+            foreach (var ep in eps?.OfType<System.Text.Json.Nodes.JsonObject>() ?? Enumerable.Empty<System.Text.Json.Nodes.JsonObject>())
+            {
+                if (ep["target"] is not System.Text.Json.Nodes.JsonObject t) continue;
+                var req = (ep["network"] as System.Text.Json.Nodes.JsonArray)?.OfType<System.Text.Json.Nodes.JsonObject>()
+                    .FirstOrDefault(n => (n["method"]?.GetValue<string>() ?? "") is "POST" or "PUT" or "PATCH" or "DELETE");
+                if (req is null) continue;
+                var sels = new List<string>();
+                if (t["best"]?.GetValue<string>() is { } b) sels.Add(b);
+                foreach (var c in (t["candidates"] as System.Text.Json.Nodes.JsonArray)?.OfType<System.Text.Json.Nodes.JsonObject>() ?? Enumerable.Empty<System.Text.Json.Nodes.JsonObject>())
+                    if (c["selector"]?.GetValue<string>() is { } cs) sels.Add(cs);
+                if (t["collection"]?["item"]?.GetValue<string>() is { } item) sels.Add(item);
+                list.Add(new CatalogueBodyLint.ObservedRequest(sels, $"{req["method"]?.GetValue<string>()} {req["path"]?.GetValue<string>()}"));
+            }
+        }
+        return list;
     }
 
     /// <summary>

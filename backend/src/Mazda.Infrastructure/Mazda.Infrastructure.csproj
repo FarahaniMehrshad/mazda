@@ -6,6 +6,10 @@
     <RootNamespace>Mazda.Infrastructure</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <!-- Page-side recorder for "learn by watching"; read at runtime by RecorderScriptBuilder. -->
+    <EmbeddedResource Include="Runner\Recorder\recorder-page.js" LogicalName="Mazda.Recorder.recorder-page.js" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\Mazda.Application\Mazda.Application.csproj" />
   </ItemGroup>
   <ItemGroup>

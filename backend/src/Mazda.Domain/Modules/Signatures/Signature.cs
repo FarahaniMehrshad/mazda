@@ -92,19 +92,20 @@ public class Signature : Entity
     /// relationship graph and function bodies that reference selectors which no
     /// longer exist — or worse, runs them.
     /// </summary>
-    public void InvalidateDerivedCaches()
+    public void InvalidateDerivedCaches(DerivedCaches scope = DerivedCaches.All)
     {
-        UserFlowsJson = string.Empty;
+        if (scope == DerivedCaches.None) return;
+        if (scope.HasFlag(DerivedCaches.Flows)) UserFlowsJson = string.Empty;
         // The relationship graph is BUILT from selectors + descriptions, so an
         // element edit (rename / add / remove) makes the persisted graph stale
         // the same way it makes flows / analyze-state stale.
-        RelationshipsJson = string.Empty;
+        if (scope.HasFlag(DerivedCaches.Relationships)) RelationshipsJson = string.Empty;
         // Function bodies hard-reference signature selectors verbatim. A
         // selector rename or removal invalidates them the same way it does
         // the relationship graph and analyze-state cache — safer to clear
         // and force a regenerate than to ship stale bodies that fail at
         // runtime with cryptic Playwright errors.
-        _functions.Clear();
+        if (scope.HasFlag(DerivedCaches.Functions)) _functions.Clear();
         Touch();
     }
 
@@ -197,6 +198,33 @@ public class SignatureDependency
     }
 }
 
+/// <summary>Which signature-level caches <see cref="Signature.InvalidateDerivedCaches"/> wipes.</summary>
+[Flags]
+public enum DerivedCaches
+{
+    None = 0,
+    Flows = 1,
+    Relationships = 2,
+    Functions = 4,
+    All = Flows | Relationships | Functions,
+}
+
+/// <summary>
+/// Where an element came from. Provenance only — it does not change how the
+/// element is used, but re-analysis steps that rebuild elements from source
+/// code must keep <see cref="Recorded"/> ones, because the source analyzers
+/// cannot see them (that is why they were recorded in the first place).
+/// </summary>
+public enum ElementOrigin
+{
+    /// <summary>Extracted from uploaded source code by an analyzer.</summary>
+    Source,
+    /// <summary>Learned from a "learn by watching" recording session.</summary>
+    Recorded,
+    /// <summary>Added by hand in the editor.</summary>
+    Manual,
+}
+
 /// <summary>
 /// Whether the element is something the user acts ON (interactive) or
 /// something the test reads / asserts against / sorts by (informational).
@@ -227,9 +255,11 @@ public class SignatureElement : Entity
 
     public int Order { get; private set; }
 
+    public ElementOrigin Origin { get; private set; } = ElementOrigin.Source;
+
     private SignatureElement() { }
 
-    public static SignatureElement Create(string selector, ElementCategory category, string type, string description, int order, string? logic = null)
+    public static SignatureElement Create(string selector, ElementCategory category, string type, string description, int order, string? logic = null, ElementOrigin origin = ElementOrigin.Source)
     {
         if (string.IsNullOrWhiteSpace(selector)) throw new ArgumentException("selector required.");
         if (string.IsNullOrWhiteSpace(type)) throw new ArgumentException("type required.");
@@ -240,7 +270,8 @@ public class SignatureElement : Entity
             ElementType = type.Trim().ToLowerInvariant(),
             ElementDescription = description?.Trim() ?? string.Empty,
             ElementLogic = logic?.Trim() ?? string.Empty,
-            Order = order
+            Order = order,
+            Origin = origin
         };
     }
 }

@@ -79,6 +79,22 @@ public sealed class InMemoryExecutionRegistry : IExecutionRegistry
         lock (s.Gate) return !s.Completed;
     }
 
+    public bool Exists(Guid id) => _byGeneration.ContainsKey(id);
+
+    public void Forget(Guid id)
+    {
+        if (!_byGeneration.TryRemove(id, out var s)) return;
+        List<Channel<string>> subs;
+        lock (s.Gate)
+        {
+            s.Completed = true;
+            subs = s.Subscribers.ToList();
+            s.Subscribers.Clear();
+            s.Lines.Clear();
+        }
+        foreach (var ch in subs) ch.Writer.TryComplete();
+    }
+
     public async IAsyncEnumerable<string> Subscribe(
         Guid generationId,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)

@@ -19,13 +19,14 @@
 9. [Runtime helpers injected into generated code](#runtime-helpers-injected-into-generated-code)
 10. [Playwright authoring rules](#playwright-authoring-rules) — *hard-won, read before writing a body*
 11. [CDP attach: the three-problem stack](#cdp-attach-the-three-problem-stack)
-12. [MCP server](#mcp-server)
-13. [Frontend](#frontend)
-14. [Persistence](#persistence)
-15. [Deployment](#deployment)
-16. [Running and operating the stack](#running-and-operating-the-stack)
-17. [Quirks and gotchas](#quirks-and-gotchas)
-18. [Glossary](#glossary)
+12. [Learn by watching (recordings)](#learn-by-watching-recordings)
+13. [MCP server](#mcp-server)
+14. [Frontend](#frontend)
+15. [Persistence](#persistence)
+16. [Deployment](#deployment)
+17. [Running and operating the stack](#running-and-operating-the-stack)
+18. [Quirks and gotchas](#quirks-and-gotchas)
+19. [Glossary](#glossary)
 
 ---
 
@@ -561,6 +562,186 @@ reintroduced.
 
 ---
 
+## Learn by watching (recordings)
+
+The source-driven wizard steps can't see inside components that ship without
+usable source, such as third-party libraries and closed bundles. Recording
+fills that gap. The user operates the attached tab, and MAZDA watches through
+CDP and learns from what the page actually did.
+
+**Pipeline:** record, then condense into episodes, then analyze (LLM), then
+review and apply. The episodes also ground catalogue generation.
+
+| Stage | Where | What happens |
+|---|---|---|
+| Record | `Runner/RecorderScriptBuilder.cs`, `Runner/Recorder/recorder-page.js`, `Runner/RecordingHost.cs` | A long-lived Playwright spec attaches to the tab and runs with `test.setTimeout(0)`. It exposes a binding and injects the page script, both into current documents (`frame.evaluate`) and future ones (`page.addInitScript`, page-scoped so it never touches other tabs). It also enables CDP `Network` on its own session and follows main-frame navigations. Each event goes to stdout as one `__MZ_REC__ {json}` line. |
+| Persist | `RecordingHost` | Lines are parsed, sanitized (`PayloadSanitizer`) and batched into `recording_events` every 1 s or 100 events. A compact copy (no bodies) goes to `IExecutionRegistry`, which feeds `GET /api/recordings/{id}/stream`. |
+| Condense | `Application/Modules/Recordings/EpisodeBuilder.cs` | Deterministic, no LLM. Events are grouped by action id into episodes: action, target (best selector plus candidates), effects (appeared / disappeared / changed / text), network, `urlBefore` and `urlAfter`, settle time. Fills are merged, repeats collapsed, URLs templated (`/items/{id}`), and the result is fitted to 60k chars. |
+| Analyze | `Llm/LlmRecordingAnalyzer.cs` + `ProposalValidator` | `AnalyzerModel` proposes elements and flow-graph additions. The server drops any selector that wasn't observed. |
+| Apply | `RecordingMerge` | A purely additive merge. New elements get `Origin = Recorded`, existing ones may get "Observed: …" appended to their logic, and flows are unioned by id. It uses `ElementChangePolicy.InvalidateOnlyIfExistingSelectorsChanged`, so the catalogue and relationship graph survive. |
+| Ground | `GenerateFunctionCatalogueHandler` → `LlmFunctionCatalogueGenerator` | Completed sessions with `UseForGrounding` add an "Observed behaviour" block to the prompt. It is authoritative for timing and effects: wait on observed effects and responses, never `waitForTimeout`. |
+
+**What is captured about structure.** A clicked target carries its
+*collection*: when it sits in a repeated set, the recorder emits a selector
+matching every item (`#list > li`), the item count, its index, the path from
+the item to the target, and an outline of the item. Every appeared element
+carries an outline of its meaningful descendants: classes, `data-*`
+attributes, roles, labels, checked/value/options, and text as `textContent`
+(with a flag when CSS `text-transform` changes how it displays). Lists that
+rebuild on every update show up as "items removed + re-added".
+`EpisodeBuilder` diffs each re-mounted item against its previous outline and
+records `itemChanges` (e.g. `article.task data-done false → true`). Items that
+did not change are marked `rerendered` and lose their outline.
+
+**Analysis is joint and follows the source-analysis rules.**
+- **Inputs and model.** `POST /api/signatures/{id}/recordings/analyze` sends
+  every completed recording to `LlmRecordingAnalyzer` in one call, on the
+  generator model.
+- **Rules.** The prompt carries `SignatureRules`: the type vocabulary, the
+  mandatory list + listitem pairs for repeating containers, read-target
+  criteria and logic notes. These are the source analyzers' rules, restated
+  for observation.
+- **`fresh`.** With `fresh`, previously learned elements and the flow edges
+  recordings added (`source: "recorded"`) are hidden from the model. Applying
+  with `replaceLearned` then replaces them rather than adding overlapping
+  variants. Source-derived and hand-written flows are kept either way. The
+  apply runs in one database transaction, and LLM values are clipped to the
+  column limits.
+- **Budget.** One analysis sends at most 240k characters of episodes. When
+  more recordings are selected, the newest ones that fit are used and the
+  proposal notes say how many were left out.
+- **Validation.** `ProposalValidator` accepts observed selectors, collection
+  item + path, and outline paths under their item, or a combination of those.
+  A bare row-relative path (`button`, `span.title`) only counts after a known
+  anchor, never on its own.
+- **Acted-on check.** Each element's evidence (`"recording:episode"`) is
+  resolved to the targets the user actually clicked, typed into or dragged. An
+  interactive element whose selector doesn't fit any of them is flagged
+  `untried` ("never used in a recording", unchecked by default; its logic is
+  prefixed "behaviour inferred"). A `matchesExisting` pointing at a *learned*
+  element the evidence never touched is dropped, so a sibling control (the
+  pencil next to the ×) can't absorb what was learned about the one clicked.
+  An ungrounded selector is rewritten to its `matchesExisting` target or
+  dropped; it never survives as itself.
+
+**Intent in, understanding out.** Each recording has an optional user
+*intent* ("archive a task, not delete it"), editable at any time. The analyzer
+treats it as the stated goal but follows the episodes. For every session it
+returns a *title* and an *understanding*: a plain-language readback of what it
+saw, which calls out contradictions with the intent. The title replaces the
+timestamp label until the user renames the recording (`LabelIsAuto`). The user
+compares intent with understanding, refines the intent and re-analyzes.
+Function generation receives each recording's title, intent and understanding
+alongside its episodes, so action names follow the user's wording.
+
+**Option sets.** A recording usually shows only the few options of a menu or
+palette the user hovered or picked. The analyzer records the set's total size
+and where labels come from (text, attribute, or a hover tooltip); the
+catalogue generator treats observed names as examples, never an `enum`, and
+emits a `Get…Options` state function listing every option
+(`{index, name, group}`) plus an action taking `name` and/or `index`. Angular
+dev-mode comment rewrites (`bindings={…}`) are not recorded as text changes.
+
+**Actions don't check outcomes.** A catalogue action performs its
+interactions and then waits only for the network responses they trigger
+(`waitForResponse`, registered before the click). No `expect`, no
+`waitForTimeout` / `waitForFunction`, no waiting for what the UI shows
+afterwards — the planner reads state functions for that. Waits that the
+*next* interaction in the same function needs (a menu before clicking an
+option) are fine. `CatalogueBodyLint` enforces it: violating actions get one
+LLM repair round, then any trailing UI wait still left is stripped.
+
+**Resolve by waiting, settle between steps.** Functions find targets with
+waiting locators (`filter({ hasText })`, `nth`) and wait for a list before
+reading it to turn a name into an index; they don't throw on instant
+snapshots, open toggling menus only when closed, and await the requests their
+interactions fire. `CatalogueBodyLint` flags snapshot-then-throw bodies and
+actions that skip a request the recording showed. Between plan steps the
+execute harness runs `__mzSettle`: it waits until no XHR/fetch has been in
+flight and the DOM has been quiet for 300 ms (cap 5 s) — a pause, never a
+failure.
+
+**Identifying attributes.** Besides test ids and `data-*`, the recorder keeps
+short semantic attributes (`icon`, `name`, `title`, `aria-label`,
+`formcontrolname`, … and any token-like input on a custom element) on targets,
+ancestors and outline items, and uses one in path steps:
+`morva-icons.icon-12[icon="close"]` instead of `:nth-of-type(2)`. Framework
+bookkeeping (`_ngcontent-*`, `ng-reflect-*`) is ignored. A click on an icon's
+`<svg>` resolves to the icon component around it (the first custom element or
+element with a key attribute), unless a real control wraps it closely.
+
+**Action boundary.** An action opens a mutation window on `pointerdown`, not on
+`click`, because many libraries (react-select, MUI, AntD) open popups on
+mousedown. The window closes after 300 ms of DOM quiet, 3 s after it opened,
+when the next action starts, or on stop. Network is attributed to the last
+action boundary within 3 s; anything outside that is background traffic.
+
+**Selectors.** Candidates come in preference order: test-id, non-generated
+`#id`, Playwright `role=…[name=…]`, stable attribute, `text=`, library class,
+CSS path. Each candidate with a CSS form carries a page-time match `count`.
+"Best" means the first *semantic* candidate that is unique or unverifiable;
+a CSS path is used only as a last resort.
+
+Role selectors are emitted only when the name is one Playwright will compute.
+Names taken from text content count only for roles that allow it (button,
+link, option…), so you will never see `role=listbox[name="<its options' text>"]`.
+
+**Hover.** Icons and menus that only show on hover are captured in two ways:
+- *Hover episodes.* Hover opens no window by itself, so the recorder remembers
+  the element under the pointer. A mutation batch within 700 ms that touches
+  it (its ancestors, or a floating popup / tooltip) opens a `hover` window
+  retroactively; leaving that host can produce an `unhover`. The window becomes
+  an episode only if something beyond the host's own hover styling changed.
+  `EpisodeBuilder` folds a matching `unhover` into the hover
+  (`revertsOnLeave`) and collapses a sweep over list rows into one episode.
+- *`revealedBy` on targets.* A click / fill / drag target gets
+  `revealedBy: { on: "hover", host, hostCollection?, inner, via }` when it
+  appeared during the last hover (`js`), disappears when the host's hover
+  classes are removed for a moment (`class`), or matches a stylesheet rule
+  `<host>:hover <…>` that reveals it (`css`; pure CSS hover changes no DOM).
+The analyzer writes "Only visible while hovering …" into the element's logic,
+and generated functions `row.hover()` before `__mzClick`.
+
+**Privacy.**
+- Sensitive inputs are masked *in the page* before anything crosses the
+  binding: password, card and OTP autocomplete fields, name/label patterns,
+  and `[data-mz-mask|data-private|data-sensitive]`.
+- Text typed into rich-text (`contenteditable`) editors is treated as input
+  too: it is never used as a name or text candidate, and with "mask every
+  typed value" it never appears in text mutations. That setting also drops
+  `<select>` option values and request bodies (response bodies are kept).
+- Bodies and URLs are redacted again server-side, by key: JSON (including
+  truncated JSON, and whole subtrees under credential keys such as `token`),
+  form-encoded and multipart bodies, query strings, and key=value URL
+  fragments (`#access_token=…`).
+- Headers are never stored.
+- An origin allowlist applies to both the page script and the network capture.
+  It defaults to the attached tab's origin.
+
+**Lifecycle.**
+- One active recording per user.
+- Stop writes the runner's `MAZDA_STOP_FILE`. The spec flushes page buffers and
+  disconnects. The runner kills the process only after a 10 s grace period.
+- A closed tab ends the session as Completed with a note, so the captured part
+  can still be analyzed.
+- An API restart marks orphaned sessions Failed on boot.
+- Caps are 30 min, 5,000 events and 20 MB.
+- Stop and orphan clean-up are conditional status updates, so they can never
+  overwrite a session the recorder has just finalized.
+- The live feed is kept in memory for 2 minutes after the session ends; the
+  stored events are the record. A stream request for an unknown recording
+  ends immediately.
+
+**Re-analysis keeps recorded elements.** Re-analyze interactive and the
+informational pass rebuild elements from source. Both preserve
+`Origin = Recorded` rows, because the source analyzers can't see them.
+
+**Signatures without source.** Upload has a "No source? Create & learn by
+watching" action that creates an empty signature. `SignatureDto.HasSourceCode`
+lets the UI hide the source-driven steps.
+
+---
+
 ## MCP server
 
 A first-class Streamable-HTTP MCP endpoint at `/api/mcp`, authenticated with the
@@ -621,6 +802,18 @@ state snapshot and the plan → Execute → live step cards driven by the SSE
 
 ### Notable design choices
 
+- **Dropdowns use `<Select>` (`shared/components/Select.tsx`), never a native
+  `<select>`.**
+  - **Why:** a native select's option list is drawn by the OS and ignores CSS,
+    so on the dark theme it pops up white.
+  - **What `<Select>` does:** it draws its own list in a portal on `<body>`,
+    which is never clipped by modals, and flips upward near the viewport
+    bottom. Keyboard behaviour and ARIA roles match a native select.
+  - **Enforcement:** `scripts/check-ui.mjs` runs first in `npm run build`, and
+    so in the web image, and fails on any `<select>`/`<option>` outside that
+    file. Run it alone with `npm run check:ui`.
+  - **Fallback:** `:root { color-scheme: dark }` keeps any other native
+    control dark.
 - **Monaco is bundled locally**, not loaded from the CDN — `monaco-editor` is an
   explicit npm dependency and Vite's `?worker` imports wire the workers. Google
   Fonts were likewise dropped from `index.html`; typography falls back through

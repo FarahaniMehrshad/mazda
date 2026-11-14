@@ -9,7 +9,7 @@ import {
   StepIndicator,
 } from "@/shared/components/Primitives";
 import { Icon } from "@/shared/icons/Icon";
-import { useAnalyzeComponent } from "./api";
+import { useAnalyzeComponent, useSaveSignature, useUpdateSignatureDescription } from "./api";
 import { ApiError } from "@/shared/api/client";
 
 /**
@@ -328,6 +328,8 @@ async function bundleFiles(
 export function UploadPage() {
   const navigate = useNavigate();
   const analyze = useAnalyzeComponent();
+  const save = useSaveSignature();
+  const updateDescription = useUpdateSignatureDescription();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const descInputRef = useRef<HTMLInputElement>(null);
@@ -506,6 +508,27 @@ export function UploadPage() {
       navigate(`/signatures/${sig.id}`);
     } catch (err) {
       alert(err instanceof ApiError ? err.message : "Analysis failed.");
+    }
+  }
+
+  // No usable source (third-party library, closed bundle): create an empty
+  // signature and let MAZDA learn it by watching the user operate the UI.
+  async function createForLearning() {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      alert("Give the component a name first — there's no source to suggest one from.");
+      return;
+    }
+    if (trimmed.length > MAX_NAME_CHARS) {
+      alert(`Name too long (${trimmed.length} chars, limit ${MAX_NAME_CHARS}).`);
+      return;
+    }
+    try {
+      const sig = await save.mutateAsync({ name: trimmed, source: "recorded", type: "component", elements: [] });
+      if (description.trim()) await updateDescription.mutateAsync({ id: sig.id, description: description.trim() });
+      navigate(`/signatures/${sig.id}/learn`);
+    } catch (err) {
+      alert(err instanceof ApiError ? err.message : "Could not create the signature.");
     }
   }
 
@@ -970,6 +993,12 @@ export function UploadPage() {
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <BtnGhost onClick={() => navigate(-1)}>Cancel</BtnGhost>
+            <BtnGhost
+              onClick={createForLearning}
+              disabled={save.isPending || analyze.isPending}
+            >
+              {save.isPending ? "Creating…" : "No source? Create & learn by watching"}
+            </BtnGhost>
             <BtnPrimary
               icon={Icon.spark()}
               onClick={runAnalysis}

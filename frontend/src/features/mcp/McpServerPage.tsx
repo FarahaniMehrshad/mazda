@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { TopBar } from "@/shared/components/TopBar";
 import {
   ScreenShell,
@@ -7,6 +7,7 @@ import {
   Pill,
 } from "@/shared/components/Primitives";
 import { Icon } from "@/shared/icons/Icon";
+import { Select } from "@/shared/components/Select";
 import { useSignatures } from "@/features/signatures/api";
 import {
   useMcpTools,
@@ -529,22 +530,7 @@ function EmptyHint({ text }: { text: string }) {
   );
 }
 
-/**
- * Custom dropdown for picking a signature. We can't use a native <select>
- * because native <option> elements only honor a tiny subset of CSS — the
- * popup chrome (option borders, popup outline) is rendered by the OS and
- * comes out white-on-dark even with `color-scheme: dark`. A custom popup
- * lets us match the modal's glass theme exactly.
- *
- * Behavior:
- *   • Trigger button shows the currently-selected signature label.
- *   • Click toggles a popup positioned below the trigger.
- *   • Each option is a hover-highlighted row; click selects + closes.
- *   • Outside click closes (modal click handler stops propagation already,
- *     so we add a document-level pointerdown listener while open).
- *   • Escape closes.
- *   • Keyboard: arrow up/down navigate, Enter selects.
- */
+/** Signature chooser — the shared <Select> with name · source labels. */
 function SignaturePicker({
   value,
   onChange,
@@ -554,170 +540,23 @@ function SignaturePicker({
   onChange: (id: string) => void;
   signatures: SignatureDto[];
 }) {
-  const [open, setOpen] = useState(false);
-  const [highlight, setHighlight] = useState(0);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  const selected = signatures.find((s) => s.id === value);
-  const triggerLabel = selected
-    ? `${selected.name}${selected.source ? ` · ${selected.source}` : ""}`
-    : "Select a signature…";
-
-  // Sync the keyboard highlight to the currently-selected row when the popup
-  // opens, so arrow keys start from the user's last choice.
-  useEffect(() => {
-    if (!open) return;
-    const idx = signatures.findIndex((s) => s.id === value);
-    if (idx >= 0) setHighlight(idx);
-  }, [open, value, signatures]);
-
-  // Close on outside click + Escape. The pointerdown listener is added only
-  // while the popup is open so we don't pay the perf cost in the steady state.
-  useEffect(() => {
-    if (!open) return;
-    function onPointerDown(e: PointerEvent) {
-      if (!containerRef.current) return;
-      if (containerRef.current.contains(e.target as Node)) return;
-      setOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        setOpen(false);
-      } else if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setHighlight((h) => Math.min(signatures.length - 1, h + 1));
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setHighlight((h) => Math.max(0, h - 1));
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        const next = signatures[highlight];
-        if (next) {
-          onChange(next.id);
-          setOpen(false);
-        }
-      }
-    }
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open, signatures, highlight, onChange]);
-
   return (
-    <div ref={containerRef} style={{ position: "relative", width: "100%" }}>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        style={{
-          ...inputStyle,
-          // Override only the bits a button needs that the input style lacks.
-          cursor: "pointer",
-          textAlign: "left",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 8,
-        }}
-      >
-        <span
-          style={{
-            color: selected ? "var(--text-1)" : "var(--text-4)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {triggerLabel}
-        </span>
-        <span
-          style={{
-            color: "var(--text-3)",
-            fontSize: 10,
-            transform: open ? "rotate(180deg)" : "none",
-            transition: "transform 120ms ease",
-          }}
-        >
-          ▼
-        </span>
-      </button>
-
-      {open && (
-        <div
-          className="mz-glass"
-          // Absolute-positioned popup so it overlays subsequent fields rather
-          // than pushing them down. zIndex sits above the modal contents but
-          // below the modal backdrop overlay (which is z 50).
-          style={{
-            position: "absolute",
-            top: "calc(100% + 4px)",
-            left: 0,
-            right: 0,
-            zIndex: 60,
-            padding: 4,
-            maxHeight: 260,
-            overflowY: "auto",
-            display: "flex",
-            flexDirection: "column",
-            gap: 2,
-            // Solid background so the OS-light dropdown chrome isn't an issue
-            // anymore — we control every pixel ourselves.
-            background: "#16121a",
-            border: "1px solid var(--glass-stroke)",
-            borderRadius: 8,
-            boxShadow: "0 12px 32px rgba(0,0,0,0.6)",
-          }}
-        >
-          {signatures.length === 0 && (
-            <div style={{ padding: 10, fontSize: 12, color: "var(--text-4)", textAlign: "center" }}>
-              No signatures.
-            </div>
-          )}
-          {signatures.map((s, idx) => {
-            const isSelected = s.id === value;
-            const isHighlighted = idx === highlight;
-            return (
-              <button
-                key={s.id}
-                type="button"
-                onClick={() => {
-                  onChange(s.id);
-                  setOpen(false);
-                }}
-                onMouseEnter={() => setHighlight(idx)}
-                style={{
-                  textAlign: "left",
-                  background: isHighlighted ? "rgba(234,112,40,0.16)" : "transparent",
-                  border: "none",
-                  borderRadius: 6,
-                  padding: "8px 10px",
-                  color: isSelected ? "var(--orange-100)" : "var(--text-1)",
-                  fontFamily: "var(--f-sans)",
-                  fontSize: 13,
-                  cursor: "pointer",
-                  outline: "none",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {isSelected && <span style={{ color: "var(--orange-200)" }}>✓</span>}
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {s.name}
-                  {s.source && (
-                    <span style={{ color: "var(--text-4)" }}>{" · "}{s.source}</span>
-                  )}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
+    <Select
+      value={value}
+      onChange={onChange}
+      placeholder="Select a signature…"
+      ariaLabel="Signature"
+      emptyText="No signatures."
+      options={signatures.map((s) => ({
+        value: s.id,
+        text: s.name,
+        label: (
+          <>
+            {s.name}
+            {s.source && <span style={{ color: "var(--text-4)" }}>{" · "}{s.source}</span>}
+          </>
+        ),
+      }))}
+    />
   );
 }
