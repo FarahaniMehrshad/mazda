@@ -192,10 +192,10 @@ internal static class FunctionHarnessBuilder
         // collect. Bounded and fully guarded: it must never change the outcome.
         sb.AppendLine("      await __mzCaptureForensics(page, { stepId: __mz_step.id, call: __mz_step.call, args: __mz_step.args ?? {},");
         sb.AppendLine("        prevStepId: __mz_prevId, url: __mz_url, title: __mz_title,");
-        sb.AppendLine("        error: { message: String(__mz_err?.message ?? __mz_err), stack: String(__mz_err?.stack ?? '').slice(0, 4000) } });");
+        sb.AppendLine("        error: { message: __mzPlain(__mz_err?.message ?? __mz_err), stack: __mzPlain(__mz_err?.stack).slice(0, 4000) } });");
         sb.AppendLine("      __mz_emit({ type: 'step-failed', id: __mz_step.id, call: __mz_step.call, durationMs: Date.now() - __mz_t0,");
-        sb.AppendLine("        error: { kind: 'RuntimeError', message: String(__mz_err?.message ?? __mz_err),");
-        sb.AppendLine("          stack: String(__mz_err?.stack ?? '').slice(0, 4000), pageUrl: __mz_url, pageTitle: __mz_title } });");
+        sb.AppendLine("        error: { kind: 'RuntimeError', message: __mzPlain(__mz_err?.message ?? __mz_err),");
+        sb.AppendLine("          stack: __mzPlain(__mz_err?.stack).slice(0, 4000), pageUrl: __mz_url, pageTitle: __mz_title } });");
         sb.AppendLine("      __mz_emit({ type: 'run-aborted' });");
         sb.AppendLine("      await browser.close();");
         sb.AppendLine("      return;");
@@ -227,6 +227,9 @@ internal static class FunctionHarnessBuilder
   page.on('pageerror', (e: any) => {
     try { __mzFx.pageErrors.push(String(e?.stack ?? e).slice(0, 800)); if (__mzFx.pageErrors.length > 50) __mzFx.pageErrors.shift(); } catch {}
   });
+  // Playwright colours its call log with ANSI escapes, which show up as garbage
+  // glyphs in the UI and are noise to an LLM.
+  const __mzPlain = (s: any): string => String(s ?? '').replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
   const __mzBound = <T,>(p: Promise<T>, ms: number): Promise<T | null> =>
     Promise.race([p.catch(() => null as any), new Promise<null>((r) => setTimeout(() => r(null), ms))]);
   // Rolling network log for the whole run, each request tagged with the step
@@ -429,8 +432,8 @@ internal static class FunctionHarnessBuilder
         sb.AppendLine("        returned: __mz_returned === undefined ? null : __mz_returned };");
         sb.AppendLine("    } catch (__mz_err: any) {");
         sb.AppendLine("      __mz_result = { ok: false, durationMs: Date.now() - __mz_t0,");
-        sb.AppendLine("        error: { kind: 'RuntimeError', message: String(__mz_err?.message ?? __mz_err),");
-        sb.AppendLine("                 stack: String(__mz_err?.stack ?? '') } };");
+        sb.AppendLine("        error: { kind: 'RuntimeError', message: __mzPlain(__mz_err?.message ?? __mz_err),");
+        sb.AppendLine("                 stack: __mzPlain(__mz_err?.stack) } };");
         sb.AppendLine("      let __mz_url: string | null = null;");
         sb.AppendLine("      try { __mz_url = page.url(); } catch {}");
         sb.AppendLine("      await __mzCaptureForensics(page, { stepId: __mz_target, call: __mz_target, args: __mz_args, prevStepId: null, url: __mz_url, title: null,");

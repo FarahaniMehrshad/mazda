@@ -375,19 +375,20 @@ public static class McpServer
 
     private static IEnumerable<JsonObject> DebugToolDescriptors()
     {
-        var genId = new JsonObject { ["type"] = "string", ["description"] = "The generation_id reported by the failed tool call." };
+        // A JsonNode can have only one parent, so each tool needs its own copy.
+        static JsonObject GenId() => new() { ["type"] = "string", ["description"] = "The generation_id reported by the failed tool call." };
         yield return DebugTool(McpDebugTools.GetRunFailure,
             "Explain why a run failed. Returns the failing step, error and stack, the page URL/title at that moment, " +
             "failed or 4xx/5xx requests with bodies, console errors, form values and the page's accessibility tree. " +
             "Call this first after any failed tool call.",
-            new JsonObject { ["generation_id"] = genId }, "generation_id");
+            new JsonObject { ["generation_id"] = GenId() }, "generation_id");
         yield return DebugTool(McpDebugTools.GetStepArtifact,
             "Fetch one full piece of the failed step's snapshot. kind: meta | aria (full accessibility tree) | dom (trimmed HTML) | " +
             "network (every captured request with bodies) | console | fields (form values) | log (runner log) | screenshot (image). " +
             "Large text is paged: pass offset from the previous result's footer.",
             new JsonObject
             {
-                ["generation_id"] = genId,
+                ["generation_id"] = GenId(),
                 ["kind"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray(ForensicsFormatter.ArtifactKinds.Append("log").Distinct().Select(k => (JsonNode?)JsonValue.Create(k)).ToArray()) },
                 ["step_id"] = new JsonObject { ["type"] = "string", ["description"] = "Optional. Snapshots exist only for the failing step; used as a sanity check." },
                 ["offset"] = new JsonObject { ["type"] = "integer", ["description"] = "Character offset for paging text artifacts." },
@@ -398,7 +399,7 @@ public static class McpServer
             "Use failed_only to see just failures and 4xx/5xx responses.",
             new JsonObject
             {
-                ["generation_id"] = genId,
+                ["generation_id"] = GenId(),
                 ["url_contains"] = new JsonObject { ["type"] = "string" },
                 ["step_id"] = new JsonObject { ["type"] = "string", ["description"] = "Only requests started during this step." },
                 ["failed_only"] = new JsonObject { ["type"] = "boolean" },

@@ -132,7 +132,7 @@ export function FailureSnapshot({ bundle, report }: { bundle: ForensicsBundle; r
       )}
 
       {bundle.dom && (
-        <Block title={`DOM (trimmed, ${Math.round(bundle.dom.length / 1024)} KB)`}>
+        <Block title={`DOM (trimmed, ${bundle.dom.length.toLocaleString()} chars)`}>
           <Pre>{bundle.dom}</Pre>
         </Block>
       )}

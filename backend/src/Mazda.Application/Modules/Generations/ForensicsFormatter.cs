@@ -89,7 +89,7 @@ public static class ForensicsFormatter
             }
         }
 
-        return Clip(sb.ToString().TrimEnd(), ReportBudget);
+        return Clip(Plain(sb.ToString().TrimEnd()), ReportBudget);
     }
 
     private static void AppendEnvelopeFailure(StringBuilder sb, string? envelopeJson)
@@ -207,6 +207,7 @@ public static class ForensicsFormatter
 
     private static ArtifactSlice Page(string text, int offset, int limit)
     {
+        text = Plain(text);
         if (offset >= text.Length && text.Length > 0)
             return new ArtifactSlice($"(offset {offset} is past the end; total length {text.Length})", null, true);
         var slice = text.Substring(offset, Math.Min(limit, text.Length - offset));
@@ -279,6 +280,12 @@ public static class ForensicsFormatter
 
     private static string Clip(string? s, int max)
         => string.IsNullOrEmpty(s) ? "" : s.Length <= max ? s : s[..max] + $"… [+{s.Length - max} chars]";
+
+    // Playwright colours its call log with ANSI escapes; they are noise to an LLM.
+    private static readonly System.Text.RegularExpressions.Regex Ansi =
+        new(@"\x1B\[[0-9;]*[A-Za-z]", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static string Plain(string s) => Ansi.Replace(s, "");
 
     private static string Tail(string s, int max) => s.Length <= max ? s : "…" + s[^max..];
 
