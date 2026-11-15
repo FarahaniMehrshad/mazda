@@ -174,7 +174,8 @@ export interface GenerationDto {
   executionStartedAt: string | null;
   executionEndedAt: string | null;
   createdAt: string;
-  updatedAt: string;
+  updatedAt: string;  /** True when a failure snapshot was stored for this run. */
+  hasForensics?: boolean;
 }
 
 // ── Signature function catalogue ─────────────────────────────────────
@@ -229,6 +230,10 @@ export interface FunctionTestResultDto {
   pageUrl: string | null;
   pageTitle: string | null;
   logTail: string;
+  /** Page snapshot (JSON of `ForensicsBundle`) when the body threw. */
+  forensicsJson?: string | null;
+  /** Plain-text digest of the snapshot; send it back with a Fix-with-AI request. */
+  failureReport?: string | null;
 }
 
 /**
@@ -308,7 +313,62 @@ export interface StepResultBlob {
   call: string;
   status: StepStatus;
   durationMs: number;
-  error: { kind: StepErrorKind; message: string } | null;
+  error: {
+    kind: StepErrorKind;
+    message: string;
+    /** Added with failure forensics; absent on older runs. */
+    stack?: string | null;
+    pageUrl?: string | null;
+    pageTitle?: string | null;
+  } | null;
+}
+
+// ── Failure forensics (page snapshot of the failing step) ──────────
+
+export interface ForensicsRequest {
+  n: number;
+  step: string | null;
+  method: string;
+  url: string;
+  type: string;
+  t: number;
+  ms?: number;
+  status?: number;
+  mime?: string;
+  failure?: string;
+  reqBody?: string;
+  body?: string;
+}
+
+/**
+ * What the harness captured when a step threw: the page at that moment, the
+ * requests around it, and console output. `report` is the plain-text digest
+ * (same text an MCP agent gets) added by the forensics endpoint.
+ */
+export interface ForensicsBundle {
+  capturedAt: string;
+  stepId: string;
+  call: string;
+  args?: Record<string, unknown>;
+  prevStepId?: string | null;
+  url?: string | null;
+  title?: string | null;
+  readyState?: string;
+  viewport?: { w: number; h: number };
+  scrollY?: number;
+  activeElement?: string | null;
+  error?: { message: string; stack?: string };
+  aria?: string | null;
+  dom?: string | null;
+  fields?: Array<{ tag: string; type?: string | null; name?: string | null; id?: string | null; value: string; checked?: boolean }>;
+  console?: Array<{ type: string; text: string }>;
+  pageErrors?: string[];
+  inflight?: string[];
+  network?: ForensicsRequest[];
+  networkTotal?: number;
+  screenshotJpegBase64?: string | null;
+  redactionError?: string;
+  report?: string;
 }
 
 export interface ExecutionEnvelopeBlob {

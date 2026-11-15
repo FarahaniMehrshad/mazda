@@ -115,6 +115,8 @@ public sealed class PlanInterpreter(IScriptRunner runner) : IPlanInterpreter
 
     // ── Envelope assembly ─────────────────────────────────────────────
 
+    private const int MaxPersistedLogChars = 200_000;
+
     /// <summary>
     /// Walk the plan and the observed event list together, mapping each
     /// plan step to a <see cref="StepResult"/>. This method is the single
@@ -185,7 +187,10 @@ public sealed class PlanInterpreter(IScriptRunner runner) : IPlanInterpreter
                     var msg = errElem.TryGetProperty("message", out var mElem) && mElem.ValueKind == JsonValueKind.String
                         ? mElem.GetString() ?? ""
                         : "";
-                    err = new StepError(kind, msg);
+                    string? Str(string name) =>
+                        errElem.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
+                            ? v.GetString() : null;
+                    err = new StepError(kind, msg, Str("stack"), Str("pageUrl"), Str("pageTitle"));
                 }
                 stepResults.Add(new StepResult(step.Id, step.Call, StepStatus.Failed, duration, err));
             }
@@ -209,15 +214,19 @@ public sealed class PlanInterpreter(IScriptRunner runner) : IPlanInterpreter
         // Harness-level failures that fail every step get surfaced through
         // RunnerCompletion.Kind — a caller can key off completion.Kind to
         // render "runner crashed" separately from "your plan didn't work".
-        _ = completion;
-
+        // The raw log (Playwright call log, stacks) rides along on the
+        // envelope so the caller can persist it for failed runs.
         return new ExecutionEnvelope(
             Outcome: outcome,
             StepsTotal: plan.Steps.Count,
             StepsExecuted: executed,
             Steps: stepResults,
             CapturedState: state,
-            Plan: plan);
+            Plan: plan)
+        {
+            RunLog = outcome == RunOutcome.Ok ? string.Empty : HarnessOutput.Tail(completion.FullLog, MaxPersistedLogChars),
+            ForensicsJson = outcome == RunOutcome.Ok ? null : completion.ForensicsJson,
+        };
     }
 
     /// <summary>

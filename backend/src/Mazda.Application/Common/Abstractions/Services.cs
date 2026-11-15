@@ -256,7 +256,15 @@ public enum StepErrorKind
     HarnessError,       // stitching / connect / spawn broke before we could run
 }
 
-public record StepError(StepErrorKind Kind, string Message);
+/// <param name="Stack">JS stack of the thrown error (may be null for older runs).</param>
+/// <param name="PageUrl">URL of the page when the step failed, if it could be read.</param>
+/// <param name="PageTitle">Title of the page when the step failed, if it could be read.</param>
+public record StepError(
+    StepErrorKind Kind,
+    string Message,
+    string? Stack = null,
+    string? PageUrl = null,
+    string? PageTitle = null);
 
 public record StepResult(
     string Id,
@@ -277,7 +285,18 @@ public record ExecutionEnvelope(
     int StepsExecuted,
     IReadOnlyList<StepResult> Steps,
     GatheredState CapturedState,
-    Plan Plan);
+    Plan Plan)
+{
+    /// <summary>
+    /// Tail of the runner's stdout/stderr (Playwright call log, stacks).
+    /// Not part of the serialised envelope; callers persist it separately
+    /// so failed runs keep their raw log.
+    /// </summary>
+    public string RunLog { get; init; } = string.Empty;
+
+    /// <summary>Forensics bundle for the failed step (JSON), or null. Stored separately from the envelope: it can hold a screenshot.</summary>
+    public string? ForensicsJson { get; init; }
+}
 
 /// <summary>
 /// Runs every state function on the signature (and, when transitive
@@ -309,7 +328,10 @@ public sealed record FunctionFailureContext(
     /// Tail of the runner log. Playwright's own diagnostics ("waiting for
     /// locator … resolved to 3 elements") are often more useful than the
     /// exception message.
-    string? LogTail);
+    string? LogTail,
+    /// Plain-text page snapshot taken when the body threw (URL, failed
+    /// requests, console, accessibility tree) — see <c>ForensicsFormatter</c>.
+    string? FailureReport = null);
 
 public sealed record FunctionFixResult(
     /// Replacement body only. Never the schemas — see IFunctionFixer.
@@ -402,7 +424,8 @@ public sealed record FunctionTestOutcome(
     int DurationMs,
     string? PageUrl,        // where the browser actually was, for context
     string? PageTitle,
-    string LogTail);        // tail of runner stdout, for when the payload isn't enough
+    string LogTail,         // tail of runner stdout, for when the payload isn't enough
+    string? ForensicsJson = null);  // page snapshot bundle taken when the body threw, if any
 
 /// <summary>
 /// Design-time debugging port: run a single function from a signature's
@@ -509,7 +532,14 @@ public record FlowAnalysisResult(string FlowsJson, int TokensUsed);
 
 public enum RunnerExitKind { Passed, FailedTest, Errored, Cancelled }
 
-public sealed record RunnerCompletion(RunnerExitKind Kind, int ExitCode, string FullLog);
+public sealed record RunnerCompletion(RunnerExitKind Kind, int ExitCode, string FullLog)
+{
+    /// <summary>
+    /// Failure forensics bundle (JSON) the harness wrote for a failed step, if
+    /// any: page snapshot, console, in-flight requests, screenshot.
+    /// </summary>
+    public string? ForensicsJson { get; init; }
+}
 
 /// <summary>
 /// In-memory registry of currently running script executions, so the SSE

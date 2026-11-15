@@ -137,6 +137,18 @@ public class SignatureRepository(MazdaDbContext db) : ISignatureRepository
         signature.RemoveFunction(functionId);
     }
 
+    public Task AddFunctionAsync(Signature signature, SignatureFunction function, CancellationToken ct = default)
+    {
+        // Keep the in-memory aggregate in step (the caller reads Functions back),
+        // then force the child to Added. Entity's base ctor gives every new
+        // function a non-default Guid Id, which EF would otherwise read as
+        // "already exists" and try to UPDATE. Same reasoning as
+        // ReplaceFunctionsAsync / ReplaceElementsAsync above.
+        signature.AddFunction(function);
+        db.Entry(function).State = EntityState.Added;
+        return Task.CompletedTask;
+    }
+
     public async Task ReplaceFunctionsAsync(Signature signature, IEnumerable<SignatureFunction> newFunctions, CancellationToken ct = default)
     {
         var sigId = signature.Id;

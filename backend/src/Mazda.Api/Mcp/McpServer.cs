@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Mazda.Api.Auth;
 using Mazda.Application.Common.Abstractions;
+using Mazda.Application.Modules.Generations;
 using Mazda.Application.Modules.Mcp;
 
 namespace Mazda.Api.Mcp;
@@ -354,7 +355,78 @@ public static class McpServer
             foreach (var d in result.Value)
                 tools.Add(BuildToolDescriptor(d));
         }
+        // Fixed, read-only debugging tools for runs that failed.
+        foreach (var t in DebugToolDescriptors()) tools.Add(t);
         return new JsonObject { ["tools"] = tools };
+    }
+
+    private static JsonObject DebugTool(string name, string description, JsonObject properties, params string[] required) => new()
+    {
+        ["name"] = name,
+        ["description"] = description,
+        ["inputSchema"] = new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = properties,
+            ["required"] = new JsonArray(required.Select(r => (JsonNode?)JsonValue.Create(r)).ToArray()),
+            ["additionalProperties"] = false,
+        },
+    };
+
+    private static IEnumerable<JsonObject> DebugToolDescriptors()
+    {
+        // A JsonNode can have only one parent, so each tool needs its own copy.
+        static JsonObject GenId() => new() { ["type"] = "string", ["description"] = "The generation_id reported by the failed tool call." };
+        yield return DebugTool(McpDebugTools.GetRunFailure,
+            "Explain why a run failed. Returns the failing step, error and stack, the page URL/title at that moment, " +
+            "failed or 4xx/5xx requests with bodies, console errors, form values and the page's accessibility tree. " +
+            "Call this first after any failed tool call.",
+            new JsonObject { ["generation_id"] = GenId() }, "generation_id");
+        yield return DebugTool(McpDebugTools.GetStepArtifact,
+            "Fetch one full piece of the failed step's snapshot. kind: meta | aria (full accessibility tree) | dom (trimmed HTML) | " +
+            "network (every captured request with bodies) | console | fields (form values) | log (runner log) | screenshot (image). " +
+            "Large text is paged: pass offset from the previous result's footer.",
+            new JsonObject
+            {
+                ["generation_id"] = GenId(),
+                ["kind"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray(ForensicsFormatter.ArtifactKinds.Append("log").Distinct().Select(k => (JsonNode?)JsonValue.Create(k)).ToArray()) },
+                ["step_id"] = new JsonObject { ["type"] = "string", ["description"] = "Optional. Snapshots exist only for the failing step; used as a sanity check." },
+                ["offset"] = new JsonObject { ["type"] = "integer", ["description"] = "Character offset for paging text artifacts." },
+                ["limit"] = new JsonObject { ["type"] = "integer", ["description"] = "Max characters to return (default 20000, max 60000)." },
+            }, "generation_id", "kind");
+        yield return DebugTool(McpDebugTools.SearchRunNetwork,
+            "Search the XHR/fetch/document requests captured around the failure, with request and response bodies. " +
+            "Use failed_only to see just failures and 4xx/5xx responses.",
+            new JsonObject
+            {
+                ["generation_id"] = GenId(),
+                ["url_contains"] = new JsonObject { ["type"] = "string" },
+                ["step_id"] = new JsonObject { ["type"] = "string", ["description"] = "Only requests started during this step." },
+                ["failed_only"] = new JsonObject { ["type"] = "boolean" },
+            }, "generation_id");
+    }
+
+    private static async Task<JsonObject> CallDebugTool(string name, JsonObject args, ISender sender, CancellationToken ct)
+    {
+        if (!Guid.TryParse(args["generation_id"]?.GetValue<string>(), out var genId))
+            return ToolErrorContent("generation_id is required and must be a GUID (it is reported by the failed tool call).");
+
+        int Int(string k) => args[k] is JsonValue v && v.TryGetValue<int>(out var i) ? i : 0;
+        var cmd = new RunDebugCommand(
+            name, genId,
+            Kind: args["kind"]?.GetValue<string>(),
+            Offset: Int("offset"), Limit: Int("limit"),
+            UrlContains: args["url_contains"]?.GetValue<string>(),
+            Step: args["step_id"]?.GetValue<string>(),
+            FailedOnly: args["failed_only"] is JsonValue fo && fo.TryGetValue<bool>(out var b) && b);
+
+        var result = await sender.Send(cmd, ct);
+        if (!result.IsSuccess) return ToolErrorContent(result.Error.Message);
+
+        var content = new JsonArray { new JsonObject { ["type"] = "text", ["text"] = result.Value.Text } };
+        if (result.Value.ImageBase64 is { } img)
+            content.Add(new JsonObject { ["type"] = "image", ["data"] = img, ["mimeType"] = "image/jpeg" });
+        return new JsonObject { ["content"] = content, ["isError"] = result.Value.IsError };
     }
 
     private static JsonObject BuildToolDescriptor(McpToolDescriptor d)
@@ -439,6 +511,10 @@ public static class McpServer
 
         var args = p["arguments"] as JsonObject ?? new JsonObject();
 
+        // Built-in debugging tools win over user-defined names.
+        if (McpDebugTools.IsDebugTool(name))
+            return await CallDebugTool(name.ToLowerInvariant(), args, sender, ct);
+
         // `prompt` is the advertised argument. setup_prompt / test_prompt are
         // accepted but no longer advertised: they were the two halves of the
         // pre-catalogue architecture and were being concatenated anyway, so
@@ -466,7 +542,11 @@ public static class McpServer
 
         var r = invoke.Value;
         var headline = $"status: {r.Status}{(r.ExitCode is { } code ? $" (exit code {code})" : string.Empty)}\nsummary: {r.Summary}\ngeneration_id: {r.GenerationId}";
-        var body = $"{headline}\n\n--- Execution log ---\n{(string.IsNullOrEmpty(r.FullLog) ? "(no log captured)" : r.FullLog)}";
+        var failure = string.IsNullOrWhiteSpace(r.FailureReport)
+            ? string.Empty
+            : $"\n\n--- Failure report (page state at the failing step) ---\n{r.FailureReport}\n" +
+              $"(More detail: call get_run_failure / get_step_artifact / search_run_network with generation_id={r.GenerationId}.)";
+        var body = $"{headline}{failure}\n\n--- Execution log ---\n{(string.IsNullOrEmpty(r.FullLog) ? "(no log captured)" : r.FullLog)}";
 
         return new JsonObject
         {

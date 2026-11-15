@@ -347,7 +347,7 @@ public class CreateSignatureFunctionHandler(
             order: nextOrder,
             preconditions: cmd.Preconditions);
 
-        sig.AddFunction(fn);
+        await repo.AddFunctionAsync(sig, fn, ct);
         await uow.SaveChangesAsync(ct);
         return Result.Success(fn.ToDto());
     }
@@ -511,7 +511,11 @@ public record FunctionTestResultDto(
     int DurationMs,
     string? PageUrl,
     string? PageTitle,
-    string LogTail);
+    string LogTail,
+    /// Full page snapshot (JSON) when the body threw; rendered by the UI.
+    string? ForensicsJson = null,
+    /// Plain-text digest of the snapshot, sent back with a Fix-with-AI request.
+    string? FailureReport = null);
 
 public record TestSignatureFunctionCommand(
     Guid SignatureId,
@@ -606,7 +610,11 @@ public class TestSignatureFunctionHandler(
             DurationMs: outcome.DurationMs,
             PageUrl: outcome.PageUrl,
             PageTitle: outcome.PageTitle,
-            LogTail: outcome.LogTail));
+            LogTail: outcome.LogTail,
+            ForensicsJson: outcome.Ok ? null : outcome.ForensicsJson,
+            FailureReport: !outcome.Ok && outcome.ForensicsJson is not null
+                ? Mazda.Application.Modules.Generations.ForensicsFormatter.Report(outcome.ForensicsJson)
+                : null));
     }
 }
 
@@ -641,7 +649,8 @@ public record FixSignatureFunctionCommand(
     string? ArgsJson,
     string? PageUrl,
     string? PageTitle,
-    string? LogTail) : IRequest<Result<FunctionFixProposalDto>>;
+    string? LogTail,
+    string? FailureReport = null) : IRequest<Result<FunctionFixProposalDto>>;
 
 public class FixSignatureFunctionValidator : AbstractValidator<FixSignatureFunctionCommand>
 {
@@ -653,6 +662,7 @@ public class FixSignatureFunctionValidator : AbstractValidator<FixSignatureFunct
         // The log is the single most useful input, but it is also the biggest.
         // Cap generously; the fixer trims to its own budget before prompting.
         RuleFor(x => x.LogTail).MaximumLength(100_000).When(x => x.LogTail is not null);
+        RuleFor(x => x.FailureReport).MaximumLength(40_000).When(x => x.FailureReport is not null);
     }
 }
 
@@ -697,7 +707,8 @@ public class FixSignatureFunctionHandler(
             ArgsJson: string.IsNullOrWhiteSpace(cmd.ArgsJson) ? "{}" : cmd.ArgsJson,
             PageUrl: cmd.PageUrl,
             PageTitle: cmd.PageTitle,
-            LogTail: cmd.LogTail);
+            LogTail: cmd.LogTail,
+            FailureReport: cmd.FailureReport);
 
         FunctionFixResult result;
         try

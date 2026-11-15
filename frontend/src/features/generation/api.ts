@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/shared/api/client";
-import type { GenerationDto } from "@/shared/api/types";
+import type { ForensicsBundle, GenerationDto } from "@/shared/api/types";
 
 /**
  * Runtime API under the function-catalogue architecture. Two endpoints do
@@ -21,7 +21,19 @@ export const generationApi = {
     api.post<GenerationDto>("/api/generations/plan", { signatureId, prompt }),
   execute: (id: string) =>
     api.post<GenerationDto>(`/api/generations/${id}/execute`, {}),
+  forensics: (id: string) => api.get<ForensicsBundle>(`/api/generations/${id}/forensics`),
 };
+
+/** Page snapshot of the step that failed. Only fetched when the run stored one. */
+export function useRunForensics(id: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ["generation", id, "forensics"],
+    queryFn: () => generationApi.forensics(id!),
+    enabled: !!id && enabled,
+    staleTime: Infinity,
+    retry: false,
+  });
+}
 
 export function useRecentGenerations(take = 20) {
   return useQuery({

@@ -134,6 +134,13 @@ public sealed class LocalProcessScriptRunner(
         // cleanly (flushing whatever it has buffered) when it appears.
         psi.Environment["MAZDA_STOP_FILE"] = stopFile;
 
+        // Where the execute harness drops its failure-forensics bundle (see
+        // FunctionHarnessBuilder.ForensicsHelperTs); Classify reads it back.
+        // Cleared first so a previous run in the same dir can't leak in.
+        var forensicsDir = Path.Combine(runDir, "forensics");
+        try { if (Directory.Exists(forensicsDir)) Directory.Delete(forensicsDir, recursive: true); } catch { }
+        psi.Environment["MZ_FORENSICS_DIR"] = forensicsDir;
+
         using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
         proc.OutputDataReceived += (_, e) => { if (e.Data is not null) Emit(e.Data); };
         proc.ErrorDataReceived  += (_, e) => { if (e.Data is not null) Emit(e.Data); };
@@ -186,6 +193,25 @@ public sealed class LocalProcessScriptRunner(
         return Classify(proc, Emit, runDir, FullLog);
     }
 
+    /// <summary>Reads and redacts <c>&lt;runDir&gt;/forensics/forensics.json</c> if the harness wrote one.</summary>
+    private static string? ReadForensics(string runDir, Action<string> note)
+    {
+        var file = Path.Combine(runDir, "forensics", "forensics.json");
+        try
+        {
+            var fi = new FileInfo(file);
+            if (!fi.Exists || fi.Length > 8 * 1024 * 1024) return null;
+            var json = ForensicsRedactor.Redact(File.ReadAllText(file));
+            note($"runner: failure snapshot captured ({fi.Length / 1024} KB)");
+            return json;
+        }
+        catch (Exception ex)
+        {
+            note($"runner: could not read failure snapshot — {ex.Message}");
+            return null;
+        }
+    }
+
     private static RunnerCompletion Classify(Process proc, Action<string> emit, string runDir, Func<string> fullLog)
     {
         var kind = proc.ExitCode switch
@@ -211,10 +237,16 @@ public sealed class LocalProcessScriptRunner(
         }
         emit($"runner: exit {proc.ExitCode} ({kind.ToString().ToLowerInvariant()})");
 
+        // Read whatever kind the process exited with: a failed plan step makes
+        // the harness emit run-aborted and return normally, so Playwright exits
+        // 0 ("passed") for exactly the runs we most want a snapshot of. The
+        // file only exists if the harness wrote one on a step failure.
+        var forensicsJson = ReadForensics(runDir, emit);
+
         // Caller (StartExecutionHandler) is responsible for calling
         // registry.Complete AFTER it has persisted the terminal status so the
         // SSE end event arrives at the client only once the DB reflects it.
-        return new RunnerCompletion(kind, proc.ExitCode, fullLog());
+        return new RunnerCompletion(kind, proc.ExitCode, fullLog()) { ForensicsJson = forensicsJson };
     }
 
     /// <summary>
@@ -274,6 +306,8 @@ public sealed class LocalProcessScriptRunner(
         psi.ArgumentList.Add("playwright");
         psi.ArgumentList.Add("test");
         psi.ArgumentList.Add("mazda.spec.ts");
+        // Function tests capture a page snapshot when the body throws.
+        psi.Environment["MZ_FORENSICS_DIR"] = Path.Combine(runDir, "forensics");
 
         using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
         proc.OutputDataReceived += (_, e) => { if (e.Data is not null) Capture(e.Data); };
@@ -310,7 +344,10 @@ public sealed class LocalProcessScriptRunner(
             _ => RunnerExitKind.Errored,
         };
         Capture($"runner: exit {proc.ExitCode} ({kind.ToString().ToLowerInvariant()})");
-        return new RunnerCompletion(kind, proc.ExitCode, fullLog.ToString());
+        return new RunnerCompletion(kind, proc.ExitCode, fullLog.ToString())
+        {
+            ForensicsJson = ReadForensics(runDir, Capture),
+        };
     }
 
     // Injected helper. Solves the CDP-via-host.docker.internal triple-bind:

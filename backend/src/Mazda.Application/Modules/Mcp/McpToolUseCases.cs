@@ -234,7 +234,15 @@ public record McpInvocationResult(
     string Status,         // "Passed" / "FailedTest" / "Errored" / "Failed"
     int? ExitCode,
     string Summary,        // 1-2 line human summary
-    string FullLog);       // Full envelope + optional error stack — the transport surfaces this to the agent.
+    string FullLog)        // Full envelope + optional error stack — the transport surfaces this to the agent.
+{
+    /// <summary>
+    /// For failed runs: the same text <c>get_run_failure</c> returns (failing
+    /// step, page URL, failed requests, console, accessibility tree), so the
+    /// agent doesn't need a second call for the common case.
+    /// </summary>
+    public string? FailureReport { get; init; }
+}
 
 // One prompt, one planner call. The transport still accepts the legacy
 // setup_prompt / test_prompt argument pair and joins them before getting
@@ -310,12 +318,13 @@ public class InvokeMcpToolHandler(
 
             var envelopeJson = GenerationMapper.SerializeEnvelope(envelope);
             gen.RecordExecutionEnvelope(envelopeJson);
+            gen.RecordForensics(envelope.ForensicsJson);
             var terminal = envelope.Outcome switch
             {
                 RunOutcome.Ok => ExecutionStatus.Passed,
                 _ => ExecutionStatus.FailedTest,
             };
-            gen.MarkExecutionFinished(terminal, terminal == ExecutionStatus.Passed ? 0 : 1, string.Empty);
+            gen.MarkExecutionFinished(terminal, terminal == ExecutionStatus.Passed ? 0 : 1, envelope.RunLog);
             await uow.SaveChangesAsync(ct);
 
             var isError = terminal != ExecutionStatus.Passed;
@@ -329,7 +338,12 @@ public class InvokeMcpToolHandler(
             return Result.Success(new McpInvocationResult(
                 gen.Id, isError, terminal.ToString(),
                 terminal == ExecutionStatus.Passed ? 0 : 1,
-                summary, envelopeJson));
+                summary, envelopeJson)
+            {
+                FailureReport = isError
+                    ? ForensicsFormatter.Report(envelope.ForensicsJson, envelopeJson, envelope.RunLog)
+                    : null,
+            });
         }
         catch (HarnessException ex)
         {

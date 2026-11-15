@@ -24,6 +24,14 @@ public class LlmFunctionFixer(IOptions<LlmOptions> options) : IFunctionFixer
         and it failed. You receive the function, the signature it belongs to,
         and exactly what went wrong. You return a corrected body.
 
+        ── READING THE FAILURE ──
+        `failure.pageSnapshot`, when present, is a text snapshot of the live page
+        at the moment the body threw: the page URL, requests that failed or
+        returned 4xx/5xx (with bodies), console errors, form values, and the page's
+        accessibility tree. Trust it over assumptions: if the element your fix
+        would target is not in the tree, the page is in a different state than the
+        body expects, and a different selector will not help.
+
         ── OUTPUT FORMAT ──
         JSON ONLY. No prose outside the JSON. No markdown fences.
 
@@ -136,6 +144,10 @@ public class LlmFunctionFixer(IOptions<LlmOptions> options) : IFunctionFixer
                 calledWithArgs = TryParse(failure.ArgsJson),
                 pageUrl = failure.PageUrl,
                 pageTitle = failure.PageTitle,
+                // What the page looked like when the body threw: failing
+                // requests, console errors, form values, accessibility tree.
+                // Often shows the selector's real target (or its absence).
+                pageSnapshot = Trim(failure.FailureReport, 9000),
                 runnerLog = Trim(failure.LogTail, 4000),
                 stack = Trim(failure.ErrorStack, 1500),
             },

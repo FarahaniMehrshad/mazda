@@ -149,6 +149,8 @@ internal static class FunctionHarnessBuilder
         sb.AppendLine($"  const __mz_plan = {BuildPlanLiteral(plan)};");
         sb.AppendLine();
         AppendSettleHelper(sb);
+        sb.Append(ForensicsHelperTs);
+        sb.AppendLine();
 
         sb.AppendLine("  const __mz_emit = (evt: unknown) => {");
         sb.AppendLine($"    console.log({JsString(EventLinePrefix)} + JSON.stringify(evt));");
@@ -159,11 +161,13 @@ internal static class FunctionHarnessBuilder
         // on a failure we emit `step-failed` and `run-aborted` and return.
         // The interpreter reconstructs "skipped" entries for steps after the
         // failure using the plan and the events it observed.
+        sb.AppendLine("  let __mz_prevId: string | null = null;");
         sb.AppendLine("  for (const __mz_step of __mz_plan.steps) {");
         // Let the previous step's effects land (requests answered, the UI
         // done re-rendering) before the next step looks at the page. Never
         // fails the run: it only waits, capped.
         sb.AppendLine("    await __mzSettle(page);");
+        sb.AppendLine("    __mz_curStep = __mz_step.id;");
         sb.AppendLine("    const __mz_t0 = Date.now();");
         sb.AppendLine("    __mz_emit({ type: 'step-started', id: __mz_step.id, call: __mz_step.call, args: __mz_step.args ?? {} });");
         sb.AppendLine("    const __mz_handler = __mz_actions[__mz_step.call];");
@@ -177,9 +181,21 @@ internal static class FunctionHarnessBuilder
         sb.AppendLine("    try {");
         sb.AppendLine("      await __mz_handler(page, __mz_step.args ?? {});");
         sb.AppendLine("      __mz_emit({ type: 'step-ok', id: __mz_step.id, call: __mz_step.call, durationMs: Date.now() - __mz_t0 });");
+        sb.AppendLine("      __mz_prevId = __mz_step.id;");
         sb.AppendLine("    } catch (__mz_err: any) {");
+        // Cheap, time-boxed page probes so the failure says where the page was.
+        sb.AppendLine("      let __mz_url: string | null = null, __mz_title: string | null = null;");
+        sb.AppendLine("      try { __mz_url = page.url(); } catch {}");
+        sb.AppendLine("      try { __mz_title = await Promise.race([page.title(), new Promise<string>((r) => setTimeout(() => r(''), 1500))]); } catch {}");
+        // Full page snapshot (aria, trimmed DOM, form values, console, in-flight
+        // requests, screenshot) written to MZ_FORENSICS_DIR for the runner to
+        // collect. Bounded and fully guarded: it must never change the outcome.
+        sb.AppendLine("      await __mzCaptureForensics(page, { stepId: __mz_step.id, call: __mz_step.call, args: __mz_step.args ?? {},");
+        sb.AppendLine("        prevStepId: __mz_prevId, url: __mz_url, title: __mz_title,");
+        sb.AppendLine("        error: { message: __mzPlain(__mz_err?.message ?? __mz_err), stack: __mzPlain(__mz_err?.stack).slice(0, 4000) } });");
         sb.AppendLine("      __mz_emit({ type: 'step-failed', id: __mz_step.id, call: __mz_step.call, durationMs: Date.now() - __mz_t0,");
-        sb.AppendLine("        error: { kind: 'RuntimeError', message: String(__mz_err?.message ?? __mz_err) } });");
+        sb.AppendLine("        error: { kind: 'RuntimeError', message: __mzPlain(__mz_err?.message ?? __mz_err),");
+        sb.AppendLine("          stack: __mzPlain(__mz_err?.stack).slice(0, 4000), pageUrl: __mz_url, pageTitle: __mz_title } });");
         sb.AppendLine("      __mz_emit({ type: 'run-aborted' });");
         sb.AppendLine("      await browser.close();");
         sb.AppendLine("      return;");
@@ -190,6 +206,138 @@ internal static class FunctionHarnessBuilder
         AppendPostamble(sb);
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Failure forensics for the execute harness. Listens for console output and
+    /// page errors for the whole run, and on a failed step builds one bundle:
+    /// URL / title, an accessibility snapshot, a trimmed DOM (scripts, styles,
+    /// svg, comments stripped; long text clipped; password values blanked),
+    /// current form-field values, console + page errors, in-flight XHR/fetch
+    /// URLs and a JPEG screenshot. Every probe is time-boxed and individually
+    /// guarded because the page may be closed or wedged at exactly the moment
+    /// we need it. Written to <c>$MZ_FORENSICS_DIR/forensics.json</c>; the
+    /// runner picks it up after the process exits. Lives in the harness, never
+    /// in generated bodies.
+    /// </summary>
+    private const string ForensicsHelperTs = """
+  const __mzFx = { console: [] as any[], pageErrors: [] as string[] };
+  page.on('console', (m: any) => {
+    try { __mzFx.console.push({ type: m.type(), text: String(m.text()).slice(0, 500) }); if (__mzFx.console.length > 100) __mzFx.console.shift(); } catch {}
+  });
+  page.on('pageerror', (e: any) => {
+    try { __mzFx.pageErrors.push(String(e?.stack ?? e).slice(0, 800)); if (__mzFx.pageErrors.length > 50) __mzFx.pageErrors.shift(); } catch {}
+  });
+  // Playwright colours its call log with ANSI escapes, which show up as garbage
+  // glyphs in the UI and are noise to an LLM.
+  const __mzPlain = (s: any): string => String(s ?? '').replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
+  const __mzBound = <T,>(p: Promise<T>, ms: number): Promise<T | null> =>
+    Promise.race([p.catch(() => null as any), new Promise<null>((r) => setTimeout(() => r(null), ms))]);
+  // Rolling network log for the whole run, each request tagged with the step
+  // that was current when it started. Ring-capped. Bodies are fetched without
+  // blocking the page and only for text-ish xhr/fetch/document responses.
+  // Headers (cookies, Authorization) are deliberately never recorded.
+  let __mz_curStep: string | null = null;
+  const __mzNet: any[] = [];
+  const __mzNetByReq = new WeakMap<object, any>();
+  const __mzNetT0 = Date.now();
+  let __mzNetSeq = 0;
+  const __mzBodyTypes = ['xhr', 'fetch', 'document'];
+  page.on('request', (r: any) => {
+    try {
+      const rec: any = { n: ++__mzNetSeq, step: __mz_curStep, method: r.method(), url: String(r.url()).slice(0, 500), type: r.resourceType(), t: Date.now() - __mzNetT0 };
+      const pd = r.postData();
+      if (pd) rec.reqBody = String(pd).slice(0, 2048);
+      __mzNet.push(rec); __mzNetByReq.set(r, rec);
+      if (__mzNet.length > 300) __mzNet.shift();
+    } catch {}
+  });
+  page.on('response', (resp: any) => {
+    try {
+      const rec = __mzNetByReq.get(resp.request());
+      if (rec) { rec.status = resp.status(); rec.mime = String(resp.headers()['content-type'] ?? '').slice(0, 80); }
+    } catch {}
+  });
+  page.on('requestfinished', (r: any) => {
+    try {
+      const rec = __mzNetByReq.get(r);
+      if (!rec) return;
+      rec.ms = Date.now() - __mzNetT0 - rec.t;
+      if (__mzBodyTypes.includes(rec.type) && /json|text|xml|javascript|html|x-www-form-urlencoded/i.test(rec.mime ?? '')) {
+        __mzBound((async () => { const resp = await r.response(); return resp ? await resp.text() : null; })(), 1500)
+          .then((t: any) => { if (t) rec.body = String(t).slice(0, 4096); }).catch(() => {});
+      }
+    } catch {}
+  });
+  page.on('requestfailed', (r: any) => {
+    try {
+      const rec = __mzNetByReq.get(r);
+      if (rec) { rec.failure = r.failure()?.errorText ?? 'failed'; rec.ms = Date.now() - __mzNetT0 - rec.t; }
+    } catch {}
+  });
+  const __mzAriaText = (n: any, depth = 0): string => {
+    if (!n || depth > 25) return '';
+    const label = [n.role, n.name ? JSON.stringify(String(n.name).slice(0, 120)) : '', n.value ? '= ' + JSON.stringify(String(n.value).slice(0, 80)) : '',
+      n.checked !== undefined ? '[checked=' + n.checked + ']' : '', n.disabled ? '[disabled]' : '', n.focused ? '[focused]' : ''].filter(Boolean).join(' ');
+    return '  '.repeat(depth) + '- ' + label + '\n' + (n.children ?? []).map((c: any) => __mzAriaText(c, depth + 1)).join('');
+  };
+  const __mzCaptureForensics = async (p: any, ctx: any) => {
+    try {
+      const out: any = { capturedAt: new Date().toISOString(), ...ctx };
+      const [aria, dom, shot] = await Promise.all([
+        __mzBound((async () => {
+          const loc: any = p.locator('body');
+          if (typeof loc.ariaSnapshot === 'function') return String(await loc.ariaSnapshot({ timeout: 3000 }));
+          const tree = await p.accessibility?.snapshot({ interestingOnly: true });
+          return tree ? __mzAriaText(tree) : null;
+        })(), 3500),
+        __mzBound(p.evaluate(() => {
+          const fields = Array.from(document.querySelectorAll('input,textarea,select')).slice(0, 100).map((el: any) => ({
+            tag: el.tagName.toLowerCase(), type: el.type || null, name: el.name || null, id: el.id || null,
+            value: el.type === 'password' ? '***' : String(el.value ?? '').slice(0, 200),
+            checked: el.type === 'checkbox' || el.type === 'radio' ? !!el.checked : undefined,
+          }));
+          const root = document.documentElement.cloneNode(true) as HTMLElement;
+          root.querySelectorAll('script,style,noscript,link,meta,svg,template,iframe').forEach((e) => e.remove());
+          root.querySelectorAll('input[type=password]').forEach((e) => e.setAttribute('value', ''));
+          const walker = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT | NodeFilter.SHOW_TEXT);
+          const kill: Node[] = [];
+          while (walker.nextNode()) {
+            const n = walker.currentNode;
+            if (n.nodeType === 8) kill.push(n);
+            else if ((n.nodeValue ?? '').length > 300) n.nodeValue = n.nodeValue!.slice(0, 300) + '…';
+          }
+          kill.forEach((n) => n.parentNode?.removeChild(n));
+          root.querySelectorAll('*').forEach((el) => {
+            for (const a of Array.from(el.attributes)) if (a.value.length > 300) el.setAttribute(a.name, a.value.slice(0, 300) + '…');
+          });
+          const ae: any = document.activeElement;
+          return {
+            html: root.outerHTML.slice(0, 150000), fields, readyState: document.readyState,
+            viewport: { w: window.innerWidth, h: window.innerHeight }, scrollY: Math.round(window.scrollY),
+            activeElement: ae && ae !== document.body ? (ae.tagName.toLowerCase() + (ae.id ? '#' + ae.id : '') + (ae.name ? '[name=' + ae.name + ']' : '')) : null,
+          };
+        }), 3500),
+        __mzBound(p.screenshot({ type: 'jpeg', quality: 55, timeout: 3000 }), 4000),
+      ]);
+      out.aria = aria ? String(aria).slice(0, 60000) : null;
+      if (dom) { const { html, ...rest } = dom as any; out.dom = html; Object.assign(out, rest); }
+      // Keep what explains a failure: xhr/fetch/document traffic plus anything that failed or errored.
+      out.network = __mzNet.filter((x) => __mzBodyTypes.includes(x.type) || x.failure || (x.status ?? 0) >= 400);
+      out.networkTotal = __mzNet.length;
+      out.console = __mzFx.console;
+      out.pageErrors = __mzFx.pageErrors;
+      out.inflight = Array.from(__mz_inflight).slice(0, 20).map((r: any) => { try { return r.method() + ' ' + String(r.url()).slice(0, 300); } catch { return '?'; } });
+      const b64 = shot ? (shot as any).toString('base64') : null;
+      out.screenshotJpegBase64 = b64 && b64.length <= 900000 ? b64 : null;
+      const dir = process.env.MZ_FORENSICS_DIR;
+      if (dir) {
+        const fs: any = await import('node:fs');
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(dir + '/forensics.json', JSON.stringify(out));
+      }
+    } catch { /* forensics must never change the run's outcome */ }
+  };
+""";
 
     /// <summary>
     /// <c>__mzSettle(page)</c>: wait until no XHR / fetch has been in flight
@@ -251,6 +399,11 @@ internal static class FunctionHarnessBuilder
 
         var sb = new StringBuilder();
         AppendPreamble(sb, testName: "mazda fn-test", target);
+        // Page snapshot on failure, same as the execute harness (the settle
+        // helper contributes the in-flight request set it reads).
+        AppendSettleHelper(sb);
+        sb.Append(ForensicsHelperTs);
+        sb.AppendLine();
         AppendFunctionDeclarations(sb, all, prefix: "__mz_fn_");
 
         // Dispatch through a table keyed by qualified name rather than emitting
@@ -267,6 +420,7 @@ internal static class FunctionHarnessBuilder
         sb.AppendLine($"  const __mz_args = {NormalizeArgsLiteral(argsJson)};");
         sb.AppendLine("  const __mz_handler = __mz_fns[__mz_target];");
         sb.AppendLine("  const __mz_t0 = Date.now();");
+        sb.AppendLine("  __mz_curStep = __mz_target;");
         sb.AppendLine("  let __mz_result: any;");
         sb.AppendLine("  if (!__mz_handler) {");
         sb.AppendLine("    __mz_result = { ok: false, durationMs: 0, error: { kind: 'FunctionNotFound',");
@@ -278,8 +432,12 @@ internal static class FunctionHarnessBuilder
         sb.AppendLine("        returned: __mz_returned === undefined ? null : __mz_returned };");
         sb.AppendLine("    } catch (__mz_err: any) {");
         sb.AppendLine("      __mz_result = { ok: false, durationMs: Date.now() - __mz_t0,");
-        sb.AppendLine("        error: { kind: 'RuntimeError', message: String(__mz_err?.message ?? __mz_err),");
-        sb.AppendLine("                 stack: String(__mz_err?.stack ?? '') } };");
+        sb.AppendLine("        error: { kind: 'RuntimeError', message: __mzPlain(__mz_err?.message ?? __mz_err),");
+        sb.AppendLine("                 stack: __mzPlain(__mz_err?.stack) } };");
+        sb.AppendLine("      let __mz_url: string | null = null;");
+        sb.AppendLine("      try { __mz_url = page.url(); } catch {}");
+        sb.AppendLine("      await __mzCaptureForensics(page, { stepId: __mz_target, call: __mz_target, args: __mz_args, prevStepId: null, url: __mz_url, title: null,");
+        sb.AppendLine("        error: { message: __mz_result.error.message, stack: __mz_result.error.stack.slice(0, 4000) } });");
         sb.AppendLine("    }");
         sb.AppendLine("  }");
         sb.AppendLine();

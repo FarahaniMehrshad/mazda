@@ -75,6 +75,14 @@ public interface ISignatureRepository
     /// that's a 404 or not.
     /// </summary>
     Task RemoveFunctionAsync(Signature signature, Guid functionId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Add one new function to a tracked signature. Marks the row <c>Added</c>
+    /// explicitly: a new function already has a non-default Guid Id, so letting
+    /// EF infer its state from the aggregate would queue an UPDATE for a row
+    /// that doesn't exist ("expected 1 row, affected 0") and the create would 500.
+    /// </summary>
+    Task AddFunctionAsync(Signature signature, SignatureFunction function, CancellationToken ct = default);
 }
 
 /// <summary>When an element replacement should wipe the signature's derived caches.</summary>

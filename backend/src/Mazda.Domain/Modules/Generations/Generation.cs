@@ -89,6 +89,14 @@ public class Generation : Entity
     /// </summary>
     public string? ExecutionEnvelopeJson { get; private set; }
 
+    /// <summary>
+    /// Failure forensics for the step that failed (page snapshot, console,
+    /// in-flight requests, screenshot) as JSON. Null for runs that passed or
+    /// failed before a page was available. Kept out of the DTO because it can
+    /// be large; read via the dedicated forensics endpoint.
+    /// </summary>
+    public string? ForensicsJson { get; private set; }
+
     public GenerationStatus Status { get; private set; } = GenerationStatus.Pending;
     public string? FailureReason { get; private set; }
     public int TokensUsed { get; private set; }
@@ -145,6 +153,13 @@ public class Generation : Entity
         Touch();
     }
 
+    public void RecordForensics(string? json)
+    {
+        if (string.IsNullOrEmpty(json)) return;
+        ForensicsJson = json;
+        Touch();
+    }
+
     public void MarkGenerating() { Status = GenerationStatus.Generating; FailureReason = null; Touch(); }
     public void MarkReady(int additionalTokens = 0) { Status = GenerationStatus.Ready; TokensUsed += additionalTokens; Touch(); }
     public void MarkFailed(string reason) { Status = GenerationStatus.Failed; FailureReason = reason; Touch(); }
@@ -153,6 +168,10 @@ public class Generation : Entity
     {
         ExecutionStatus = ExecutionStatus.Running;
         ExecutionLog = string.Empty;
+        // A re-execution starts from a clean slate. Without this a run that now
+        // passes keeps the previous failure's page snapshot, and anything reading
+        // it (REST, the MCP debug tools) would describe a failure that is gone.
+        ForensicsJson = null;
         ExitCode = null;
         ExecutionStartedAt = DateTime.UtcNow;
         ExecutionEndedAt = null;

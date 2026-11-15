@@ -99,7 +99,8 @@ public sealed class FunctionTester(IScriptRunner runner) : IFunctionTester
                 DurationMs: durationMs,
                 PageUrl: Str(root, "pageUrl"),
                 PageTitle: Str(root, "pageTitle"),
-                LogTail: logTail);
+                LogTail: logTail,
+                ForensicsJson: ok ? null : completion.ForensicsJson);
         }
         catch (JsonException ex)
         {
