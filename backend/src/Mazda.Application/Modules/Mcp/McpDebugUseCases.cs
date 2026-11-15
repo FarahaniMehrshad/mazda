@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Mazda.Domain.Common;
+using Mazda.Domain.Modules.Generations;
 using Mazda.Application.Common.Abstractions;
 using Mazda.Application.Modules.Generations;
 using MediatR;
@@ -49,6 +50,10 @@ public class RunDebugHandler(IGenerationRepository repo, ICurrentUser me)
         {
             case McpDebugTools.GetRunFailure:
             {
+                if (g.ExecutionStatus == ExecutionStatus.Passed)
+                    return Ok($"run {g.Id}: status=Passed. Nothing failed, so there is no failure to explain.");
+                if (g.ExecutionStatus == ExecutionStatus.Running)
+                    return Ok($"run {g.Id}: still running. Call again once it has finished.");
                 var head = $"run {g.Id}: status={g.ExecutionStatus}";
                 var report = ForensicsFormatter.Report(g.ForensicsJson, g.ExecutionEnvelopeJson, g.ExecutionLog);
                 return Ok($"{head}\n\n{report}");

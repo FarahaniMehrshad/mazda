@@ -168,6 +168,10 @@ public class Generation : Entity
     {
         ExecutionStatus = ExecutionStatus.Running;
         ExecutionLog = string.Empty;
+        // A re-execution starts from a clean slate. Without this a run that now
+        // passes keeps the previous failure's page snapshot, and anything reading
+        // it (REST, the MCP debug tools) would describe a failure that is gone.
+        ForensicsJson = null;
         ExitCode = null;
         ExecutionStartedAt = DateTime.UtcNow;
         ExecutionEndedAt = null;
