@@ -2,7 +2,9 @@ import { useMemo, useState } from "react";
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { BtnGhost, BtnPrimary, Pill } from "@/shared/components/Primitives";
 import { ApiError } from "@/shared/api/client";
+import { FailureSnapshot } from "@/shared/components/FailureSnapshot";
 import type {
+  ForensicsBundle,
   FunctionFixProposalDto,
   FunctionTestResultDto,
   SignatureFunctionDto,
@@ -102,6 +104,7 @@ export function FunctionTestPanel({
             pageUrl: result.pageUrl,
             pageTitle: result.pageTitle,
             logTail: result.logTail,
+            failureReport: result.failureReport ?? null,
           },
         })
       );
@@ -528,6 +531,16 @@ function ErrorBlock({ label, text }: { label: string; text: string }) {
 }
 
 function TestResultView({ result }: { result: FunctionTestResultDto }) {
+  // Page snapshot from the failed run; large, so parsed once per result.
+  const snapshot = useMemo<ForensicsBundle | null>(() => {
+    if (result.ok || !result.forensicsJson) return null;
+    try {
+      return JSON.parse(result.forensicsJson) as ForensicsBundle;
+    } catch {
+      return null;
+    }
+  }, [result]);
+
   return (
     <div style={{ marginTop: 20, borderTop: "1px solid var(--glass-stroke-2)", paddingTop: 16 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -599,6 +612,8 @@ function TestResultView({ result }: { result: FunctionTestResultDto }) {
           )}
         </div>
       )}
+
+      {snapshot && <FailureSnapshot bundle={snapshot} report={result.failureReport} />}
 
       <details style={{ marginTop: 12 }}>
         <summary style={{ fontSize: 11, color: "var(--text-3)", cursor: "pointer" }}>

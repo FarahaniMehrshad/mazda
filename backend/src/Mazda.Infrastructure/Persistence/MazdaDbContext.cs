@@ -211,6 +211,7 @@ internal class GenerationConfig : IEntityTypeConfiguration<Generation>
         b.Property(x => x.GatheredStateJson).HasColumnName("gathered_state_json");
         b.Property(x => x.PlanJson).HasColumnName("plan_json");
         b.Property(x => x.ExecutionEnvelopeJson).HasColumnName("execution_envelope_json");
+        b.Property(x => x.ForensicsJson).HasColumnName("forensics_json");
         b.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
         b.Property(x => x.ExecutionStatus).HasColumnName("execution_status").HasConversion<string>().HasMaxLength(20);
         b.Property(x => x.ExecutionLog).HasColumnName("execution_log");

@@ -67,6 +67,8 @@ export interface FixRequest {
   pageUrl: string | null;
   pageTitle: string | null;
   logTail: string;
+  /** Plain-text page snapshot from the failed test, if one was captured. */
+  failureReport?: string | null;
 }
 
 export function useSignatureFunctions(sigId: string | undefined) {

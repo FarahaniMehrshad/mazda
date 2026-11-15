@@ -4,7 +4,8 @@ import { ScreenShell, StepIndicator, BtnPrimary, Pill } from "@/shared/component
 import { TopBar } from "@/shared/components/TopBar";
 import { useStepNavigator } from "@/shared/components/useStepNavigator";
 import { useSignature, useUpdateSignatureDescription } from "@/features/signatures/api";
-import { useGeneration, usePlanRun, useExecuteRun } from "./api";
+import { useGeneration, usePlanRun, useExecuteRun, useRunForensics } from "./api";
+import { FailureSnapshot } from "@/shared/components/FailureSnapshot";
 import type {
   GenerationDto,
   GatheredStateBlob,
@@ -158,7 +159,7 @@ export function RunPage() {
         {gathered && <StatePane state={gathered} />}
         {planBlob && <PlanPane plan={planBlob} />}
         {runId && gen.data?.executionStatus && gen.data.executionStatus !== "Idle" && (
-          <ExecutionPane key={runId} runId={runId} status={gen.data.executionStatus} envelope={envelope} onDone={() => gen.refetch()} />
+          <ExecutionPane key={runId} runId={runId} status={gen.data.executionStatus} envelope={envelope} hasForensics={!!gen.data.hasForensics} onDone={() => gen.refetch()} />
         )}
         </div>
       </div>
@@ -599,13 +600,17 @@ function ExecutionPane({
   runId,
   status,
   envelope,
+  hasForensics,
   onDone,
 }: {
   runId: string;
   status: string;
   envelope: ExecutionEnvelopeBlob | null;
+  hasForensics: boolean;
   onDone: () => void;
 }) {
+  // Page snapshot of the failing step, when the run stored one.
+  const forensics = useRunForensics(runId, hasForensics && envelope?.outcome === "failed");
   const [events, setEvents] = useState<LiveEvent[]>([]);
   const [rawLog, setRawLog] = useState<string[]>([]);
   const esRef = useRef<EventSource | null>(null);
@@ -677,6 +682,8 @@ function ExecutionPane({
         </div>
       )}
 
+      {forensics.data && <FailureSnapshot bundle={forensics.data} report={forensics.data.report} />}
+
       {rawLog.length > 0 && (
         <details style={{ marginTop: 16 }}>
           <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-3)", fontFamily: "var(--f-mono)" }}>
@@ -727,6 +734,12 @@ function StepRow({ step }: { step: StepResultBlob }) {
         {step.error && (
           <div style={{ fontSize: 12, color: "#f0a89e", marginTop: 4 }}>
             <b>{step.error.kind}:</b> {step.error.message}
+            {step.error.pageUrl && (
+              <div style={{ color: "var(--text-3)", marginTop: 2, wordBreak: "break-all" }}>
+                on <code>{step.error.pageUrl}</code>
+                {step.error.pageTitle ? ` — “${step.error.pageTitle}”` : ""}
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -89,6 +89,14 @@ public class Generation : Entity
     /// </summary>
     public string? ExecutionEnvelopeJson { get; private set; }
 
+    /// <summary>
+    /// Failure forensics for the step that failed (page snapshot, console,
+    /// in-flight requests, screenshot) as JSON. Null for runs that passed or
+    /// failed before a page was available. Kept out of the DTO because it can
+    /// be large; read via the dedicated forensics endpoint.
+    /// </summary>
+    public string? ForensicsJson { get; private set; }
+
     public GenerationStatus Status { get; private set; } = GenerationStatus.Pending;
     public string? FailureReason { get; private set; }
     public int TokensUsed { get; private set; }
@@ -142,6 +150,13 @@ public class Generation : Entity
     public void RecordExecutionEnvelope(string json)
     {
         ExecutionEnvelopeJson = json ?? string.Empty;
+        Touch();
+    }
+
+    public void RecordForensics(string? json)
+    {
+        if (string.IsNullOrEmpty(json)) return;
+        ForensicsJson = json;
         Touch();
     }
 

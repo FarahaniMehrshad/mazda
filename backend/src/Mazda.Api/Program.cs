@@ -388,6 +388,9 @@ using (var scope = app.Services.CreateScope())
             DROP COLUMN IF EXISTS last_analyze_state_scope;
 
         ALTER TABLE generations
+            ADD COLUMN IF NOT EXISTS forensics_json text;
+
+        ALTER TABLE generations
             DROP COLUMN IF EXISTS setup_prompt,
             DROP COLUMN IF EXISTS test_prompt,
             DROP COLUMN IF EXISTS setup_script,

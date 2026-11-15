@@ -153,7 +153,7 @@ public static class Endpoints
                 (await s.Send(new FixSignatureFunctionCommand(
                     id, fid, body.UserHint, body.ErrorKind, body.ErrorMessage,
                     body.ErrorStack, body.ArgsJson, body.PageUrl, body.PageTitle,
-                    body.LogTail))).ToHttp());
+                    body.LogTail, body.FailureReport))).ToHttp());
 
         sigs.MapPost("/{id:guid}/functions/{fid:guid}/test",
             async (Guid id, Guid fid, [FromBody] TestFunctionBody body, ISender s) =>
@@ -182,6 +182,15 @@ public static class Endpoints
 
         gens.MapGet("/{id:guid}", async (Guid id, ISender s) =>
             (await s.Send(new GetGenerationQuery(id))).ToHttp());
+
+        // Page snapshot of the step that failed (aria, DOM, console, screenshot).
+        gens.MapGet("/{id:guid}/forensics", async (Guid id, ISender s) =>
+            (await s.Send(new GetGenerationForensicsQuery(id))).ToHttp());
+
+        // Filterable view of the network log captured around the failure.
+        gens.MapGet("/{id:guid}/forensics/network",
+            async (Guid id, [FromQuery] string? urlContains, [FromQuery] string? step, [FromQuery] bool? failedOnly, ISender s) =>
+                (await s.Send(new SearchRunNetworkQuery(id, urlContains, step, failedOnly ?? false))).ToHttp());
 
         gens.MapPost("/plan", async (PlanRunCommand cmd, ISender s) =>
             (await s.Send(cmd)).ToHttp());
@@ -336,5 +345,6 @@ public static class Endpoints
     public record UpdateRecordingBody(string? Label, bool? UseForGrounding, string? Intent);
     public record FixFunctionBody(
         string? UserHint, string? ErrorKind, string? ErrorMessage, string? ErrorStack,
-        string? ArgsJson, string? PageUrl, string? PageTitle, string? LogTail);
+        string? ArgsJson, string? PageUrl, string? PageTitle, string? LogTail,
+        string? FailureReport = null);
 }

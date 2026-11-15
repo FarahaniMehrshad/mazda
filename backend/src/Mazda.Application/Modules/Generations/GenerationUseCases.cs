@@ -30,7 +30,8 @@ public record GenerationDto(
     DateTime? ExecutionStartedAt,
     DateTime? ExecutionEndedAt,
     DateTime CreatedAt,
-    DateTime UpdatedAt);
+    DateTime UpdatedAt,
+    bool HasForensics = false);
 
 internal static class GenerationMapper
 {
@@ -46,7 +47,8 @@ internal static class GenerationMapper
         g.Status, g.FailureReason, g.TokensUsed,
         g.ExecutionStatus, g.ExitCode, g.ExecutionLog,
         g.ExecutionStartedAt, g.ExecutionEndedAt,
-        g.CreatedAt, g.UpdatedAt);
+        g.CreatedAt, g.UpdatedAt,
+        HasForensics: !string.IsNullOrEmpty(g.ForensicsJson));
 
     /// <summary>
     /// Wire form of a <see cref="GatheredState"/>. Uses <c>state</c> as the
@@ -89,6 +91,9 @@ internal static class GenerationMapper
                 {
                     kind = s.Error.Kind.ToString(),
                     message = s.Error.Message,
+                    stack = s.Error.Stack,
+                    pageUrl = s.Error.PageUrl,
+                    pageTitle = s.Error.PageTitle,
                 },
             }),
             // Inline the state + plan blobs so a saved envelope is
@@ -350,10 +355,11 @@ public class ExecuteRunHandler(
                 if (fresh is not null)
                 {
                     fresh.RecordExecutionEnvelope(envelopeJson);
+                    fresh.RecordForensics(envelope.ForensicsJson);
                     // Exit code is synthetic — the runner doesn't surface its
                     // real code through IPlanInterpreter. 0 for pass, 1 for
                     // any failure. Keeps the DTO shape unsurprising.
-                    fresh.MarkExecutionFinished(terminal, terminal == ExecutionStatus.Passed ? 0 : 1, "");
+                    fresh.MarkExecutionFinished(terminal, terminal == ExecutionStatus.Passed ? 0 : 1, envelope.RunLog);
                     await sUow.SaveChangesAsync(CancellationToken.None);
                 }
 
@@ -410,6 +416,66 @@ public class GetGenerationHandler(IGenerationRepository repo, ICurrentUser me)
         return g is null
             ? Result.Failure<GenerationDto>(Error.NotFound("Generation"))
             : Result.Success(g.ToDto());
+    }
+}
+
+// ── Forensics (failed-step page snapshot) ───────────────────────────
+public record GetGenerationForensicsQuery(Guid Id) : IRequest<Result<JsonElement>>;
+
+public class GetGenerationForensicsHandler(IGenerationRepository repo, ICurrentUser me)
+    : IRequestHandler<GetGenerationForensicsQuery, Result<JsonElement>>
+{
+    public async Task<Result<JsonElement>> Handle(GetGenerationForensicsQuery q, CancellationToken ct)
+    {
+        if (me.UserId is null) return Result.Failure<JsonElement>(Error.Validation("Not authenticated."));
+        var g = await repo.FindByIdAsync(q.Id, me.UserId.Value, ct);
+        if (g is null || string.IsNullOrEmpty(g.ForensicsJson))
+            return Result.Failure<JsonElement>(Error.NotFound("Forensics"));
+        // Bundle + the same plain-text digest the MCP tool returns, so the
+        // UI's "Copy for LLM" and the agent see identical text.
+        var node = System.Text.Json.Nodes.JsonNode.Parse(g.ForensicsJson) as System.Text.Json.Nodes.JsonObject;
+        if (node is null) return Result.Failure<JsonElement>(Error.NotFound("Forensics"));
+        node["report"] = ForensicsFormatter.Report(g.ForensicsJson, g.ExecutionEnvelopeJson, g.ExecutionLog);
+        using var doc = JsonDocument.Parse(node.ToJsonString());
+        return Result.Success(doc.RootElement.Clone());
+    }
+}
+
+// Filtered view of the failed run's network log (see forensics bundle).
+public record SearchRunNetworkQuery(Guid Id, string? UrlContains, string? Step, bool FailedOnly)
+    : IRequest<Result<JsonElement>>;
+
+public class SearchRunNetworkHandler(IGenerationRepository repo, ICurrentUser me)
+    : IRequestHandler<SearchRunNetworkQuery, Result<JsonElement>>
+{
+    public async Task<Result<JsonElement>> Handle(SearchRunNetworkQuery q, CancellationToken ct)
+    {
+        if (me.UserId is null) return Result.Failure<JsonElement>(Error.Validation("Not authenticated."));
+        var g = await repo.FindByIdAsync(q.Id, me.UserId.Value, ct);
+        if (g is null || string.IsNullOrEmpty(g.ForensicsJson))
+            return Result.Failure<JsonElement>(Error.NotFound("Forensics"));
+
+        using var doc = JsonDocument.Parse(g.ForensicsJson);
+        var rows = new List<JsonElement>();
+        if (doc.RootElement.TryGetProperty("network", out var net) && net.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var r in net.EnumerateArray())
+            {
+                string? Str(string k) => r.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                if (!string.IsNullOrEmpty(q.UrlContains)
+                    && (Str("url")?.Contains(q.UrlContains, StringComparison.OrdinalIgnoreCase) != true)) continue;
+                if (!string.IsNullOrEmpty(q.Step) && Str("step") != q.Step) continue;
+                if (q.FailedOnly)
+                {
+                    var status = r.TryGetProperty("status", out var st) && st.ValueKind == JsonValueKind.Number ? st.GetInt32() : 0;
+                    if (Str("failure") is null && status < 400) continue;
+                }
+                rows.Add(r.Clone());
+            }
+        }
+        var json = JsonSerializer.Serialize(new { count = rows.Count, requests = rows });
+        using var outDoc = JsonDocument.Parse(json);
+        return Result.Success(outDoc.RootElement.Clone());
     }
 }
 
