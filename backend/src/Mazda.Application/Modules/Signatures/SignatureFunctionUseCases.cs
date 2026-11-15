@@ -347,7 +347,7 @@ public class CreateSignatureFunctionHandler(
             order: nextOrder,
             preconditions: cmd.Preconditions);
 
-        sig.AddFunction(fn);
+        await repo.AddFunctionAsync(sig, fn, ct);
         await uow.SaveChangesAsync(ct);
         return Result.Success(fn.ToDto());
     }
