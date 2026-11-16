@@ -43,6 +43,9 @@ internal static class FunctionHarnessBuilder
 {
     /// <summary>Sentinel that the state gather harness prints just before the JSON payload.</summary>
     public const string StateBeginSentinel = "__MZ_STATE_BEGIN__";
+
+    /// <summary>How long one state function may take during a gather before it is recorded as timed out.</summary>
+    public const int StateFunctionBudgetMs = 30_000;
     /// <summary>Sentinel that the state gather harness prints just after the JSON payload.</summary>
     public const string StateEndSentinel = "__MZ_STATE_END__";
     /// <summary>Prefix for every per-step JSON event emitted by the execute harness.</summary>
@@ -92,11 +95,24 @@ internal static class FunctionHarnessBuilder
             sb.AppendLine($"    [{JsString(fn.QualifiedName)}, __mz_state_{Slug(fn.QualifiedName)}],");
         }
         sb.AppendLine("  ];");
+        // Each state function gets its own time budget: one that waits for
+        // something the page does not have (a settings panel when nothing is
+        // selected) must cost its own entry, not the whole gather. The test
+        // timeout is sized so every function can use its full budget.
+        sb.AppendLine($"  const __mz_stateBudgetMs = {StateFunctionBudgetMs};");
+        sb.AppendLine($"  test.setTimeout({stateFunctions.Count} * __mz_stateBudgetMs + 30_000);");
         sb.AppendLine("  for (const [__mz_name, __mz_fn] of __mz_state_calls) {");
+        sb.AppendLine("    let __mz_timer: ReturnType<typeof setTimeout> | undefined;");
         sb.AppendLine("    try {");
-        sb.AppendLine("      __mz_state[__mz_name] = await __mz_fn(page, {});");
+        sb.AppendLine("      __mz_state[__mz_name] = await Promise.race([");
+        sb.AppendLine("        __mz_fn(page, {}),");
+        sb.AppendLine("        new Promise((_, reject) => { __mz_timer = setTimeout(() => reject(new Error(");
+        sb.AppendLine("          `timed out after ${__mz_stateBudgetMs / 1000}s (it probably waits for something the page does not show right now)`)), __mz_stateBudgetMs); }),");
+        sb.AppendLine("      ]);");
         sb.AppendLine("    } catch (__mz_err: any) {");
         sb.AppendLine("      __mz_state[__mz_name] = { __mz_error: String(__mz_err?.message ?? __mz_err) };");
+        sb.AppendLine("    } finally {");
+        sb.AppendLine("      if (__mz_timer) clearTimeout(__mz_timer);");
         sb.AppendLine("    }");
         sb.AppendLine("  }");
         sb.AppendLine();
