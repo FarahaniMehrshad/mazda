@@ -147,7 +147,8 @@ function StatusPill({ status }: { status: RoundTrip["status"] }) {
     NeedsPlan: { tone: "warn", label: "plan change to decide" },
     NeedsAnswers: { tone: "warn", label: "questions for you" },
     Done: { tone: "ok", label: "done" },
-    Failed: { tone: "err", label: "stopped" },
+    Failed: { tone: "err", label: "failed" },
+    Stopped: { tone: "neutral", label: "stopped by you" },
   };
   return <Pill tone={map[status].tone}>{map[status].label}</Pill>;
 }
@@ -158,8 +159,14 @@ function RoundTripView({ rt, sigId }: { rt: RoundTrip; sigId: string }) {
   const [err, setErr] = useState<string | null>(null);
   const confirm = useRoundTripMutation(() => roundTripApi.confirm(rt.id), sigId);
   const decide = useRoundTripMutation((accept: boolean) => roundTripApi.planChange(rt.id, accept), sigId);
+  const stop = useRoundTripMutation(() => roundTripApi.stop(rt.id), sigId);
   const [confirming, setConfirming] = useState(false);
   const running = rt.status === "Running";
+  // Stopping takes a moment (the browser run is ended and an untested fix undone); keep saying so until it has.
+  const [stopping, setStopping] = useState(false);
+  useEffect(() => {
+    if (!running) setStopping(false);
+  }, [running]);
 
   const guard = async (fn: () => Promise<unknown>) => {
     setErr(null);
@@ -188,6 +195,14 @@ function RoundTripView({ rt, sigId }: { rt: RoundTrip; sigId: string }) {
         <span style={{ fontSize: 13 }}>Recording: {rt.recordingLabel}</span>
         {rt.result?.summary && <span style={{ fontSize: 13, color: "var(--text-3)" }}>{rt.result.summary}</span>}
         <span style={{ flex: 1 }} />
+        {running && (
+          <BtnGhost
+            onClick={() => guard(async () => { setStopping(true); try { await stop.mutateAsync(undefined); } catch (e) { setStopping(false); throw e; } })}
+            disabled={stopping || stop.isPending}
+          >
+            {stopping ? "Stopping…" : "Stop"}
+          </BtnGhost>
+        )}
         {!running && rt.status !== "NeedsPlan" && (
           <BtnPrimary onClick={() => setConfirming(true)} disabled={!!rt.planProblem || confirm.isPending}>
             {rt.status === "Draft" ? "Confirm plan and run" : "Run again"}

@@ -52,7 +52,7 @@ export interface LogEntry {
   function?: string | null;
 }
 
-export type RoundTripStatus = "Draft" | "Running" | "NeedsPlan" | "NeedsAnswers" | "Done" | "Failed";
+export type RoundTripStatus = "Draft" | "Running" | "NeedsPlan" | "NeedsAnswers" | "Done" | "Failed" | "Stopped";
 
 export interface RoundTrip {
   id: string;
@@ -86,6 +86,8 @@ export const roundTripApi = {
   get: (id: string) => api.get<RoundTrip>(`/api/roundtrips/${id}`),
   savePlan: (id: string, steps: PlanStep[]) => api.put<RoundTrip>(`/api/roundtrips/${id}/plan`, { steps }),
   confirm: (id: string) => api.post<RoundTrip>(`/api/roundtrips/${id}/confirm`, { confirmed: true }),
+  /** Ends a running round trip; a fix still being checked is undone. */
+  stop: (id: string) => api.post<RoundTrip>(`/api/roundtrips/${id}/stop`, {}),
   planChange: (id: string, accept: boolean) => api.post<RoundTrip>(`/api/roundtrips/${id}/plan-change`, { accept }),
   answer: (id: string, step: number, same: boolean) => api.post<RoundTrip>(`/api/roundtrips/${id}/answers`, { step, same }),
   revert: (id: string, fn: string) => api.post<RoundTrip>(`/api/roundtrips/${id}/revert`, { function: fn }),

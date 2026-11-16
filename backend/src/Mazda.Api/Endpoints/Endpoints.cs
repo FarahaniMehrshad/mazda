@@ -271,6 +271,8 @@ public static class Endpoints
         // Starts replays that perform the plan's actions for real; `confirmed` is the author's go-ahead.
         rts.MapPost("/{rid:guid}/confirm", async (Guid rid, [FromBody] ConfirmBody body, ISender s) =>
             (await s.Send(new ConfirmRoundTripCommand(rid, body.Confirmed))).ToHttp());
+        rts.MapPost("/{rid:guid}/stop", async (Guid rid, ISender s) =>
+            (await s.Send(new StopRoundTripCommand(rid))).ToHttp());
         rts.MapPost("/{rid:guid}/plan-change", async (Guid rid, [FromBody] PlanChangeBody body, ISender s) =>
             (await s.Send(new DecidePlanChangeCommand(rid, body.Accept))).ToHttp());
         rts.MapPost("/{rid:guid}/answers", async (Guid rid, [FromBody] AnswerBody body, ISender s) =>

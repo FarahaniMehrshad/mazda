@@ -17,6 +17,7 @@ namespace Mazda.Application.Modules.RoundTrip;
 //   confirm -> nothing runs before this; then replays, comparisons, fixes (background)
 //   answer  -> the author's "same or not?" for steps Mazda could not decide
 //   plan-change / revert -> the author decides on the fix loop's proposals
+//   stop    -> ends a running round trip; a fix still under test is undone
 
 public record RoundTripStepDto(int Index, string Call, string ArgsJson, List<int> Episodes, string? ContrastArgsJson, string Why, List<string> DemoSteps);
 
@@ -234,12 +235,77 @@ internal static class RoundTripLauncher
     {
         feed.Reset(sessionId);
         feed.Append(sessionId, "Starting…");
+        var token = RoundTripRuns.Begin(sessionId);
         _ = Task.Run(async () =>
         {
-            using var scope = scopes.CreateScope();
-            var engine = ActivatorUtilities.CreateInstance<RoundTripEngine>(scope.ServiceProvider);
-            await engine.RunAsync(sessionId, ownerId, CancellationToken.None);
+            try
+            {
+                using var scope = scopes.CreateScope();
+                var engine = ActivatorUtilities.CreateInstance<RoundTripEngine>(scope.ServiceProvider);
+                await engine.RunAsync(sessionId, ownerId, token);
+            }
+            finally { RoundTripRuns.End(sessionId); }
         });
+    }
+}
+
+/// <summary>The round trips running in this process, so the author can stop one.</summary>
+internal static class RoundTripRuns
+{
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, CancellationTokenSource> Live = new();
+
+    public static CancellationToken Begin(Guid id)
+    {
+        var cts = new CancellationTokenSource();
+        if (Live.TryRemove(id, out var old)) { old.Cancel(); old.Dispose(); }
+        Live[id] = cts;
+        return cts.Token;
+    }
+
+    public static void End(Guid id)
+    {
+        if (Live.TryRemove(id, out var cts)) cts.Dispose();
+    }
+
+    /// <summary>False when nothing runs here under that id (e.g. the server restarted mid-run).</summary>
+    public static bool Cancel(Guid id)
+    {
+        if (!Live.TryGetValue(id, out var cts)) return false;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { return false; }
+        return true;
+    }
+}
+
+// ── Stop ─────────────────────────────────────────────────────────────
+
+public record StopRoundTripCommand(Guid Id) : IRequest<Result<RoundTripDto>>;
+
+public class StopRoundTripHandler(
+    IRoundTripRepository roundTrips, ISignatureRepository signatures, IRecordingRepository recordings,
+    IExecutionRegistry feed, ICurrentUser me, IUnitOfWork uow)
+    : IRequestHandler<StopRoundTripCommand, Result<RoundTripDto>>
+{
+    public async Task<Result<RoundTripDto>> Handle(StopRoundTripCommand cmd, CancellationToken ct)
+    {
+        if (me.UserId is null) return Result.Failure<RoundTripDto>(Error.Validation("Not authenticated."));
+        var s = await roundTrips.FindAsync(cmd.Id, me.UserId.Value, ct);
+        if (s is null) return Result.Failure<RoundTripDto>(Error.NotFound("Round trip"));
+        if (s.Status != RoundTripStatus.Running) return Result.Failure<RoundTripDto>(Error.Conflict("The round trip is not running."));
+
+        // The engine notices within moments (the browser run is killed), undoes a fix under test and saves "Stopped".
+        if (!RoundTripRuns.Cancel(s.Id))
+        {
+            // Nothing runs it any more (the server restarted mid-run): only the stored status is left to correct.
+            var log = RoundTripJson.Read<List<LogEntry>>(s.LogJson) ?? new();
+            log.Add(new LogEntry(DateTime.UtcNow, "info", "Stopped by you (it was no longer running on the server).", null));
+            s.SetLog(RoundTripJson.Write(log));
+            s.SetStatus(RoundTripStatus.Stopped);
+            await uow.SaveChangesAsync(ct);
+            feed.Complete(s.Id, new RunnerCompletion(RunnerExitKind.Cancelled, -1, string.Empty));
+        }
+        var sig = await signatures.FindByIdAsync(s.SignatureId, me.UserId.Value, ct);
+        var rec = await recordings.FindByIdAsync(s.RecordingId, me.UserId.Value, ct);
+        return Result.Success(RoundTripMapping.ToDto(s, rec, sig is null ? new List<SignatureFunction>() : RoundTripMapping.Actions(sig)));
     }
 }
 

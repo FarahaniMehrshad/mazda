@@ -50,6 +50,8 @@ public sealed class RoundTripEngine(
     private readonly Dictionary<int, LearnedRoles> _roles = new();
     /// <summary>Functions that failed in one learning replay and passed in the other, with the body that did so.</summary>
     private readonly Dictionary<string, (string Body, string Error)> _flaky = new(StringComparer.Ordinal);
+    /// <summary>A fix applied but not yet judged: undone if the run stops before the verdict.</summary>
+    private (SignatureFunction Fn, string OldBody)? _trial;
 
     public async Task RunAsync(Guid sessionId, Guid ownerId, CancellationToken ct = default)
     {
@@ -60,6 +62,18 @@ public sealed class RoundTripEngine(
             _log = RoundTripJson.Read<List<LogEntry>>(session.LogJson) ?? new List<LogEntry>();
             _runs = RoundTripJson.Read<ResultModel>(session.ResultJson)?.Replays ?? 0;
             await RunCoreAsync(ownerId, ct);
+        }
+        catch (Exception) when (ct.IsCancellationRequested && _session is not null)
+        {
+            if (_trial is { } t)
+            {
+                try { await RevertAsync(t.Fn, t.OldBody, "the run was stopped before the fix could be checked", CancellationToken.None); }
+                catch (Exception ex) { Say("error", $"Could not undo the untested change to {t.Fn.Name}: {ExceptionMessage.Describe(ex)}", t.Fn.Name); }
+            }
+            Say("info", "Stopped by you. Fixes that were already checked and kept stay; undo them below if you want.");
+            _session.SetStatus(RoundTripStatus.Stopped);
+            _session.SetLog(RoundTripJson.Write(_log));
+            await uow.SaveChangesAsync(CancellationToken.None);
         }
         catch (Exception ex)
         {
@@ -147,7 +161,7 @@ public sealed class RoundTripEngine(
             var evidence = await EvidenceAsync(target, results, current, currentRun, previousAttempts.GetValueOrDefault(target)?.ToString(), ct);
             RoundTripFix fix;
             try { fix = await fixer.DiagnoseAsync(_sig, fn, actions, evidence, ct); }
-            catch (Exception ex)
+            catch (Exception ex) when (!ct.IsCancellationRequested)
             {
                 Say("error", $"The repair model could not be reached: {ExceptionMessage.Describe(ex)}", fn.Name);
                 gaveUp.Add(target);
@@ -207,20 +221,23 @@ public sealed class RoundTripEngine(
             var oldBody = fn.Body;
             await roundTrips.AddRevisionAsync(new FunctionBodyRevision(fn.Id, _sig.Id, _session.Id, oldBody, fix.Explanation), ct);
             fn.UpdateBody(newBody);
+            _trial = (fn, oldBody);
             await uow.SaveChangesAsync(ct);
             Say("fix", $"Trying a fix for {fn.Name}: {fix.Explanation}", fn.Name);
             attemptLog.AppendLine("  body tried:\n" + Indent(newBody));
 
             ReplayRun next;
             try { next = await ReplayAsync(Args(), $"replay after fixing {fn.Name}", ct); }
-            catch (HarnessException ex)
+            catch (HarnessException ex) when (!ct.IsCancellationRequested)
             {
+                _trial = null;
                 await RevertAsync(fn, oldBody, $"the fixed body did not run ({ExceptionMessage.Describe(ex)})", ct);
                 attemptLog.AppendLine($"  outcome: the harness could not run it: {ExceptionMessage.Describe(ex)}");
                 continue;
             }
             var nextRun = _runs;
             var nextResults = await JudgeRunAsync(next, null, nextRun, profiles, ct);
+            _trial = null;
 
             var improved = Rank(nextResults[target].Verdict) > Rank(results[target].Verdict);
             var regressed = Enumerable.Range(0, target).Any(i => Rank(nextResults[i].Verdict) < Rank(results[i].Verdict));
@@ -299,6 +316,8 @@ public sealed class RoundTripEngine(
     {
         Say("replay", $"Replay {_runs + 1}: {label}…");
         var run = await replayer.ReplayAsync(_session.Id, _sig, _deps, calls, _target, _demo.StartUrl, ct);
+        // A stopped replay comes back as a cancelled run, not an exception: stop here before judging it.
+        ct.ThrowIfCancellationRequested();
         _runs++;
         var shots = new List<RoundTripShot>();
         for (var i = 0; i < run.Steps.Count; i++)
@@ -329,7 +348,18 @@ public sealed class RoundTripEngine(
     {
         if (i >= run.Steps.Count) return new StepObservation(StepDelta.Empty, false, false, null);
         var s = run.Steps[i];
-        return new StepObservation(Delta(run, i), s.Ran, s.Threw, s.Error);
+        var before = i > 0 && run.Steps[i - 1].Ran ? run.Steps[i - 1].Aria : null;
+        return new StepObservation(Delta(run, i), s.Ran, s.Threw, s.Error, before, s.Aria);
+    }
+
+    /// <summary>The step's own roles, plus what the other steps of the same function learned.</summary>
+    private LearnedRoles RolesFor(int i)
+    {
+        var call = _plan.Steps[i].Call;
+        var others = Enumerable.Range(0, _plan.Steps.Count)
+            .Where(k => k != i && _plan.Steps[k].Call == call && _roles.ContainsKey(k))
+            .Select(k => _roles[k]);
+        return LearnedRoles.Merge(_roles.GetValueOrDefault(i) ?? LearnedRoles.None, others);
     }
 
     private async Task<List<StepResultModel>> JudgeRunAsync(
@@ -347,11 +377,14 @@ public sealed class RoundTripEngine(
             var repetitions = _plan.Steps.Select((s, k) => (s, k))
                 .Where(x => x.k != i && x.s.Call == step.Call && x.s.ArgsJson != step.ArgsJson)
                 .Select(x => _demo.Deltas[x.k]).ToList();
+            var siblings = _plan.Steps.Select((s, k) => (s, k))
+                .Where(x => x.k != i && x.s.Call == step.Call)
+                .Select(x => _demo.Deltas[x.k]).ToList();
 
             var obs = Observe(run, i);
             var judgement = StepComparer.Judge(new StepContext(step.Call, step.ArgsJson, _demo.Deltas[i], obs,
                 twin is null ? null : Observe(twin, i), repetitions, accepted, rejected,
-                _roles.GetValueOrDefault(i) ?? LearnedRoles.None));
+                RolesFor(i), siblings));
 
             var verdict = judgement.Verdict;
             JudgeModel? judgeModel = null;
@@ -399,7 +432,7 @@ public sealed class RoundTripEngine(
                 diffs, demoBefore, demoAfter, replayBefore, replayAfter, ct);
             return (v.Verdict, v.Reason);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             return ("unsure", $"The picture judge could not be reached: {ExceptionMessage.Describe(ex)}");
         }
@@ -468,7 +501,7 @@ public sealed class RoundTripEngine(
         if (a is not { Ran: true, Threw: false } || c is not { Ran: true, Threw: false }) return null;
         var da = Delta(normal, i);
         var dc = Delta(contrast, i);
-        var roles = _roles.GetValueOrDefault(i) ?? LearnedRoles.None;
+        var roles = RolesFor(i);
         var intent = roles.Intent;
         var compared = 0;
 

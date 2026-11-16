@@ -787,8 +787,19 @@ is a small number yet depends on what is already on the page):
 Compared: mutating requests (method + templated path, flattened bodies with
 JSON-in-strings opened), DOM change signatures (no class/style churn, no
 positions), and whether the chosen value shows up on the page where it did.
+Roles are pooled per function: what one call of a function learned (a field
+that carries the choice) applies to its other calls, including ones that did
+not run while learning; a step's own observations win. The step's main request
+is the one every demonstrated call of the function sent (a lookup the app makes
+only in some situations is not it). The chosen value counts as shown if the
+change log saw it or it is on the page after the step and was not before.
 A follow-up request seen on one side only ("does not fire every time") is a
 note, not a failure. Verdicts: identical, equivalent, different, question.
+
+**Stopping.** A running round trip can be stopped (`POST /api/roundtrips/{id}/stop`,
+the Stop button). The replay's browser run is ended; a fix that was applied but
+not yet judged is undone; fixes already kept stay (undo them individually).
+Status becomes `Stopped`; "Run again" starts over.
 
 **Recording guideline.** Replays restart from the page the recording started
 on, so recordings should be self-contained: start by creating what you will

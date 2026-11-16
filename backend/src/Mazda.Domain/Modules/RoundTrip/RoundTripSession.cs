@@ -12,7 +12,7 @@ namespace Mazda.Domain.Modules.RoundTrip;
 ///   Done           every step reproduces the demonstration (or was accepted)
 ///   Failed         could not continue (browser gone, plan invalid, …)
 /// </summary>
-public enum RoundTripStatus { Draft, Running, NeedsPlan, NeedsAnswers, Done, Failed }
+public enum RoundTripStatus { Draft, Running, NeedsPlan, NeedsAnswers, Done, Failed, Stopped }
 
 public class RoundTripSession : Entity
 {
