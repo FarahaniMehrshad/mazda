@@ -242,22 +242,42 @@ public sealed class RoundTripEngine(
         }
 
         // ── 4. A repaired function must still react to its argument ──
+        // Per function, not per step: one verdict, at most one revert. Only steps that ran
+        // cleanly in both replays count as evidence; everything else is "cannot tell".
         if (repaired.Count > 0 && _plan.Steps.Any(s => repaired.Contains(s.Call) && !string.IsNullOrWhiteSpace(s.ContrastArgsJson)))
         {
             var check = await ReplayAsync(Args(contrast: true), "contrast replay after fixes", ct);
-            for (var i = 0; i < _plan.Steps.Count; i++)
+            foreach (var name in repaired)
             {
-                var s = _plan.Steps[i];
-                if (!repaired.Contains(s.Call) || string.IsNullOrWhiteSpace(s.ContrastArgsJson)) continue;
-                var intent = _roles[i].Intent;
-                if (intent.Count == 0) continue;
-                var still = LearnedRoles.Learn(Delta(current, i), null, Delta(check, i)).Intent;
-                if (intent.Any(still.Contains)) continue;
-                var fn = actions.First(x => x.Name == s.Call);
+                var reacts = 0; var ignores = 0;
+                for (var i = 0; i < _plan.Steps.Count; i++)
+                {
+                    var s = _plan.Steps[i];
+                    if (s.Call != name || string.IsNullOrWhiteSpace(s.ContrastArgsJson)) continue;
+                    switch (ReactsToArgument(i, current, check))
+                    {
+                        case true: reacts++; break;
+                        case false: ignores++; break;
+                    }
+                }
+                var fn = actions.First(x => x.Name == name);
+                if (reacts > 0 || ignores == 0)
+                {
+                    if (reacts == 0) Say("info", $"Could not confirm that the fixed {name} still reacts to its argument (the contrast replay gave no clean comparison); the fix is kept.", name);
+                    continue;
+                }
                 var revision = await roundTrips.LatestRevisionAsync(fn.Id, _session.Id, ct);
                 if (revision is null) continue;
                 await RevertAsync(fn, revision.Body, "with another choice it sent the same values, so it ignores its argument", ct);
-                results[i] = results[i] with { Verdict = "different" };
+                // The stored verdicts described the body just undone.
+                for (var i = 0; i < results.Count; i++)
+                    if (_plan.Steps[i].Call == name)
+                        results[i] = results[i] with
+                        {
+                            Verdict = "different",
+                            Findings = results[i].Findings.Prepend(new Finding("blocking", "fix-undone", "fix-undone",
+                                "Mazda's last fix was undone: with another choice it sent the same values, so it ignored its argument.")).ToList(),
+                        };
             }
         }
 
@@ -434,6 +454,37 @@ public sealed class RoundTripEngine(
     {
         var steps = plan.Steps.Select((s, i) => i == change.Step ? s with { Call = change.Call, ArgsJson = change.ArgsJson } : s).ToList();
         return plan with { Steps = steps };
+    }
+
+    /// <summary>
+    /// Does step <paramref name="i"/> send different values for the fields that carry the choice when only
+    /// the choice changes? Null when it cannot be told: the step did not run cleanly in one of the
+    /// replays, or no choice-carrying field was seen in both.
+    /// </summary>
+    private bool? ReactsToArgument(int i, ReplayRun normal, ReplayRun contrast)
+    {
+        var intent = _roles.GetValueOrDefault(i)?.Intent;
+        if (intent is null || intent.Count == 0) return null;
+        var a = i < normal.Steps.Count ? normal.Steps[i] : null;
+        var c = i < contrast.Steps.Count ? contrast.Steps[i] : null;
+        if (a is not { Ran: true, Threw: false } || c is not { Ran: true, Threw: false }) return null;
+        var da = Delta(normal, i);
+        var dc = Delta(contrast, i);
+        var compared = 0;
+        foreach (var key in intent)
+        {
+            // "field:{METHOD /path}:{field}"
+            var rest = key["field:".Length..];
+            var sep = rest.LastIndexOf(':');
+            if (sep <= 0) continue;
+            var (req, field) = (rest[..sep], rest[(sep + 1)..]);
+            var va = da.Requests.FirstOrDefault(r => r.Key == req)?.Fields.GetValueOrDefault(field);
+            var vc = dc.Requests.FirstOrDefault(r => r.Key == req)?.Fields.GetValueOrDefault(field);
+            if (va is null || vc is null) continue;
+            compared++;
+            if (va != vc) return true;
+        }
+        return compared == 0 ? null : false;
     }
 
     private static string Outcome(StepResultModel r)
