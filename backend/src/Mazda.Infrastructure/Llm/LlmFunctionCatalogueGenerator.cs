@@ -150,6 +150,14 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
              single `page.locator(...).evaluateAll(...)` call that runs in
              the browser to collect all records in one round-trip — it is
              faster and avoids races where the DOM shifts between reads.
+             A state function reports what the page shows NOW, and "absent"
+             is a valid answer (no card selected → no settings panel). Never
+             call a single-element read — `textContent()`, `innerText()`,
+             `getAttribute()`, `inputValue()` — on a locator that may not
+             exist: it waits the full action timeout each time. Check
+             `await loc.count()` first, or read with `evaluateAll` /
+             `allTextContents()`, which return at once. Trying several
+             candidate selectors in turn multiplies that wait.
           5. Action functions perform their effect and `return;` implicitly
              (return type is void).
           6. Await every Playwright call. Never `.click()` without `await`.

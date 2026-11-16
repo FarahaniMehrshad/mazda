@@ -294,6 +294,65 @@ using (var scope = app.Services.CreateScope())
         CREATE INDEX IF NOT EXISTS ix_recording_events_session_seq
             ON recording_events(session_id, seq);
 
+        -- The page after each demonstrated action (and at the start), for round-trip checks.
+        CREATE TABLE IF NOT EXISTS recording_screenshots (
+            session_id  uuid        NOT NULL REFERENCES recording_sessions("Id") ON DELETE CASCADE,
+            action_key  varchar(80) NOT NULL,
+            jpeg_b64    text        NOT NULL,
+            PRIMARY KEY (session_id, action_key)
+        );
+
+        -- Round trip: a recording replayed through the function catalogue, compared, fixed.
+        -- Base-entity columns ("Id"/"CreatedAt"/"UpdatedAt") keep EF's PascalCase, the rest is snake_case.
+        CREATE TABLE IF NOT EXISTS roundtrip_sessions (
+            "Id"                      uuid         PRIMARY KEY,
+            owner_id                  uuid         NOT NULL,
+            signature_id              uuid         NOT NULL REFERENCES signatures("Id") ON DELETE CASCADE,
+            recording_id              uuid         NOT NULL,
+            status                    varchar(20)  NOT NULL,
+            plan_json                 text         NOT NULL DEFAULT '',
+            pending_plan_change_json  text         NOT NULL DEFAULT '',
+            result_json               text         NOT NULL DEFAULT '',
+            log_json                  text         NOT NULL DEFAULT '',
+            error                     text         NOT NULL DEFAULT '',
+            "CreatedAt"               timestamptz  NOT NULL DEFAULT NOW(),
+            "UpdatedAt"               timestamptz  NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS ix_roundtrip_sessions_signature
+            ON roundtrip_sessions(signature_id, "CreatedAt");
+
+        CREATE TABLE IF NOT EXISTS roundtrip_shots (
+            session_id  uuid         NOT NULL REFERENCES roundtrip_sessions("Id") ON DELETE CASCADE,
+            run         integer      NOT NULL,
+            step        integer      NOT NULL,
+            phase       varchar(10)  NOT NULL,
+            jpeg_b64    text         NOT NULL,
+            PRIMARY KEY (session_id, run, step, phase)
+        );
+
+        -- Bodies replaced by an automatic fix, so the author can revert.
+        CREATE TABLE IF NOT EXISTS function_body_history (
+            "Id"          uuid         PRIMARY KEY,
+            function_id   uuid         NOT NULL REFERENCES signature_functions("Id") ON DELETE CASCADE,
+            signature_id  uuid         NOT NULL,
+            session_id    uuid         NULL,
+            body          text         NOT NULL,
+            reason        text         NOT NULL DEFAULT '',
+            "CreatedAt"   timestamptz  NOT NULL DEFAULT NOW(),
+            "UpdatedAt"   timestamptz  NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS ix_function_body_history_function
+            ON function_body_history(function_id, "CreatedAt");
+
+        -- The author's answers about a function's differences ("same result" / "not the same").
+        CREATE TABLE IF NOT EXISTS function_profiles (
+            function_id    uuid         PRIMARY KEY REFERENCES signature_functions("Id") ON DELETE CASCADE,
+            signature_id   uuid         NOT NULL,
+            accepted_json  text         NOT NULL DEFAULT '[]',
+            rejected_json  text         NOT NULL DEFAULT '[]',
+            updated_at     timestamptz  NOT NULL DEFAULT NOW()
+        );
+
         -- User intent (optional) and the analyzer's readback per session.
         ALTER TABLE recording_sessions
             ADD COLUMN IF NOT EXISTS label_is_auto boolean NOT NULL DEFAULT TRUE,

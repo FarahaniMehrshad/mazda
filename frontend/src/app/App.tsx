@@ -13,6 +13,7 @@ import { RelationshipsPage } from "@/features/signatures/RelationshipsPage";
 import { UserFlowsPage } from "@/features/signatures/UserFlowsPage";
 import { FunctionsPage } from "@/features/signatures/FunctionsPage";
 import { LearnPage } from "@/features/recordings/LearnPage";
+import { RoundTripPage } from "@/features/roundtrip/RoundTripPage";
 import { RunPage } from "@/features/generation/RunPage";
 import { RunsPage } from "@/features/generation/RunsPage";
 import { McpServerPage } from "@/features/mcp/McpServerPage";
@@ -44,6 +45,7 @@ export function App() {
           <Route path="/signatures/:id/functions" element={<RequireAuth><FunctionsPage /></RequireAuth>} />
           {/* "Learn by watching" — record a session on the attached tab. */}
           <Route path="/signatures/:id/learn" element={<RequireAuth><LearnPage /></RequireAuth>} />
+          <Route path="/signatures/:id/roundtrip" element={<RequireAuth><RoundTripPage /></RequireAuth>} />
           {/*
             RunPage handles both entry paths — from a signature (fresh run,
             :sigId in the route) and from an existing run (:id in the route).

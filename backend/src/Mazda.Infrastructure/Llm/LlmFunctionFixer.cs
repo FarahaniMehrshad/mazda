@@ -83,6 +83,11 @@ public class LlmFunctionFixer(IOptions<LlmOptions> options) : IFunctionFixer
           • A wrong or empty return from a state function — the read targeted
             the wrong node, or needed .allInnerTexts() / .textContent() rather
             than .innerText().
+          • A state function that times out — it waits for something the page
+            does not show right now (a settings panel when nothing is selected).
+            "Absent" is a valid answer: check `await loc.count()` before a
+            single-element read (textContent/innerText/getAttribute), or read
+            with evaluateAll / allTextContents, which return at once.
           • The page URL shows a different view than the function assumes — say
             so in `explanation`. Do not paper over it by adding navigation the
             function was never meant to perform.

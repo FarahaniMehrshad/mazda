@@ -133,6 +133,27 @@ public interface IUserSettingsRepository
     Task<UserSettings> GetOrCreateAsync(Guid userId, CancellationToken ct = default);
 }
 
+/// <summary>Round trips: sessions, replay pictures, body history, the author's answers per function.</summary>
+public interface IRoundTripRepository
+{
+    Task AddAsync(Mazda.Domain.Modules.RoundTrip.RoundTripSession session, CancellationToken ct = default);
+    Task<Mazda.Domain.Modules.RoundTrip.RoundTripSession?> FindAsync(Guid id, Guid ownerId, CancellationToken ct = default);
+    /// <summary>Owner-agnostic lookup for the background runner.</summary>
+    Task<Mazda.Domain.Modules.RoundTrip.RoundTripSession?> FindUnscopedAsync(Guid id, CancellationToken ct = default);
+    Task<IReadOnlyList<Mazda.Domain.Modules.RoundTrip.RoundTripSession>> ListBySignatureAsync(Guid signatureId, Guid ownerId, CancellationToken ct = default);
+
+    /// <summary>Replace the pictures of one replay.</summary>
+    Task ReplaceShotsAsync(Guid sessionId, int run, IEnumerable<Mazda.Domain.Modules.RoundTrip.RoundTripShot> shots, CancellationToken ct = default);
+    Task<string?> FindShotAsync(Guid sessionId, int run, int step, string phase, CancellationToken ct = default);
+
+    Task AddRevisionAsync(Mazda.Domain.Modules.RoundTrip.FunctionBodyRevision revision, CancellationToken ct = default);
+    Task<Mazda.Domain.Modules.RoundTrip.FunctionBodyRevision?> LatestRevisionAsync(Guid functionId, Guid? sessionId, CancellationToken ct = default);
+    Task RemoveRevisionAsync(Mazda.Domain.Modules.RoundTrip.FunctionBodyRevision revision, CancellationToken ct = default);
+
+    Task<Mazda.Domain.Modules.RoundTrip.FunctionComparisonProfile> GetOrCreateProfileAsync(Guid functionId, Guid signatureId, CancellationToken ct = default);
+    Task<IReadOnlyList<Mazda.Domain.Modules.RoundTrip.FunctionComparisonProfile>> ListProfilesAsync(Guid signatureId, CancellationToken ct = default);
+}
+
 /// <summary>A completed recording as function-generation grounding.</summary>
 public sealed record GroundingRecording(string Title, string Intent, string Understanding, string EpisodesJson);
 
@@ -149,6 +170,9 @@ public interface IRecordingRepository
     Task AddEventsAsync(IEnumerable<RecordingEvent> events, CancellationToken ct = default);
     Task<IReadOnlyList<RecordingEvent>> ListEventsAsync(Guid sessionId, int afterSeq, int take, CancellationToken ct = default);
     Task<IReadOnlyList<RecordingEvent>> ListAllEventsAsync(Guid sessionId, CancellationToken ct = default);
+    Task AddScreenshotsAsync(IEnumerable<RecordingScreenshot> shots, CancellationToken ct = default);
+    /// <summary>JPEG (base64) of the page after the given action (or <c>_start</c>), or null when none was captured.</summary>
+    Task<string?> FindScreenshotAsync(Guid sessionId, string actionId, CancellationToken ct = default);
     /// <summary>EpisodesJson of completed, grounding-enabled sessions for a signature, newest first.</summary>
     Task<IReadOnlyList<GroundingRecording>> ListGroundingEpisodesAsync(Guid signatureId, CancellationToken ct = default);
     Task RemoveAsync(RecordingSession session, CancellationToken ct = default);

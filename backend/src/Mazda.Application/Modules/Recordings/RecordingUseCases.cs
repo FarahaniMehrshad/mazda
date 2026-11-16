@@ -99,7 +99,8 @@ public record StartRecordingCommand(
     string? Intent,
     IReadOnlyList<string>? AllowedOrigins,
     bool CaptureBodies = true,
-    bool MaskAllInputs = false) : IRequest<Result<RecordingDto>>;
+    bool MaskAllInputs = false,
+    bool CaptureScreenshots = true) : IRequest<Result<RecordingDto>>;
 
 public class StartRecordingValidator : AbstractValidator<StartRecordingCommand>
 {
@@ -184,7 +185,8 @@ public class StartRecordingHandler(
         await recordings.AddAsync(session, ct);
         await uow.SaveChangesAsync(ct);
 
-        host.Start(new RecordingStartSpec(session.Id, target, origins, cmd.CaptureBodies, cmd.MaskAllInputs));
+        host.Start(new RecordingStartSpec(session.Id, target, origins, cmd.CaptureBodies, cmd.MaskAllInputs,
+            CaptureScreenshots: cmd.CaptureScreenshots && !cmd.MaskAllInputs));
         return Result.Success(session.ToDto());
     }
 }

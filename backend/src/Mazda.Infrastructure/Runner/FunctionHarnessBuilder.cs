@@ -43,6 +43,9 @@ internal static class FunctionHarnessBuilder
 {
     /// <summary>Sentinel that the state gather harness prints just before the JSON payload.</summary>
     public const string StateBeginSentinel = "__MZ_STATE_BEGIN__";
+
+    /// <summary>How long one state function may take during a gather before it is recorded as timed out.</summary>
+    public const int StateFunctionBudgetMs = 30_000;
     /// <summary>Sentinel that the state gather harness prints just after the JSON payload.</summary>
     public const string StateEndSentinel = "__MZ_STATE_END__";
     /// <summary>Prefix for every per-step JSON event emitted by the execute harness.</summary>
@@ -92,11 +95,24 @@ internal static class FunctionHarnessBuilder
             sb.AppendLine($"    [{JsString(fn.QualifiedName)}, __mz_state_{Slug(fn.QualifiedName)}],");
         }
         sb.AppendLine("  ];");
+        // Each state function gets its own time budget: one that waits for
+        // something the page does not have (a settings panel when nothing is
+        // selected) must cost its own entry, not the whole gather. The test
+        // timeout is sized so every function can use its full budget.
+        sb.AppendLine($"  const __mz_stateBudgetMs = {StateFunctionBudgetMs};");
+        sb.AppendLine($"  test.setTimeout({stateFunctions.Count} * __mz_stateBudgetMs + 30_000);");
         sb.AppendLine("  for (const [__mz_name, __mz_fn] of __mz_state_calls) {");
+        sb.AppendLine("    let __mz_timer: ReturnType<typeof setTimeout> | undefined;");
         sb.AppendLine("    try {");
-        sb.AppendLine("      __mz_state[__mz_name] = await __mz_fn(page, {});");
+        sb.AppendLine("      __mz_state[__mz_name] = await Promise.race([");
+        sb.AppendLine("        __mz_fn(page, {}),");
+        sb.AppendLine("        new Promise((_, reject) => { __mz_timer = setTimeout(() => reject(new Error(");
+        sb.AppendLine("          `timed out after ${__mz_stateBudgetMs / 1000}s (it probably waits for something the page does not show right now)`)), __mz_stateBudgetMs); }),");
+        sb.AppendLine("      ]);");
         sb.AppendLine("    } catch (__mz_err: any) {");
         sb.AppendLine("      __mz_state[__mz_name] = { __mz_error: String(__mz_err?.message ?? __mz_err) };");
+        sb.AppendLine("    } finally {");
+        sb.AppendLine("      if (__mz_timer) clearTimeout(__mz_timer);");
         sb.AppendLine("    }");
         sb.AppendLine("  }");
         sb.AppendLine();
@@ -372,6 +388,140 @@ internal static class FunctionHarnessBuilder
         sb.AppendLine("  };");
         sb.AppendLine();
     }
+
+    /// <summary>File (under <c>MZ_FORENSICS_DIR</c>) the round-trip harness writes its observations to.</summary>
+    public const string RoundTripFileName = "roundtrip.json";
+
+    /// <summary>
+    /// Harness for a round trip: open the recording's start URL, install the
+    /// SAME page-side recorder used while the user demonstrated, run the
+    /// plan's calls one by one, and record what each did: the recorder's
+    /// mutation summaries, the requests it caused, console output, where the
+    /// page ended up, an accessibility snapshot and before/after pictures.
+    /// Observation only: judging happens in C#. Stops at the first throw.
+    /// </summary>
+    public static string BuildRoundTripHarness(
+        Signature signature,
+        IReadOnlyList<Signature>? dependencies,
+        IReadOnlyList<Mazda.Application.Modules.RoundTrip.RoundTripCall> calls,
+        CdpTarget target,
+        string? startUrl,
+        string recorderPageScript)
+    {
+        var all = Enumerate(signature, dependencies).ToList();
+        var runTag = Guid.NewGuid().ToString("N")[..12];
+
+        var sb = new StringBuilder();
+        AppendPreamble(sb, testName: "mazda roundtrip", target);
+        AppendSettleHelper(sb);
+        sb.Append(ForensicsHelperTs);
+        sb.AppendLine();
+        AppendFunctionDeclarations(sb, all, prefix: "__mz_fn_");
+
+        sb.AppendLine("  const __mz_fns: Record<string, (page: Page, args: any) => Promise<any>> = {");
+        foreach (var fn in all)
+            sb.AppendLine($"    {JsString(fn.QualifiedName)}: __mz_fn_{Slug(fn.QualifiedName)},");
+        sb.AppendLine("  };");
+        sb.AppendLine("  const __mz_calls: Array<{ call: string; args: any }> = [");
+        foreach (var c in calls)
+            sb.AppendLine($"    {{ call: {JsString(c.Call)}, args: {NormalizeArgsLiteral(c.ArgsJson)} }},");
+        sb.AppendLine("  ];");
+        sb.AppendLine($"  const __mz_rt = {{ binding: {JsString("__mzRtEmit_" + runTag)}, session: {JsString("rt-" + runTag)}, startUrl: {JsNullableString(startUrl)} }};");
+        sb.AppendLine($"  const __MZ_PAGE_SRC: string = {JsonSerializer.Serialize(recorderPageScript)};");
+        sb.Append(RoundTripLoopTs);
+        AppendPostamble(sb);
+        return sb.ToString();
+    }
+
+    private const string RoundTripLoopTs = """
+  const __mz_say = (m: string) => console.log('__MZ_RT__ ' + m);
+  const __mz_pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const __mz_shot = async (): Promise<string | null> => {
+    const b: any = await __mzBound(page.screenshot({ type: 'jpeg', quality: 50, timeout: 3000 }), 4000);
+    const s = b ? b.toString('base64') : null;
+    return s && s.length <= 900000 ? s : null;
+  };
+
+  // The recorder's page-side script, exactly as used while the user demonstrated:
+  // the replay's mutation summaries then have the demonstration's shape.
+  const __mz_events: any[] = [];
+  await page.exposeBinding(__mz_rt.binding, (_src: any, evt: any) => {
+    if (!evt || typeof evt !== 'object') return;
+    const kind = String(evt.kind || '');
+    if (kind !== 'mutations' && kind !== 'action') return;
+    __mz_events.push({ step: __mz_curStep, kind, actionId: evt.actionId ?? null, data: evt.data ?? null });
+  });
+  const __mz_install = '(' + __MZ_PAGE_SRC + ')(' + JSON.stringify({ sessionId: __mz_rt.session, binding: __mz_rt.binding, allowedOrigins: [], maskAll: false }) + ');';
+  await page.addInitScript({ content: __mz_install });
+  const __mz_console: any[] = [];
+  page.on('console', (m: any) => { try { if (__mz_curStep) __mz_console.push({ step: __mz_curStep, text: `[${m.type()}] ${String(m.text()).slice(0, 400)}` }); } catch {} });
+  page.on('pageerror', (e: any) => { try { if (__mz_curStep) __mz_console.push({ step: __mz_curStep, text: `[pageerror] ${String(e?.message ?? e).slice(0, 400)}` }); } catch {} });
+
+  if (__mz_rt.startUrl) {
+    __mz_say('opening the start page');
+    try { await page.goto(__mz_rt.startUrl, { waitUntil: 'load', timeout: 20000 }); } catch (e: any) { __mz_say('could not open the start page: ' + __mzPlain(e?.message ?? e)); }
+  }
+  for (const f of page.frames()) { try { await f.evaluate(__mz_install); } catch { /* cross-origin frame */ } }
+  await __mzSettle(page);
+
+  const __mz_out: any[] = [];
+  let __mz_failed = false;
+  for (let __mz_i = 0; __mz_i < __mz_calls.length; __mz_i++) {
+    const __mz_c = __mz_calls[__mz_i];
+    const rec: any = { call: __mz_c.call, ran: false, ok: false, durationMs: 0 };
+    __mz_out.push(rec);
+    if (__mz_failed) continue;
+    await __mzSettle(page);
+    rec.before = await __mz_shot();
+    rec.ran = true;
+    __mz_say(`step ${__mz_i + 1}/${__mz_calls.length}: ${__mz_c.call}`);
+    __mz_curStep = 's' + __mz_i;
+    const __mz_t0 = Date.now();
+    try {
+      const h = __mz_fns[__mz_c.call];
+      if (!h) throw new Error(`No function named "${__mz_c.call}" in this catalogue.`);
+      await h(page, __mz_c.args ?? {});
+      rec.ok = true;
+    } catch (__mz_err: any) {
+      rec.error = { message: __mzPlain(__mz_err?.message ?? __mz_err), stack: __mzPlain(__mz_err?.stack).slice(0, 4000) };
+      __mz_failed = true;
+    }
+    rec.durationMs = Date.now() - __mz_t0;
+    // Let the step's requests land and the recorder close its observation window (300 ms of quiet).
+    await __mzSettle(page);
+    await __mz_pause(600);
+    __mz_curStep = null;
+    try { rec.urlAfter = page.url(); } catch {}
+    rec.after = await __mz_shot();
+    const tree: any = await __mzBound((async () => {
+      const t = await (page as any).accessibility?.snapshot({ interestingOnly: true });
+      return t ? __mzAriaText(t) : null;
+    })(), 3000);
+    rec.aria = tree ? String(tree).slice(0, 20000) : null;
+    __mz_say(`step ${__mz_i + 1}/${__mz_calls.length}: ${__mz_c.call} ${rec.ok ? 'done' : 'FAILED: ' + rec.error.message.split('\n')[0]}`);
+  }
+
+  // Flush whatever the recorder still holds, then hand everything over per step.
+  for (const f of page.frames()) { try { await f.evaluate(() => { const w: any = window; if (w.__mzRec) w.__mzRec.stop(); }); } catch {} }
+  await __mz_pause(200);
+  for (let __mz_i = 0; __mz_i < __mz_out.length; __mz_i++) {
+    const id = 's' + __mz_i;
+    const rec = __mz_out[__mz_i];
+    rec.mutations = __mz_events.filter((e) => e.step === id && e.kind === 'mutations').map((e) => e.data);
+    rec.network = __mzNet.filter((x: any) => x.step === id)
+      .map((x: any) => ({ method: x.method, url: x.url, reqBody: x.reqBody ?? null, status: x.status ?? null, type: x.type }));
+    rec.console = __mz_console.filter((x) => x.step === id).map((x) => x.text).slice(0, 50);
+  }
+  {
+    const dir = process.env.MZ_FORENSICS_DIR;
+    if (dir) {
+      const fs: any = await import('node:fs');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(dir + '/roundtrip.json', JSON.stringify({ steps: __mz_out }));
+    }
+  }
+  __mz_say('replay finished');
+""";
 
     /// <summary>
     /// Harness for the design-time "test this function" affordance: invoke ONE

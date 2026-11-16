@@ -133,6 +133,10 @@ public sealed class LocalProcessScriptRunner(
         // inherited, so a long-lived spec polls for this file and shuts down
         // cleanly (flushing whatever it has buffered) when it appears.
         psi.Environment["MAZDA_STOP_FILE"] = stopFile;
+        // Where a recorder writes its after-action pictures; cleared so an old session cannot leak in.
+        var shotDir = Path.Combine(runDir, RecorderScriptBuilder.ShotDirName);
+        try { if (Directory.Exists(shotDir)) Directory.Delete(shotDir, recursive: true); } catch { }
+        psi.Environment["MZ_SHOT_DIR"] = shotDir;
 
         // Where the execute harness drops its failure-forensics bundle (see
         // FunctionHarnessBuilder.ForensicsHelperTs); Classify reads it back.
@@ -212,6 +216,18 @@ public sealed class LocalProcessScriptRunner(
         }
     }
 
+    /// <summary>Observations the round-trip harness wrote, if any (they carry pictures, so no line protocol).</summary>
+    private static string? ReadRoundTrip(string runDir)
+    {
+        var file = Path.Combine(runDir, "forensics", FunctionHarnessBuilder.RoundTripFileName);
+        try
+        {
+            var fi = new FileInfo(file);
+            return fi.Exists && fi.Length <= 128 * 1024 * 1024 ? File.ReadAllText(file) : null;
+        }
+        catch { return null; }
+    }
+
     private static RunnerCompletion Classify(Process proc, Action<string> emit, string runDir, Func<string> fullLog)
     {
         var kind = proc.ExitCode switch
@@ -246,7 +262,11 @@ public sealed class LocalProcessScriptRunner(
         // Caller (StartExecutionHandler) is responsible for calling
         // registry.Complete AFTER it has persisted the terminal status so the
         // SSE end event arrives at the client only once the DB reflects it.
-        return new RunnerCompletion(kind, proc.ExitCode, fullLog()) { ForensicsJson = forensicsJson };
+        return new RunnerCompletion(kind, proc.ExitCode, fullLog())
+        {
+            ForensicsJson = forensicsJson,
+            RoundTripJson = ReadRoundTrip(runDir),
+        };
     }
 
     /// <summary>
