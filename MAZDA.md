@@ -20,13 +20,14 @@
 10. [Playwright authoring rules](#playwright-authoring-rules) — *hard-won, read before writing a body*
 11. [CDP attach: the three-problem stack](#cdp-attach-the-three-problem-stack)
 12. [Learn by watching (recordings)](#learn-by-watching-recordings)
-13. [MCP server](#mcp-server)
-14. [Frontend](#frontend)
-15. [Persistence](#persistence)
-16. [Deployment](#deployment)
-17. [Running and operating the stack](#running-and-operating-the-stack)
-18. [Quirks and gotchas](#quirks-and-gotchas)
-19. [Glossary](#glossary)
+13. [Round trip](#round-trip-check-and-fix-functions-against-a-recording)
+14. [MCP server](#mcp-server)
+15. [Frontend](#frontend)
+16. [Persistence](#persistence)
+17. [Deployment](#deployment)
+18. [Running and operating the stack](#running-and-operating-the-stack)
+19. [Quirks and gotchas](#quirks-and-gotchas)
+20. [Glossary](#glossary)
 
 ---
 
@@ -739,6 +740,73 @@ informational pass rebuild elements from source. Both preserve
 **Signatures without source.** Upload has a "No source? Create & learn by
 watching" action that creates an empty signature. `SignatureDto.HasSourceCode`
 lets the UI hide the source-driven steps.
+
+---
+
+## Round trip: check and fix functions against a recording
+
+Generated functions can throw while the page is fine, or report ok while
+doing something else. The user's recording already shows what should
+happen, so a round trip replays the recording **through the functions** and
+compares every step with what the user did. Authoring time only: the runtime
+gather → plan → execute path is unchanged, and generated bodies still contain
+no assertions.
+
+**Flow** (`Mazda.Application/Modules/RoundTrip`, page `/signatures/:id/roundtrip`):
+
+1. **Rebuild the plan** (`LlmReversePlanner`): from the recording's episodes,
+   the calls + arguments that reproduce it, the episodes each call covers
+   (incidental hovers belong to none), and a *contrast* choice per call.
+2. **The author reviews and confirms.** Nothing runs before that.
+3. **Learn** (`RoundTripEngine`): replay the plan twice from the recording's
+   start page (what differs between them is noise) and once with the contrast
+   choices (what differs carries the choice). Replays run under the SAME
+   page-side recorder used while recording (`BuildRoundTripHarness`), so both
+   sides are observed alike; each step gets before/after pictures.
+4. **Judge** each step: its delta (what it changed) against the delta of its
+   demonstrated span (`StepComparer`). What the comparison cannot decide goes
+   to the picture judge (`LlmEffectJudge`), then to the author.
+5. **Fix** the earliest step that differs (`LlmRoundTripFixer`): the model
+   first names the fault (function / plan / earlier step / nondeterminism).
+   Body fixes must pass `CatalogueBodyLint` and must not hard-code the
+   demonstrated choice; a fix is kept only when a replay from the start shows
+   the step got closer and no earlier step got worse; repaired functions must
+   still react to their argument. Plan changes wait for the author.
+
+**What "identical" means.** A value's role is learned from how it varies,
+never from its shape (`columnId` is a uuid yet carries the choice; `priority`
+is a small number yet depends on what is already on the page):
+
+| varies with | role | rule |
+|---|---|---|
+| two replays with the same choices | noise | ignored |
+| only the choice (contrast replay), or equals a chosen value | intent | must match the demo |
+| nothing | structure | must match |
+| none of the above | unexplained | picture judge, then the author; the answer is remembered per function |
+
+Compared: mutating requests (method + templated path, flattened bodies with
+JSON-in-strings opened), DOM change signatures (no class/style churn, no
+positions), and whether the chosen value shows up on the page where it did.
+A follow-up request seen on one side only ("does not fire every time") is a
+note, not a failure. Verdicts: identical, equivalent, different, question.
+
+**Recording guideline.** Replays restart from the page the recording started
+on, so recordings should be self-contained: start by creating what you will
+work on. Hovering a few other options before choosing gives the planner a
+contrast choice. The recorder takes a picture at the start and after each
+action (`recording_screenshots`, off with "mask all inputs").
+
+**Storage.** `roundtrip_sessions` (plan, status, results, log),
+`roundtrip_shots` (replay pictures), `function_body_history` (bodies replaced
+by a fix, for undo), `function_profiles` (the author's answers per function).
+
+**Limits.** Replays perform the actions for real, several times. A function
+is exercised with the demonstrated choice and one contrast choice. Clicks
+that fall back to a synthetic event are invisible to the recorder and show up
+as "no effect". State functions are not checked yet.
+
+Unit tests for the comparison engine: `backend/tests/Mazda.Tests` (standalone,
+not in `Mazda.sln`; run `dotnet test` there).
 
 ---
 

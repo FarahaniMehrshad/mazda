@@ -48,6 +48,8 @@ public sealed class RoundTripEngine(
     private List<LogEntry> _log = new();
     private int _runs;
     private readonly Dictionary<int, LearnedRoles> _roles = new();
+    /// <summary>Functions that failed in one learning replay and passed in the other, with the body that did so.</summary>
+    private readonly Dictionary<string, (string Body, string Error)> _flaky = new(StringComparer.Ordinal);
 
     public async Task RunAsync(Guid sessionId, Guid ownerId, CancellationToken ct = default)
     {
@@ -104,6 +106,17 @@ public sealed class RoundTripEngine(
         {
             var hasContrast = !string.IsNullOrWhiteSpace(_plan.Steps[i].ContrastArgsJson);
             _roles[i] = LearnedRoles.Learn(Delta(a, i), Delta(b, i), hasContrast && c is not null ? Delta(c, i) : null);
+
+            // Same choices, same body, one run failed and the other did not: the function depends on
+            // something the app does not do every time. One lucky pass later must not hide that.
+            var oa = i < a.Steps.Count ? a.Steps[i] : null;
+            var ob = i < b.Steps.Count ? b.Steps[i] : null;
+            if (oa is { Ran: true } && ob is { Ran: true } && oa.Threw != ob.Threw
+                && actions.FirstOrDefault(x => x.Name == _plan.Steps[i].Call) is { } flakyFn)
+            {
+                _flaky[flakyFn.Name] = (flakyFn.Body, (oa.Threw ? oa.Error : ob.Error) ?? "");
+                Say("verdict", $"Step {i + 1} ({flakyFn.Name}) failed in one replay and passed in the other with the same choices.", flakyFn.Name);
+            }
         }
 
         // ── 2. Judge ─────────────────────────────────────────────────
@@ -118,6 +131,7 @@ public sealed class RoundTripEngine(
         var gaveUp = new HashSet<int>();
         var repaired = new HashSet<string>(StringComparer.Ordinal);
         var previousAttempts = new Dictionary<int, StringBuilder>();
+        PlanChangeModel? pendingPlan = null;
         while (attempts < MaxFixAttempts)
         {
             var target = results.FindIndex(r => r.Verdict == "different" && !gaveUp.Contains(r.Index));
@@ -154,10 +168,11 @@ public sealed class RoundTripEngine(
                         attemptLog.AppendLine($"  rejected: {problem}");
                         continue;
                     }
-                    _session.SetPendingPlanChange(RoundTripJson.Write(change));
-                    Say("plan", $"Step {target + 1} looks like a plan problem: {fix.Explanation} Waiting for you to confirm the change.", fn.Name);
-                    await PersistAsync(results, RoundTripStatus.NeedsPlan, ct);
-                    return;
+                    // Park it: the author decides at the end; the other steps can still be fixed meanwhile.
+                    pendingPlan ??= change;
+                    gaveUp.Add(target);
+                    Say("plan", $"Step {target + 1} looks like a plan problem: {fix.Explanation} You will be asked to confirm the change.", fn.Name);
+                    continue;
                 }
                 case "earlier-step":
                     if (target > 0)
@@ -194,13 +209,14 @@ public sealed class RoundTripEngine(
             fn.UpdateBody(newBody);
             await uow.SaveChangesAsync(ct);
             Say("fix", $"Trying a fix for {fn.Name}: {fix.Explanation}", fn.Name);
+            attemptLog.AppendLine("  body tried:\n" + Indent(newBody));
 
             ReplayRun next;
             try { next = await ReplayAsync(Args(), $"replay after fixing {fn.Name}", ct); }
             catch (HarnessException ex)
             {
                 await RevertAsync(fn, oldBody, $"the fixed body did not run ({ExceptionMessage.Describe(ex)})", ct);
-                attemptLog.AppendLine("  reverted: did not run");
+                attemptLog.AppendLine($"  outcome: the harness could not run it: {ExceptionMessage.Describe(ex)}");
                 continue;
             }
             var nextRun = _runs;
@@ -217,9 +233,11 @@ public sealed class RoundTripEngine(
             }
             else
             {
-                var why = regressed ? "it made an earlier step worse" : "the step did not get closer to your demonstration";
+                // What the fixed body actually did: the next diagnosis needs this to correct the attempt, not guess anew.
+                var outcome = Outcome(nextResults[target]);
+                var why = regressed ? "it made an earlier step worse" : $"the step did not get closer to your demonstration ({outcome})";
                 await RevertAsync(fn, oldBody, why, ct);
-                attemptLog.AppendLine($"  reverted: {why}");
+                attemptLog.AppendLine($"  outcome when replayed: {outcome}" + (regressed ? "; it also made an earlier step worse" : ""));
             }
         }
 
@@ -243,7 +261,10 @@ public sealed class RoundTripEngine(
             }
         }
 
-        var status = results.Any(r => r.Verdict == "question") ? RoundTripStatus.NeedsAnswers : RoundTripStatus.Done;
+        if (pendingPlan is not null) _session.SetPendingPlanChange(RoundTripJson.Write(pendingPlan));
+        var status = pendingPlan is not null ? RoundTripStatus.NeedsPlan
+            : results.Any(r => r.Verdict == "question") ? RoundTripStatus.NeedsAnswers
+            : RoundTripStatus.Done;
         Say("info", Summary(results));
         await PersistAsync(results, status, ct);
     }
@@ -325,8 +346,18 @@ public sealed class RoundTripEngine(
                 Say("verdict", $"Step {i + 1} ({step.Call}): the picture judge says “{jv}”. {jr}", step.Call);
             }
 
+            var findings = judgement.Findings.ToList();
+            if (fn is not null && _flaky.TryGetValue(fn.Name, out var flaky) && flaky.Body == fn.Body && verdict != "not-run")
+            {
+                findings.Insert(0, new Finding("blocking", "flaky", "flaky",
+                    $"With the same choices it failed in one replay and passed in another (failed with: {flaky.Error.Split('\n')[0]}). " +
+                    "It depends on something the app does not do every time."));
+                verdict = "different";
+                question = null;
+            }
+
             var s = i < run.Steps.Count ? run.Steps[i] : null;
-            list.Add(new StepResultModel(i, step.Call, verdict, judgement.Findings.ToList(), judgeModel, question,
+            list.Add(new StepResultModel(i, step.Call, verdict, findings, judgeModel, question,
                 s?.Error, s?.DurationMs ?? 0, runNo,
                 _demo.RequestLines[i], RoundTripDemo.Lines(obs.Delta), s?.Console.ToList() ?? new List<string>()));
         }
@@ -403,6 +434,20 @@ public sealed class RoundTripEngine(
     {
         var steps = plan.Steps.Select((s, i) => i == change.Step ? s with { Call = change.Call, ArgsJson = change.ArgsJson } : s).ToList();
         return plan with { Steps = steps };
+    }
+
+    private static string Outcome(StepResultModel r)
+    {
+        if (!string.IsNullOrEmpty(r.Error)) return $"it failed with: {r.Error.Split('\n')[0]}";
+        var diffs = r.Findings.Where(f => f.Severity != "note").Select(f => f.Summary).Take(3).ToList();
+        if (r.Judge is not null) diffs.Add($"picture judge: {r.Judge.Reason}");
+        return diffs.Count == 0 ? r.Verdict : string.Join(" / ", diffs);
+    }
+
+    private static string Indent(string body)
+    {
+        var lines = body.Split('\n');
+        return string.Join("\n", lines.Take(60).Select(l => "    " + l)) + (lines.Length > 60 ? "\n    …" : "");
     }
 
     private static int Rank(string verdict) => verdict switch

@@ -1,0 +1,541 @@
+{
+ "addValueColumn": [
+  {
+   "method": "POST",
+   "url": "http://app.test/api/v1/Chart/AddValueColumn",
+   "reqBody": "{\"priority\":1,\"dataSourceId\":\"00000000-0000-0000-0000-000000000001\",\"columnId\":\"00000000-0000-0000-0000-000000000002\",\"workSpaceId\":\"00000000-0000-0000-0000-000000000003\",\"dashboardId\":\"00000000-0000-0000-0000-000000000004\",\"chartId\":\"00000000-0000-0000-0000-000000000005\",\"defaultAggregation\":\"Count\"}"
+  },
+  {
+   "method": "POST",
+   "url": "http://app.test/api/v1/Chart/AddValueColumn",
+   "reqBody": "{\"priority\":4,\"dataSourceId\":\"00000000-0000-0000-0000-000000000001\",\"columnId\":\"00000000-0000-0000-0000-000000000006\",\"workSpaceId\":\"00000000-0000-0000-0000-000000000003\",\"dashboardId\":\"00000000-0000-0000-0000-000000000004\",\"chartId\":\"00000000-0000-0000-0000-000000000005\",\"defaultAggregation\":\"Count\"}"
+  }
+ ],
+ "mutations": [
+  {
+   "changed": [
+    {
+     "selector": "text=\".st0{fill:#FFFFFF;}\"",
+     "attr": "class",
+     "added": [
+      "d-none"
+     ]
+    }
+   ],
+   "settleMs": 1
+  },
+  {
+   "appeared": [
+    {
+     "tag": "div",
+     "name": "CustomerKey",
+     "candidates": [
+      {
+       "kind": "css",
+       "selector": "morva > morva-dashboard-main > nb-layout > div:nth-of-type(2) > div",
+       "count": 1
+      }
+     ],
+     "floating": true,
+     "childCount": 1,
+     "outline": [
+      {
+       "sel": "div.cdk-overlay-pane",
+       "tag": "div",
+       "text": "CustomerKey"
+      },
+      {
+       "sel": "nb-tooltip.ng-trigger.ng-star-inserted",
+       "tag": "nb-tooltip",
+       "text": "CustomerKey"
+      },
+      {
+       "sel": "span.arrow",
+       "tag": "span"
+      },
+      {
+       "sel": "div.content",
+       "tag": "div",
+       "text": "CustomerKey"
+      },
+      {
+       "sel": "span.ng-star-inserted",
+       "tag": "span",
+       "text": "CustomerKey"
+      }
+     ],
+     "visible": true
+    }
+   ],
+   "changed": [
+    {
+     "selector": "text=\"CustomerKey\"",
+     "attr": "class",
+     "added": [
+      "cdk-overlay-connected-position-bounding-box"
+     ]
+    },
+    {
+     "selector": "text=\"CustomerKey\"",
+     "attr": "class",
+     "added": [
+      "ng-trigger",
+      "ng-trigger-showTooltip",
+      "ng-star-inserted",
+      "top",
+      "ng-animating"
+     ]
+    },
+    {
+     "selector": "text=\"CustomerKey\"",
+     "attr": "class",
+     "added": [
+      "ng-star-inserted"
+     ]
+    }
+   ],
+   "text": [
+    {
+     "selector": "text=\"CustomerKey\"",
+     "from": "",
+     "to": "CustomerKey"
+    }
+   ],
+   "settleMs": 77
+  },
+  {
+   "disappeared": [
+    {
+     "tag": "nb-tooltip",
+     "classes": [
+      "ng-trigger",
+      "ng-star-inserted"
+     ],
+     "selector": "nb-tooltip.ng-trigger.ng-star-inserted",
+     "text": "CustomerKey"
+    },
+    {
+     "tag": "div"
+    }
+   ],
+   "settleMs": 129
+  },
+  {
+   "appeared": [
+    {
+     "tag": "div",
+     "name": "Birth_Date",
+     "candidates": [
+      {
+       "kind": "class",
+       "selector": "div.cdk-drag.column-item",
+       "count": 27
+      },
+      {
+       "kind": "css",
+       "selector": "div:nth-of-type(1) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(6)",
+       "count": 1
+      }
+     ],
+     "childCount": 2,
+     "collection": {
+      "item": "div.cdk-drop-list.data-source-columns > div.cdk-drag.column-item",
+      "count": 22,
+      "index": 5
+     },
+     "outline": [
+      {
+       "sel": "div.column-item-row.keifiHover",
+       "tag": "div",
+       "text": "Birth_Date"
+      },
+      {
+       "sel": "div.column-title",
+       "tag": "div",
+       "text": "Birth_Date"
+      },
+      {
+       "sel": "morva-icons.icon.icon-16",
+       "tag": "morva-icons"
+      },
+      {
+       "sel": "morva-icons.icon.icon-16 div.d-flex",
+       "tag": "div"
+      },
+      {
+       "sel": "p.column-title-text",
+       "tag": "p",
+       "text": "Birth_Date"
+      },
+      {
+       "sel": "div.column-option",
+       "tag": "div"
+      },
+      {
+       "sel": "morva-icons.mat-mdc-menu-trigger.icon-12[icon=\"ellipsisVertical\"]",
+       "tag": "morva-icons",
+       "attrs": {
+        "icon": "ellipsisVertical"
+       }
+      },
+      {
+       "sel": "morva-icons.mat-mdc-menu-trigger.icon-12[icon=\"ellipsisVertical\"] div.d-flex",
+       "tag": "div"
+      },
+      {
+       "sel": "mat-menu.ng-star-inserted",
+       "tag": "mat-menu"
+      }
+     ],
+     "visible": true
+    },
+    {
+     "tag": "div",
+     "name": "Birth_Date",
+     "candidates": [
+      {
+       "kind": "class",
+       "selector": "div.cdk-drag.parameter-items",
+       "count": 5
+      },
+      {
+       "kind": "css",
+       "selector": "#listValue > div:nth-of-type(2)",
+       "count": 1
+      }
+     ],
+     "childCount": 1,
+     "collection": {
+      "item": "#listValue > div.cdk-drag.parameter-items",
+      "count": 3,
+      "index": 0
+     },
+     "outline": [
+      {
+       "sel": "div.column-item-row.applied-qualitative",
+       "tag": "div",
+       "text": "Birth_Date"
+      },
+      {
+       "sel": "div.column-title",
+       "tag": "div",
+       "text": "Birth_Date"
+      },
+      {
+       "sel": "morva-icons.icon.icon-16",
+       "tag": "morva-icons"
+      },
+      {
+       "sel": "morva-icons.icon.icon-16 div.d-flex",
+       "tag": "div"
+      },
+      {
+       "sel": "p.column-title-text",
+       "tag": "p",
+       "text": "Birth_Date"
+      },
+      {
+       "sel": "div.column-option",
+       "tag": "div"
+      },
+      {
+       "sel": "morva-icons.applied-column-icon.cursor-pointer[icon=\"pencil\"]",
+       "tag": "morva-icons",
+       "attrs": {
+        "icon": "pencil"
+       }
+      },
+      {
+       "sel": "morva-icons.applied-column-icon.cursor-pointer[icon=\"pencil\"] div.d-flex",
+       "tag": "div"
+      },
+      {
+       "sel": "morva-icons.cursor-pointer.icon-12[icon=\"close\"]",
+       "tag": "morva-icons",
+       "attrs": {
+        "icon": "close"
+       }
+      },
+      {
+       "sel": "morva-icons.cursor-pointer.icon-12[icon=\"close\"] div.d-flex",
+       "tag": "div"
+      }
+     ],
+     "visible": true
+    },
+    {
+     "tag": "morva-icons",
+     "name": ".st0{fill:#FFFFFF;}",
+     "attrs": {
+      "icon": "paintFormat"
+     },
+     "candidates": [
+      {
+       "kind": "attr",
+       "selector": "morva-icons[icon=\"paintFormat\"]",
+       "count": 6
+      },
+      {
+       "kind": "class",
+       "selector": "morva-icons.cursor-pointer.icon-18",
+       "count": 9
+      },
+      {
+       "kind": "css",
+       "selector": "gridster > gridster-item:nth-of-type(1) > morva-chart-card > div > morva-icons:nth-of-type(2)",
+       "count": 1
+      }
+     ],
+     "childCount": 1,
+     "collection": {
+      "item": "gridster.gridster.with-title > gridster-item.gridster-item.ng-star-inserted",
+      "count": 9,
+      "index": 0,
+      "inner": "morva-icons.cursor-pointer.icon-18[icon=\"paintFormat\"]"
+     },
+     "outline": [
+      {
+       "sel": "div.d-flex",
+       "tag": "div",
+       "text": ".st0{fill:#FFFFFF;}"
+      },
+      {
+       "sel": "g > path.st0:nth-of-type(1)",
+       "tag": "path"
+      },
+      {
+       "sel": "g > path.st0:nth-of-type(2)",
+       "tag": "path"
+      }
+     ],
+     "visible": false
+    },
+    {
+     "tag": "div",
+     "name": "[object Object]",
+     "candidates": [
+      {
+       "kind": "class",
+       "selector": "div.chart-container.my-auto",
+       "count": 1
+      },
+      {
+       "kind": "css",
+       "selector": "nb-card > nb-card-body > section > div:nth-of-type(2) > div:nth-of-type(2)",
+       "count": 1
+      }
+     ],
+     "childCount": 1,
+     "outline": [
+      {
+       "sel": "morva-bar-chart.ng-star-inserted",
+       "tag": "morva-bar-chart",
+       "text": "[object Object]"
+      },
+      {
+       "sel": "div.chart-c",
+       "tag": "div",
+       "text": "[object Object]"
+      }
+     ],
+     "visible": true
+    }
+   ],
+   "disappeared": [
+    {
+     "tag": "div",
+     "classes": [
+      "cdk-drag",
+      "column-item"
+     ],
+     "selector": "div.cdk-drag.column-item",
+     "text": "Birth_Date"
+    },
+    {
+     "tag": "morva-icons",
+     "classes": [
+      "cursor-pointer",
+      "icon-18"
+     ],
+     "selector": "morva-icons.cursor-pointer.icon-18",
+     "text": ".st0{fill:#FFFFFF;}"
+    },
+    {
+     "tag": "div",
+     "classes": [
+      "chart-container",
+      "my-auto"
+     ],
+     "selector": "div.chart-container.my-auto",
+     "text": "[object Object]"
+    }
+   ],
+   "changed": [
+    {
+     "selector": "text=\"Birth_Date\"",
+     "attr": "class",
+     "added": [
+      "applied-qualitative",
+      "black-icon-fill"
+     ]
+    },
+    {
+     "selector": "text=\"Birth_Date\"",
+     "attr": "class",
+     "added": [
+      "ng-star-inserted"
+     ]
+    },
+    {
+     "selector": "#listValue > div:nth-of-type(2) > div > div:nth-of-type(2) > morva-icons:nth-of-type(1)",
+     "attr": "class",
+     "added": [
+      "ng-star-inserted"
+     ]
+    },
+    {
+     "selector": "text=\"Birth_Date\"",
+     "attr": "class",
+     "added": [
+      "selected-column-item"
+     ]
+    },
+    {
+     "selector": "text=\"[object Object]\"",
+     "attr": "class",
+     "added": [
+      "ng-star-inserted"
+     ]
+    },
+    {
+     "selector": "gridster > gridster-item:nth-of-type(1) > morva-chart-card > div > morva-icons:nth-of-type(2)",
+     "attr": "class",
+     "added": [
+      "ng-star-inserted"
+     ]
+    },
+    {
+     "selector": "text=\"[object Object]\"",
+     "attr": "class",
+     "added": [
+      "ng-star-inserted"
+     ]
+    }
+   ],
+   "text": [
+    {
+     "selector": "#listValue > div:nth-of-type(2) > div > div:nth-of-type(1) > p",
+     "from": "",
+     "to": "Birth_Date"
+    },
+    {
+     "selector": "text=\"[object Object]\"",
+     "from": "",
+     "to": "[object Object]"
+    },
+    {
+     "selector": "text=\"[object Object]\"",
+     "from": "داده ای وجود ندارد",
+     "to": "[object Object]"
+    }
+   ],
+   "settleMs": 869
+  },
+  {
+   "appeared": [
+    {
+     "tag": "div",
+     "name": "Marital_Status",
+     "candidates": [
+      {
+       "kind": "css",
+       "selector": "morva > morva-dashboard-main > nb-layout > div:nth-of-type(2) > div",
+       "count": 1
+      }
+     ],
+     "floating": true,
+     "childCount": 1,
+     "outline": [
+      {
+       "sel": "div.cdk-overlay-pane",
+       "tag": "div",
+       "text": "Marital_Status"
+      },
+      {
+       "sel": "nb-tooltip.ng-trigger.ng-star-inserted",
+       "tag": "nb-tooltip",
+       "text": "Marital_Status"
+      },
+      {
+       "sel": "span.arrow",
+       "tag": "span"
+      },
+      {
+       "sel": "div.content",
+       "tag": "div",
+       "text": "Marital_Status"
+      },
+      {
+       "sel": "span.ng-star-inserted",
+       "tag": "span",
+       "text": "Marital_Status"
+      }
+     ],
+     "visible": true
+    }
+   ],
+   "changed": [
+    {
+     "selector": "text=\"Marital_Status\"",
+     "attr": "class",
+     "added": [
+      "cdk-overlay-connected-position-bounding-box"
+     ]
+    },
+    {
+     "selector": "text=\"Marital_Status\"",
+     "attr": "class",
+     "added": [
+      "ng-trigger",
+      "ng-trigger-showTooltip",
+      "ng-star-inserted",
+      "ng-animating",
+      "top"
+     ]
+    },
+    {
+     "selector": "text=\"Marital_Status\"",
+     "attr": "class",
+     "added": [
+      "ng-star-inserted"
+     ]
+    }
+   ],
+   "text": [
+    {
+     "selector": "text=\"Marital_Status\"",
+     "from": "",
+     "to": "Marital_Status"
+    }
+   ],
+   "settleMs": 14
+  },
+  {
+   "disappeared": [
+    {
+     "tag": "nb-tooltip",
+     "classes": [
+      "ng-trigger",
+      "ng-star-inserted"
+     ],
+     "selector": "nb-tooltip.ng-trigger.ng-star-inserted",
+     "text": "Marital_Status"
+    },
+    {
+     "tag": "div"
+    }
+   ],
+   "settleMs": 459
+  }
+ ]
+}

@@ -207,6 +207,15 @@ public class LlmRoundTripFixer(IOptions<LlmOptions> options) : IRoundTripFixer
                              wrong arguments for what the user did.
           • "earlier-step"   an earlier step left the page in the wrong state.
           • "nondeterminism" the app behaves differently between runs; nothing to fix.
+        Choose "plan" ONLY when the step's call or its arguments contradict the
+        demonstration (the user picked "X", the plan passes "Y"; the user did
+        something no call in the plan does). When the arguments match what the
+        user saw or typed and the function still does something else, the fault
+        is the FUNCTION, even if other arguments would happen to work. Never work
+        around a function bug by changing the arguments (passing a position
+        instead of the name the user saw, picking another item): that leaves the
+        function broken for every other caller.
+        If a previous attempt is listed, it did not work: look for a different cause.
         Then propose ONE change.
 
         ── OUTPUT ── JSON ONLY:
