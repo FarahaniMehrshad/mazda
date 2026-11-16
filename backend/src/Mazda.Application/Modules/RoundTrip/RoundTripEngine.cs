@@ -247,7 +247,7 @@ public sealed class RoundTripEngine(
         if (repaired.Count > 0 && _plan.Steps.Any(s => repaired.Contains(s.Call) && !string.IsNullOrWhiteSpace(s.ContrastArgsJson)))
         {
             var check = await ReplayAsync(Args(contrast: true), "contrast replay after fixes", ct);
-            foreach (var name in repaired)
+            foreach (var name in repaired.Where(n => _plan.Steps.Any(s => s.Call == n && !string.IsNullOrWhiteSpace(s.ContrastArgsJson))))
             {
                 var reacts = 0; var ignores = 0;
                 for (var i = 0; i < _plan.Steps.Count; i++)
@@ -463,14 +463,33 @@ public sealed class RoundTripEngine(
     /// </summary>
     private bool? ReactsToArgument(int i, ReplayRun normal, ReplayRun contrast)
     {
-        var intent = _roles.GetValueOrDefault(i)?.Intent;
-        if (intent is null || intent.Count == 0) return null;
         var a = i < normal.Steps.Count ? normal.Steps[i] : null;
         var c = i < contrast.Steps.Count ? contrast.Steps[i] : null;
         if (a is not { Ran: true, Threw: false } || c is not { Ran: true, Threw: false }) return null;
         var da = Delta(normal, i);
         var dc = Delta(contrast, i);
+        var roles = _roles.GetValueOrDefault(i) ?? LearnedRoles.None;
+        var intent = roles.Intent;
         var compared = 0;
+
+        // Nothing was learned while the function was still broken (a buggy body can send the same
+        // values for every choice): compare the two replays directly, minus what is known to be noise.
+        if (intent.Count == 0)
+        {
+            foreach (var ra in da.Requests)
+            {
+                var rc = dc.Requests.FirstOrDefault(r => r.Key == ra.Key);
+                if (rc is null) continue;
+                foreach (var (f, v) in ra.Fields)
+                {
+                    if (roles.Noise.Contains($"field:{ra.Key}:{f}") || !rc.Fields.TryGetValue(f, out var w)) continue;
+                    compared++;
+                    if (v != w) return true;
+                }
+            }
+            return compared == 0 ? null : false;
+        }
+
         foreach (var key in intent)
         {
             // "field:{METHOD /path}:{field}"
