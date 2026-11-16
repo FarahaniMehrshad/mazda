@@ -44,7 +44,12 @@ public static class EpisodeBuilder
         public readonly List<JsonObject> Network = new();
     }
 
-    public static EpisodeBuildResult Build(IEnumerable<RecordingEvent> events, int budgetChars = DefaultBudgetChars)
+    /// <param name="keepActionIds">
+    /// Keep every recorder action id an episode covers as <c>aids</c>. Off for prompts
+    /// (noise to a model); on when something has to look an episode up in the
+    /// raw log or find its after-action picture.
+    /// </param>
+    public static EpisodeBuildResult Build(IEnumerable<RecordingEvent> events, int budgetChars = DefaultBudgetChars, bool keepActionIds = false)
     {
         string? startUrl = null;
         var origins = new SortedSet<string>(StringComparer.Ordinal);
@@ -149,6 +154,8 @@ public static class EpisodeBuilder
 
         // ── Shape episodes ─────────────────────────────────────────
         var shaped = new List<JsonObject>();
+        // Every recorder action id an episode ends up covering (merges and collapses join them).
+        var aidsOf = new Dictionary<JsonObject, List<string>>(ReferenceEqualityComparer.Instance);
         // Last known outline of each collection item ("#list > li" #1), so a
         // re-render (rows removed + re-added) can be turned back into what
         // actually changed inside the row.
@@ -205,6 +212,7 @@ public static class EpisodeBuilder
             if (network.Count > 0) o["network"] = network;
             var settle = ep.Mutations.Select(m => Int(m["settleMs"]) ?? 0).DefaultIfEmpty(0).Max();
             if (settle > 0) o["settleMs"] = settle;
+            aidsOf[o] = new List<string> { ep.Id };
             shaped.Add(o);
         }
 
@@ -224,7 +232,7 @@ public static class EpisodeBuilder
                 var leftHost = BestOf(ep);
                 var hover = merged.TakeLast(4).LastOrDefault(m => Str(m["action"]) == "hover"
                     && (of is not null ? Str(m["_aid"]) == of : leftHost is not null && BestOf(m) == leftHost));
-                if (hover is not null) { hover["revertsOnLeave"] = true; continue; }
+                if (hover is not null) { hover["revertsOnLeave"] = true; aidsOf[hover].AddRange(aidsOf[ep]); continue; }
                 ep.Remove("hoverOf");
             }
             // Clicking a field / native <select> right before filling / choosing
@@ -233,6 +241,7 @@ public static class EpisodeBuilder
                 && BestOf(prev) == BestOf(ep) && BestOf(ep) is not null
                 && prev["effects"] is null && prev["network"] is null && prev["urlAfter"] is null)
             {
+                aidsOf[ep].InsertRange(0, aidsOf[prev]);
                 merged[^1] = ep;
                 continue;
             }
@@ -256,6 +265,7 @@ public static class EpisodeBuilder
                 if (ep["urlAfter"] is null && prev["urlAfter"] is { } pua) ep["urlAfter"] = pua.DeepClone();
                 if (prev["urlBefore"] is { } pub) ep["urlBefore"] = pub.DeepClone();
                 if ((Int(prev["settleMs"]) ?? 0) > (Int(ep["settleMs"]) ?? 0)) ep["settleMs"] = Int(prev["settleMs"]);
+                aidsOf[ep].InsertRange(0, aidsOf[prev]);
                 merged[^1] = ep;
                 continue;
             }
@@ -272,6 +282,7 @@ public static class EpisodeBuilder
             {
                 var last = collapsed[^1];
                 last["count"] = (Int(last["count"]) ?? 1) + 1;
+                aidsOf[last].AddRange(aidsOf[ep]);
                 continue;
             }
             collapsed.Add(ep);
@@ -283,6 +294,8 @@ public static class EpisodeBuilder
             var ep = collapsed[i];
             var copy = new JsonObject { ["i"] = i };
             ep.Remove("_aid");
+            if (keepActionIds && aidsOf.TryGetValue(ep, out var ids))
+                copy["aids"] = new JsonArray(ids.Distinct().Select(x => (JsonNode?)JsonValue.Create(x)).ToArray());
             foreach (var kv in ep.ToList()) { ep.Remove(kv.Key); copy[kv.Key] = kv.Value; }
             collapsed[i] = copy;
         }

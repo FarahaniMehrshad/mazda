@@ -246,7 +246,8 @@ public static class Endpoints
 
         sigs.MapPost("/{id:guid}/recordings", async (Guid id, [FromBody] StartRecordingBody body, ISender s) =>
             (await s.Send(new StartRecordingCommand(
-                id, body.Label, body.Intent, body.AllowedOrigins, body.CaptureBodies ?? true, body.MaskAllInputs ?? false))).ToHttp());
+                id, body.Label, body.Intent, body.AllowedOrigins, body.CaptureBodies ?? true, body.MaskAllInputs ?? false,
+                body.CaptureScreenshots ?? true))).ToHttp());
 
         // Analyze several (default: all completed) recordings of the signature
         // together → one consolidated proposal. fresh = ignore elements learned
@@ -339,7 +340,8 @@ public static class Endpoints
     public record TestFunctionBody(string? ArgsJson);
     public record AttachTabBody(string TargetId);
     public record CdpPortBody(int Port);
-    public record StartRecordingBody(string? Label, string? Intent, IReadOnlyList<string>? AllowedOrigins, bool? CaptureBodies, bool? MaskAllInputs);
+    public record StartRecordingBody(string? Label, string? Intent, IReadOnlyList<string>? AllowedOrigins, bool? CaptureBodies, bool? MaskAllInputs,
+        bool? CaptureScreenshots = null);
     public record ApplyRecordingBody(IReadOnlyList<string>? AcceptedSelectors, bool? EnrichExisting, bool? ApplyFlows, bool? ReplaceLearned);
     public record AnalyzeRecordingsBody(IReadOnlyList<Guid>? RecordingIds, bool? Fresh);
     public record UpdateRecordingBody(string? Label, bool? UseForGrounding, string? Intent);

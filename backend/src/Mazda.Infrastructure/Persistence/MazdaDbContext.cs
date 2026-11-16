@@ -6,8 +6,89 @@ using Mazda.Domain.Modules.Signatures;
 using Mazda.Domain.Modules.Generations;
 using Mazda.Domain.Modules.Mcp;
 using Mazda.Domain.Modules.Recordings;
+using Mazda.Domain.Modules.RoundTrip;
 
 namespace Mazda.Infrastructure.Persistence;
+
+internal class RecordingScreenshotConfig : IEntityTypeConfiguration<RecordingScreenshot>
+{
+    public void Configure(EntityTypeBuilder<RecordingScreenshot> b)
+    {
+        b.ToTable("recording_screenshots");
+        b.HasKey(x => new { x.SessionId, x.ActionKey });
+        b.Property(x => x.SessionId).HasColumnName("session_id");
+        b.Property(x => x.ActionKey).HasColumnName("action_key").HasMaxLength(80);
+        b.Property(x => x.JpegB64).HasColumnName("jpeg_b64");
+        b.HasOne<RecordingSession>().WithMany()
+         .HasForeignKey(x => x.SessionId)
+         .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal class RoundTripSessionConfig : IEntityTypeConfiguration<RoundTripSession>
+{
+    public void Configure(EntityTypeBuilder<RoundTripSession> b)
+    {
+        b.ToTable("roundtrip_sessions");
+        b.HasKey(x => x.Id);
+        // Id comes from Entity (client-generated): an added session must be inserted, never updated.
+        b.Property(x => x.Id).ValueGeneratedNever();
+        b.Property(x => x.OwnerId).HasColumnName("owner_id");
+        b.Property(x => x.SignatureId).HasColumnName("signature_id");
+        b.Property(x => x.RecordingId).HasColumnName("recording_id");
+        b.Property(x => x.Status).HasColumnName("status").HasConversion<string>().HasMaxLength(20);
+        b.Property(x => x.PlanJson).HasColumnName("plan_json");
+        b.Property(x => x.PendingPlanChangeJson).HasColumnName("pending_plan_change_json");
+        b.Property(x => x.ResultJson).HasColumnName("result_json");
+        b.Property(x => x.LogJson).HasColumnName("log_json");
+        b.Property(x => x.Error).HasColumnName("error");
+        b.HasIndex(x => new { x.SignatureId, x.CreatedAt });
+    }
+}
+
+internal class RoundTripShotConfig : IEntityTypeConfiguration<RoundTripShot>
+{
+    public void Configure(EntityTypeBuilder<RoundTripShot> b)
+    {
+        b.ToTable("roundtrip_shots");
+        b.HasKey(x => new { x.SessionId, x.Run, x.Step, x.Phase });
+        b.Property(x => x.SessionId).HasColumnName("session_id");
+        b.Property(x => x.Run).HasColumnName("run");
+        b.Property(x => x.Step).HasColumnName("step");
+        b.Property(x => x.Phase).HasColumnName("phase").HasMaxLength(10);
+        b.Property(x => x.JpegB64).HasColumnName("jpeg_b64");
+    }
+}
+
+internal class FunctionBodyRevisionConfig : IEntityTypeConfiguration<FunctionBodyRevision>
+{
+    public void Configure(EntityTypeBuilder<FunctionBodyRevision> b)
+    {
+        b.ToTable("function_body_history");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Id).ValueGeneratedNever();
+        b.Property(x => x.FunctionId).HasColumnName("function_id");
+        b.Property(x => x.SignatureId).HasColumnName("signature_id");
+        b.Property(x => x.SessionId).HasColumnName("session_id");
+        b.Property(x => x.Body).HasColumnName("body");
+        b.Property(x => x.Reason).HasColumnName("reason");
+        b.HasIndex(x => new { x.FunctionId, x.CreatedAt });
+    }
+}
+
+internal class FunctionComparisonProfileConfig : IEntityTypeConfiguration<FunctionComparisonProfile>
+{
+    public void Configure(EntityTypeBuilder<FunctionComparisonProfile> b)
+    {
+        b.ToTable("function_profiles");
+        b.HasKey(x => x.FunctionId);
+        b.Property(x => x.FunctionId).HasColumnName("function_id").ValueGeneratedNever();
+        b.Property(x => x.SignatureId).HasColumnName("signature_id");
+        b.Property(x => x.AcceptedJson).HasColumnName("accepted_json");
+        b.Property(x => x.RejectedJson).HasColumnName("rejected_json");
+        b.Property(x => x.UpdatedAt).HasColumnName("updated_at");
+    }
+}
 
 public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContext(options), IUnitOfWork
 {
@@ -21,9 +102,19 @@ public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContex
     public DbSet<McpTool> McpTools => Set<McpTool>();
     public DbSet<RecordingSession> RecordingSessions => Set<RecordingSession>();
     public DbSet<RecordingEvent> RecordingEvents => Set<RecordingEvent>();
+    public DbSet<RecordingScreenshot> RecordingScreenshots => Set<RecordingScreenshot>();
+    public DbSet<RoundTripSession> RoundTripSessions => Set<RoundTripSession>();
+    public DbSet<RoundTripShot> RoundTripShots => Set<RoundTripShot>();
+    public DbSet<FunctionBodyRevision> FunctionBodyRevisions => Set<FunctionBodyRevision>();
+    public DbSet<FunctionComparisonProfile> FunctionComparisonProfiles => Set<FunctionComparisonProfile>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
+        mb.ApplyConfiguration(new RecordingScreenshotConfig());
+        mb.ApplyConfiguration(new RoundTripSessionConfig());
+        mb.ApplyConfiguration(new RoundTripShotConfig());
+        mb.ApplyConfiguration(new FunctionBodyRevisionConfig());
+        mb.ApplyConfiguration(new FunctionComparisonProfileConfig());
         mb.ApplyConfiguration(new UserConfig());
         mb.ApplyConfiguration(new UserSettingsConfig());
         mb.ApplyConfiguration(new SignatureConfig());

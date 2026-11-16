@@ -5,6 +5,7 @@ using Mazda.Domain.Modules.Signatures;
 using Mazda.Domain.Modules.Generations;
 using Mazda.Domain.Modules.Mcp;
 using Mazda.Domain.Modules.Recordings;
+using Mazda.Domain.Modules.RoundTrip;
 
 namespace Mazda.Infrastructure.Persistence.Repositories;
 
@@ -281,6 +282,75 @@ public class RecordingRepository(MazdaDbContext db) : IRecordingRepository
         db.RecordingSessions.Remove(session);
         return Task.CompletedTask;
     }
+
+    public async Task AddScreenshotsAsync(IEnumerable<RecordingScreenshot> shots, CancellationToken ct = default)
+        => await db.RecordingScreenshots.AddRangeAsync(shots, ct);
+
+    public async Task<string?> FindScreenshotAsync(Guid sessionId, string actionId, CancellationToken ct = default)
+    {
+        var key = RecordingScreenshot.KeyFor(actionId);
+        return await db.RecordingScreenshots.AsNoTracking()
+            .Where(s => s.SessionId == sessionId && s.ActionKey == key)
+            .Select(s => s.JpegB64)
+            .FirstOrDefaultAsync(ct);
+    }
+}
+
+public class RoundTripRepository(MazdaDbContext db) : IRoundTripRepository
+{
+    public async Task AddAsync(RoundTripSession session, CancellationToken ct = default)
+        => await db.RoundTripSessions.AddAsync(session, ct);
+
+    public Task<RoundTripSession?> FindAsync(Guid id, Guid ownerId, CancellationToken ct = default)
+        => db.RoundTripSessions.FirstOrDefaultAsync(s => s.Id == id && s.OwnerId == ownerId, ct);
+
+    public Task<RoundTripSession?> FindUnscopedAsync(Guid id, CancellationToken ct = default)
+        => db.RoundTripSessions.FirstOrDefaultAsync(s => s.Id == id, ct);
+
+    public async Task<IReadOnlyList<RoundTripSession>> ListBySignatureAsync(Guid signatureId, Guid ownerId, CancellationToken ct = default)
+        => await db.RoundTripSessions.AsNoTracking()
+            .Where(s => s.SignatureId == signatureId && s.OwnerId == ownerId)
+            .OrderByDescending(s => s.CreatedAt)
+            .ToListAsync(ct);
+
+    public async Task ReplaceShotsAsync(Guid sessionId, int run, IEnumerable<RoundTripShot> shots, CancellationToken ct = default)
+    {
+        await db.RoundTripShots.Where(s => s.SessionId == sessionId && s.Run == run).ExecuteDeleteAsync(ct);
+        await db.RoundTripShots.AddRangeAsync(shots, ct);
+    }
+
+    public Task<string?> FindShotAsync(Guid sessionId, int run, int step, string phase, CancellationToken ct = default)
+        => db.RoundTripShots.AsNoTracking()
+            .Where(s => s.SessionId == sessionId && s.Run == run && s.Step == step && s.Phase == phase)
+            .Select(s => s.JpegB64)
+            .FirstOrDefaultAsync(ct);
+
+    public async Task AddRevisionAsync(FunctionBodyRevision revision, CancellationToken ct = default)
+        => await db.FunctionBodyRevisions.AddAsync(revision, ct);
+
+    public Task<FunctionBodyRevision?> LatestRevisionAsync(Guid functionId, Guid? sessionId, CancellationToken ct = default)
+        => db.FunctionBodyRevisions
+            .Where(r => r.FunctionId == functionId && (sessionId == null || r.SessionId == sessionId))
+            .OrderByDescending(r => r.CreatedAt)
+            .FirstOrDefaultAsync(ct);
+
+    public Task RemoveRevisionAsync(FunctionBodyRevision revision, CancellationToken ct = default)
+    {
+        db.FunctionBodyRevisions.Remove(revision);
+        return Task.CompletedTask;
+    }
+
+    public async Task<FunctionComparisonProfile> GetOrCreateProfileAsync(Guid functionId, Guid signatureId, CancellationToken ct = default)
+    {
+        var existing = await db.FunctionComparisonProfiles.FirstOrDefaultAsync(p => p.FunctionId == functionId, ct);
+        if (existing is not null) return existing;
+        var created = new FunctionComparisonProfile(functionId, signatureId);
+        db.FunctionComparisonProfiles.Add(created);
+        return created;
+    }
+
+    public async Task<IReadOnlyList<FunctionComparisonProfile>> ListProfilesAsync(Guid signatureId, CancellationToken ct = default)
+        => await db.FunctionComparisonProfiles.AsNoTracking().Where(p => p.SignatureId == signatureId).ToListAsync(ct);
 }
 
 public class GenerationRepository(MazdaDbContext db) : IGenerationRepository

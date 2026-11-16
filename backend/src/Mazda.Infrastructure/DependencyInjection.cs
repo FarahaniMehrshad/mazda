@@ -24,6 +24,7 @@ public static class DependencyInjection
         services.AddScoped<IMcpToolRepository, McpToolRepository>();
         services.AddScoped<IUserSettingsRepository, UserSettingsRepository>();
         services.AddScoped<IRecordingRepository, RecordingRepository>();
+        services.AddScoped<IRoundTripRepository, RoundTripRepository>();
 
         // Security
         services.Configure<JwtOptions>(cfg.GetSection("Jwt"));
@@ -54,6 +55,11 @@ public static class DependencyInjection
         services.AddSingleton<IStateGatherer, Runner.StateGatherer>();
         services.AddSingleton<IPlanInterpreter, Runner.PlanInterpreter>();
         services.AddSingleton<IFunctionTester, Runner.FunctionTester>();
+        // Round trip: replay a recording through the catalogue, compare, fix.
+        services.AddSingleton<Mazda.Application.Modules.RoundTrip.IRoundTripReplayer, Runner.RoundTripReplayer>();
+        services.AddSingleton<Mazda.Application.Modules.RoundTrip.IReversePlanner, LlmReversePlanner>();
+        services.AddSingleton<Mazda.Application.Modules.RoundTrip.IEffectJudge, LlmEffectJudge>();
+        services.AddSingleton<Mazda.Application.Modules.RoundTrip.IRoundTripFixer, LlmRoundTripFixer>();
         // Long-lived "learn by watching" recorder processes (one per active session).
         services.AddSingleton<IRecordingHost, Runner.RecordingHost>();
         services.AddHttpClient("cdp");

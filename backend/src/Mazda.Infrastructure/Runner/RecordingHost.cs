@@ -244,6 +244,25 @@ public sealed class RecordingHost : IRecordingHost
         await Flush();
     }
 
+    /// <summary>Moves the recorder's after-action pictures from its run dir into the database.</summary>
+    private static async Task IngestScreenshotsAsync(Guid sessionId, IRecordingRepository repo)
+    {
+        var workdirRoot = Environment.GetEnvironmentVariable("MAZDA_RUNNER_WORKDIR") ?? "/var/mazda/runs";
+        var dir = Path.Combine(workdirRoot, sessionId.ToString("N"), RecorderScriptBuilder.ShotDirName);
+        if (!Directory.Exists(dir)) return;
+
+        var shots = new List<RecordingScreenshot>();
+        foreach (var file in Directory.EnumerateFiles(dir, "*.jpg").Take(RecorderScriptBuilder.MaxScreenshots))
+        {
+            var info = new FileInfo(file);
+            if (info.Length is 0 or > 700_000) continue;
+            shots.Add(new RecordingScreenshot(sessionId, Path.GetFileNameWithoutExtension(file),
+                Convert.ToBase64String(await File.ReadAllBytesAsync(file))));
+        }
+        if (shots.Count > 0) await repo.AddScreenshotsAsync(shots);
+        try { Directory.Delete(dir, recursive: true); } catch { }
+    }
+
     private async Task FinalizeAsync(Guid sessionId, RunnerCompletion completion, Counters c)
     {
         using var scope = _scopes.CreateScope();
@@ -254,6 +273,8 @@ public sealed class RecordingHost : IRecordingHost
         if (session is null) return;   // deleted mid-recording
 
         var events = await repo.ListAllEventsAsync(sessionId);
+        try { await IngestScreenshotsAsync(sessionId, repo); }
+        catch (Exception ex) { _log.LogWarning(ex, "Recorder {Session}: could not store after-action pictures", sessionId); }
         EpisodeBuildResult? episodes = null;
         try { episodes = EpisodeBuilder.Build(events); }
         catch (Exception ex) { _log.LogError(ex, "Recorder {Session}: episode build failed", sessionId); }

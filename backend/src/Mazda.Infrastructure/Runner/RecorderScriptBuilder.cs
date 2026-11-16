@@ -30,6 +30,10 @@ internal static class RecorderScriptBuilder
     public const int MaxEvents = 5_000;
     public const int MaxBytes = 20 * 1024 * 1024;
     public const int MaxMinutes = 30;
+    /// <summary>After-action pictures per recording; a demonstration rarely has more distinct steps.</summary>
+    public const int MaxScreenshots = 80;
+    /// <summary>Directory (under the run dir) the recorder writes after-action pictures to.</summary>
+    public const string ShotDirName = "shots";
 
     /// <summary>
     /// playwright.config.ts for the recorder: no test timeout, no traces or
@@ -52,6 +56,9 @@ internal static class RecorderScriptBuilder
         });
         """;
 
+    /// <summary>The page-side recorder source; the round-trip harness reuses it so both sides are observed alike.</summary>
+    public static string PageSource => PageScript.Value;
+
     private static readonly Lazy<string> PageScript = new(() =>
     {
         using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Mazda.Recorder.recorder-page.js")
@@ -73,6 +80,8 @@ internal static class RecorderScriptBuilder
             allowedOrigins = spec.AllowedOrigins,
             maskAll = spec.MaskAllInputs,
             captureBodies = spec.CaptureBodies,
+            screenshots = spec.CaptureScreenshots && !spec.MaskAllInputs,
+            maxShots = MaxScreenshots,
             maxEvents = MaxEvents,
             maxBytes = MaxBytes,
             maxMs = MaxMinutes * 60_000,
@@ -148,11 +157,43 @@ internal static class RecorderScriptBuilder
             return lastAction && now - lastAction.t <= 3000 ? lastAction.id : null;
           };
 
+          // ── After-action pictures ────────────────────────────────────
+          // One JPEG per action, taken once its effects have settled, so the
+          // author can later see "what I did" next to "what the function did".
+          // Written to files (not events: a picture does not fit an event line).
+          const SHOT_DIR = process.env.MZ_SHOT_DIR || '';
+          const shotTimers = new Map<string, any>();
+          let shots = 0;
+          const snap = async (actionId: string) => {
+            if (!CFG.screenshots || !SHOT_DIR) return;
+            try {
+              const file = SHOT_DIR + '/' + actionId.replace(/[^A-Za-z0-9_-]/g, '_') + '.jpg';
+              const isNew = !__mzFs.existsSync(file);
+              if (isNew && shots >= CFG.maxShots) return;
+              const buf = await page.screenshot({ type: 'jpeg', quality: 50, timeout: 3000 });
+              __mzFs.mkdirSync(SHOT_DIR, { recursive: true });
+              __mzFs.writeFileSync(file, buf);
+              if (isNew) shots++;
+            } catch { /* page busy or gone: a missing picture is not worth a warning */ }
+          };
+          const scheduleSnap = (actionId: string, ms: number) => {
+            if (!CFG.screenshots || stopRequested) return;
+            clearTimeout(shotTimers.get(actionId));
+            shotTimers.set(actionId, setTimeout(() => { shotTimers.delete(actionId); void snap(actionId); }, ms));
+          };
+
           // ── Page → Node channel ──────────────────────────────────────
           await page.exposeBinding(CFG.binding, (_src: any, evt: any) => {
             if (!evt || typeof evt !== 'object') return;
             const kind = String(evt.kind || '');
-            if (kind === 'mark') { lastAction = { id: String(evt.actionId), t: Date.now() }; return; }
+            if (kind === 'mark') {
+              lastAction = { id: String(evt.actionId), t: Date.now() };
+              // Fallback for actions that change nothing in the DOM; replaced when a mutation batch arrives.
+              scheduleSnap(lastAction.id, 1200);
+              return;
+            }
+            // A mutation batch is reported when the action's effects have gone quiet.
+            if (kind === 'mutations' && evt.actionId) scheduleSnap(String(evt.actionId), 120);
             if (!['action', 'mutations', 'ambient'].includes(kind)) return;
             out(kind, evt.data ?? null, evt.actionId ?? null, { url: evt.url });
           });
@@ -223,6 +264,8 @@ internal static class RecorderScriptBuilder
           browser.on('disconnected', () => requestStop('disconnected'));
 
           out('ready', { url: page.url(), title: await page.title().catch(() => '') }, null, { url: page.url() });
+          // The page as it was when recording started: the "before" of the first demonstrated step.
+          await snap('_start');
 
           // Requests that hang (backend down, VPN dropped, browser connection
           // pool exhausted) never reach loadingFinished, so they'd silently
@@ -247,6 +290,7 @@ internal static class RecorderScriptBuilder
 
           await stopPromise;
           clearInterval(poll);
+          for (const t of shotTimers.values()) clearTimeout(t);
 
           // Flush page-side buffers (pending fill, open mutation window) while
           // the binding is still alive, then give in-flight bodies a moment.

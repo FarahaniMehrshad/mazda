@@ -539,6 +539,9 @@ public sealed record RunnerCompletion(RunnerExitKind Kind, int ExitCode, string 
     /// any: page snapshot, console, in-flight requests, screenshot.
     /// </summary>
     public string? ForensicsJson { get; init; }
+
+    /// <summary>Round-trip observations (JSON) the round-trip harness wrote, if any.</summary>
+    public string? RoundTripJson { get; init; }
 }
 
 /// <summary>
@@ -631,7 +634,9 @@ public sealed record RecordingStartSpec(
     CdpTarget Target,
     IReadOnlyList<string> AllowedOrigins,
     bool CaptureBodies,
-    bool MaskAllInputs);
+    bool MaskAllInputs,
+    /// Capture the page after each action. Never when inputs are masked: a picture would show them.
+    bool CaptureScreenshots = true);
 
 /// <summary>
 /// Owns the long-lived recorder processes. Start returns immediately; the
