@@ -298,7 +298,11 @@ function LiveFeed({ id }: { id: string }) {
     es.onerror = () => es.close();
     return () => es.close();
   }, [id]);
-  useEffect(() => bottom.current?.scrollIntoView({ block: "nearest" }), [lines]);
+  // Braces matter: newer browsers return a Promise from scrollIntoView, and an effect
+  // that returns a non-function makes React crash when it calls it as the cleanup.
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ block: "nearest" });
+  }, [lines]);
   return (
     <div className="mz-glass" style={{ padding: 14 }}>
       <div className="mz-eyebrow">LIVE</div>
