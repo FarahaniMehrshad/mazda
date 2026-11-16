@@ -724,6 +724,30 @@
     return null;
   }
 
+  // Roles that hold items rather than being one: a click inside a menu panel
+  // means the item under the pointer, even when that item has no role itself.
+  var CONTAINER_ROLE = /^(menu|menubar|listbox|list|grid|table|tree|treegrid|tablist|tabpanel|toolbar|group|radiogroup|region|dialog|alertdialog|navigation|main|complementary|banner|contentinfo|form|document|application|presentation|none|rowgroup)$/;
+
+  function isContainer(n) {
+    try { if (n.matches(CONTROL_SEL)) return false; } catch (_) { }
+    if (CONTAINER_ROLE.test((n.getAttribute && n.getAttribute('role')) || '')) return true;
+    // Matched only through tabindex/onclick while wrapping a whole panel of text.
+    return clean(n.textContent).length > 80;
+  }
+
+  // The item the user meant inside a container: the outermost element below
+  // it on the path whose text is still a short label (the row, not the label span).
+  function itemBelow(path, k) {
+    var best = null;
+    for (var i = 0; i < k; i++) {
+      var n = path[i];
+      if (!isElement(n) || SVG_INNER.test(n.tagName)) continue;
+      var t = clean(n.textContent);
+      if (t && t.length <= 60) best = n;
+    }
+    return best;
+  }
+
   function pickTarget(e) {
     var path = e.composedPath ? e.composedPath() : [e.target];
     var iconHost = iconHostOf(path);
@@ -731,7 +755,7 @@
       var n = path[i];
       if (!isElement(n)) continue;
       if (n === iconHost) return n;
-      try { if (n.matches(INTERACTIVE_SEL)) return n; } catch (_) { }
+      try { if (n.matches(INTERACTIVE_SEL)) return isContainer(n) ? (itemBelow(path, i) || n) : n; } catch (_) { }
     }
     if (iconHost) return iconHost;
     // Nothing interactive on the path: only accept a specific element, not

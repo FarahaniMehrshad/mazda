@@ -148,6 +148,67 @@ public class RoundTripComparisonTests
         Assert.Contains(j.Findings, f => f.Kind == "request-sometimes" && f.Severity == "note");
     }
 
+    // ── one function called several times (Morva "Add card") ─────────
+
+    private static JsonObject Lookup(string chart) => Net("POST", "http://app.test/api/filters-to-add", new { chartId = chart });
+    private static JsonObject Create(string type) => Net("POST", "http://app.test/api/create-chart", new { boardId = "b1", chartType = type });
+
+    [Fact]
+    public void The_main_request_is_the_one_every_demonstrated_call_sent_not_a_situational_lookup_before_it()
+    {
+        // The app looks up filters only when a card is already selected: present in some calls, absent in others.
+        var demo = Delta(Lookup("c4"), Lookup("c4"), Create("TextChart"));
+        var siblings = new[] { Delta(Create("BarChart")), Delta(Lookup("c1"), Create("DateFilter")) };
+        var replay = Delta(Create("TextChart"));
+
+        var j = StepComparer.Judge(new StepContext("AddCard", "{}", demo, Ok(replay), null, Array.Empty<StepDelta>(),
+            new HashSet<string>(), new HashSet<string>(), LearnedRoles.None, siblings));
+        Assert.Equal("equivalent", j.Verdict);
+        Assert.Single(j.Findings, f => f.Kind == "request-sometimes");
+
+        var none = StepComparer.Judge(new StepContext("AddCard", "{}", demo, Ok(Delta(Lookup("c9"))), null, Array.Empty<StepDelta>(),
+            new HashSet<string>(), new HashSet<string>(), LearnedRoles.None, siblings));
+        Assert.Contains(none.Blocking, f => f.Kind == "request-missing" && f.Key.Contains("create-chart"));
+    }
+
+    [Fact]
+    public void What_one_call_learned_about_the_choice_applies_to_the_calls_that_never_ran_while_learning()
+    {
+        // Step 1 ran in all learning replays: chartType follows the choice. Step 6 failed back then and learned nothing.
+        var step1 = LearnedRoles.Learn(Delta(Create("BarChart")), twin: Delta(Create("BarChart")), contrast: Delta(Create("LineChart")));
+        var step6 = LearnedRoles.Merge(LearnedRoles.None, new[] { step1 });
+        Assert.Contains("field:POST /api/create-chart:chartType", step6.Intent);
+
+        // The plan asked for a text card where the user had added an iframe card: blocking, not "the picture looks alike".
+        var j = Judge(demo: Delta(Create("IframeChart")), replay: Delta(Create("TextChart")), roles: step6,
+            reps: new[] { Delta(Create("BarChart")) });
+        Assert.Equal("different", j.Verdict);
+
+        // A step's own observation wins: noise for this step stays noise.
+        var own = new LearnedRoles(new HashSet<string> { "field:POST /api/create-chart:chartType" }, new HashSet<string>());
+        Assert.DoesNotContain("field:POST /api/create-chart:chartType", LearnedRoles.Merge(own, new[] { step1 }).Intent);
+    }
+
+    [Fact]
+    public void The_chosen_value_may_show_up_on_the_page_without_the_change_log_seeing_it()
+    {
+        var echo = new JsonObject { ["text"] = new JsonArray(new JsonObject { ["from"] = "", ["to"] = "Text settings" }) };
+        var demo = DeltaBuilder.Build(new[] { echo }, new[] { Create("TextChart") });
+        var replay = Delta(Create("TextChart"));
+        const string args = "{\"cardOptionName\":\"Text\"}";
+
+        var seen = StepComparer.Judge(new StepContext("AddCard", args, demo,
+            new StepObservation(replay, true, false, null, PageBefore: "- heading \"Filter settings\"", PageAfter: "- heading \"Text settings\""),
+            null, Array.Empty<StepDelta>(), new HashSet<string>(), new HashSet<string>(), LearnedRoles.None));
+        Assert.DoesNotContain(seen.Findings, f => f.Kind == "echo-missing");
+
+        // Already on the page before the step: that is not this step's doing.
+        var stale = StepComparer.Judge(new StepContext("AddCard", args, demo,
+            new StepObservation(replay, true, false, null, PageBefore: "- heading \"Text settings\"", PageAfter: "- heading \"Text settings\""),
+            null, Array.Empty<StepDelta>(), new HashSet<string>(), new HashSet<string>(), LearnedRoles.None));
+        Assert.Contains(stale.Blocking, f => f.Kind == "echo-missing");
+    }
+
     [Fact]
     public void Class_only_churn_is_not_a_page_change_and_the_chosen_value_must_show_up()
     {

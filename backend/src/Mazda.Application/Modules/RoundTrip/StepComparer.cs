@@ -4,7 +4,10 @@ using System.Text.Json.Nodes;
 namespace Mazda.Application.Modules.RoundTrip;
 
 /// <summary>What one replay of one step showed.</summary>
-public sealed record StepObservation(StepDelta Delta, bool Ran, bool Threw, string? Error);
+/// <param name="PageBefore">Accessibility text of the page before the step (null when unknown).</param>
+/// <param name="PageAfter">Accessibility text of the page after the step (null when unknown).</param>
+public sealed record StepObservation(StepDelta Delta, bool Ran, bool Threw, string? Error,
+    string? PageBefore = null, string? PageAfter = null);
 
 /// <summary>Everything known about one plan step when judging it.</summary>
 /// <param name="Demo">What the demonstrated span changed.</param>
@@ -15,6 +18,7 @@ public sealed record StepObservation(StepDelta Delta, bool Ran, bool Threw, stri
 /// <param name="Accepted">Difference keys the author said are fine ("same result").</param>
 /// <param name="Rejected">Difference keys the author said are NOT the same result.</param>
 /// <param name="Roles">Learned once per step from the first replays (noise, intent): a property of the app, reused for later replays.</param>
+/// <param name="Siblings">Every other demonstrated call of the same function, whatever its arguments: what they all send is the step's main request.</param>
 public sealed record StepContext(
     string Call,
     string ArgsJson,
@@ -24,7 +28,8 @@ public sealed record StepContext(
     IReadOnlyList<StepDelta> Repetitions,
     IReadOnlySet<string> Accepted,
     IReadOnlySet<string> Rejected,
-    LearnedRoles Roles);
+    LearnedRoles Roles,
+    IReadOnlyList<StepDelta>? Siblings = null);
 
 /// <summary>
 /// Which values are noise and which carry the user's choice, for one step.
@@ -51,6 +56,21 @@ public sealed record LearnedRoles(IReadOnlySet<string> Noise, IReadOnlySet<strin
         if (contrast is not null)
             foreach (var (key, field) in DifferingFields(a, contrast))
                 if (!noise.Contains($"field:{key}:{field}")) intent.Add($"field:{key}:{field}");
+        return new LearnedRoles(noise, intent);
+    }
+
+    /// <summary>
+    /// A step's roles plus what the other steps of the same function learned: a field that carries the
+    /// choice in one call carries it in every call (a step that did not run while learning knows nothing
+    /// on its own). The step's own observations win where they disagree.
+    /// </summary>
+    public static LearnedRoles Merge(LearnedRoles own, IEnumerable<LearnedRoles> sameFunction)
+    {
+        var others = sameFunction.ToList();
+        var noise = new HashSet<string>(own.Noise, StringComparer.Ordinal);
+        var intent = new HashSet<string>(own.Intent, StringComparer.Ordinal);
+        foreach (var k in others.SelectMany(o => o.Intent)) if (!own.Noise.Contains(k)) intent.Add(k);
+        foreach (var k in others.SelectMany(o => o.Noise)) if (!intent.Contains(k)) noise.Add(k);
         return new LearnedRoles(noise, intent);
     }
 
@@ -133,6 +153,8 @@ public static class StepComparer
     {
         var demo = c.Demo.Requests;
         var used = new HashSet<RequestObservation>();
+        var primary = PrimaryIndex(c);
+        var reported = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < demo.Count; i++)
         {
             var d = demo[i];
@@ -142,10 +164,10 @@ public static class StepComparer
 
             if (a is null)
             {
-                if (i == 0 && !c.Replay.Threw)
+                if (i == primary && !c.Replay.Threw)
                     add(new Finding("blocking", "request-missing", $"missing:{d.Key}",
                         $"Your demonstration sent {d.Key}; the function did not.", d.Key, null));
-                else if (i > 0)
+                else if (i != primary && reported.Add(d.Key))
                     add(new Finding("note", "request-sometimes", $"missing:{d.Key}",
                         b is null
                             ? $"Your demonstration also sent {d.Key}; the replay did not. It may not fire every time."
@@ -196,6 +218,20 @@ public static class StepComparer
                 $"The replay also sent {string.Join(", ", extra.Take(5))}{(extra.Count > 5 ? ", …" : "")}, which your demonstration did not."));
     }
 
+    /// <summary>
+    /// The request the step exists for. Requests that only fire in some situations (a lookup the app
+    /// makes because something was already selected) come and go between calls; the one every
+    /// demonstrated call of this function sent is the main one. Without other calls: the first.
+    /// </summary>
+    private static int PrimaryIndex(StepContext c)
+    {
+        var demo = c.Demo.Requests;
+        if (demo.Count == 0 || c.Siblings is not { Count: > 0 } sib) return 0;
+        for (var i = 0; i < demo.Count; i++)
+            if (sib.All(s => s.Requests.Any(r => r.Key == demo[i].Key))) return i;
+        return 0;
+    }
+
     // ── DOM ──────────────────────────────────────────────────────────
 
     private static void CompareDom(StepContext c, IReadOnlyList<string> chosen, Action<Finding> add)
@@ -216,6 +252,9 @@ public static class StepComparer
         {
             if (!demo.Texts.Any(t => t.Contains(v, StringComparison.OrdinalIgnoreCase))) continue;
             if (rep.Texts.Any(t => t.Contains(v, StringComparison.OrdinalIgnoreCase))) continue;
+            // The change log can miss a re-rendered label; the page itself after the step is the fallback:
+            // the value is visible now and was not before.
+            if (Shows(c.Replay.PageAfter, v) && !Shows(c.Replay.PageBefore, v)) continue;
             add(new Finding("blocking", "echo-missing", $"echo:{v}",
                 $"After your demonstration “{v}” appeared on the page; after the replay it did not.", v, null));
         }
@@ -263,6 +302,10 @@ public static class StepComparer
         catch (JsonException) { }
         return list;
     }
+
+    private static bool Shows(string? page, string v)
+        => !string.IsNullOrEmpty(page)
+           && System.Text.RegularExpressions.Regex.Replace(page, @"\s+", " ").Contains(v, StringComparison.OrdinalIgnoreCase);
 
     private static RequestObservation? Nth(IReadOnlyList<RequestObservation> list, string key, int n)
         => list.Where(r => r.Key == key).Skip(n).FirstOrDefault();
