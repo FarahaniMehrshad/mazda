@@ -104,8 +104,9 @@ public class LlmReversePlanner(IOptions<LlmOptions> options) : IReversePlanner
                     if (s.TryGetProperty("episodes", out var e) && e.ValueKind == JsonValueKind.Array)
                         foreach (var x in e.EnumerateArray())
                             if (x.ValueKind == JsonValueKind.Number && x.TryGetInt32(out var i)) eps.Add(i);
-                    var args = s.TryGetProperty("args", out var a) && a.ValueKind == JsonValueKind.Object ? a.GetRawText() : "{}";
-                    var contrast = s.TryGetProperty("contrastArgs", out var c) && c.ValueKind == JsonValueKind.Object ? c.GetRawText() : null;
+                    // Compact: the author edits these as one-line JSON.
+                    var args = s.TryGetProperty("args", out var a) && a.ValueKind == JsonValueKind.Object ? Compact(a) : "{}";
+                    var contrast = s.TryGetProperty("contrastArgs", out var c) && c.ValueKind == JsonValueKind.Object ? Compact(c) : null;
                     steps.Add(new PlanStep(call!, args, eps, contrast, Str(s, "why") ?? ""));
                 }
             }
@@ -116,6 +117,9 @@ public class LlmReversePlanner(IOptions<LlmOptions> options) : IReversePlanner
             throw new InvalidOperationException("The reverse planner returned non-JSON content. First 200 chars: " + raw[..Math.Min(200, raw.Length)], ex);
         }
     }
+
+    private static string Compact(JsonElement e)
+        => JsonSerializer.Serialize(e, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
 
     internal static JsonElement? Parse(string? json)
     {
@@ -306,7 +310,9 @@ public class LlmRoundTripFixer(IOptions<LlmOptions> options) : IRoundTripFixer
             if (fault is not ("function" or "plan" or "earlier-step" or "nondeterminism")) fault = "function";
             var body = LlmReversePlanner.Str(r, "body");
             if (body is not null) body = LlmFunctionFixer.StripFunctionWrapper(body);
-            var planArgs = r.TryGetProperty("planArgs", out var pa) && pa.ValueKind == JsonValueKind.Object ? pa.GetRawText() : null;
+            var planArgs = r.TryGetProperty("planArgs", out var pa) && pa.ValueKind == JsonValueKind.Object
+                ? JsonSerializer.Serialize(pa, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping })
+                : null;
             return new RoundTripFix(fault, body, LlmReversePlanner.Str(r, "planCall"), planArgs,
                 LlmReversePlanner.Str(r, "explanation") ?? "", tokens);
         }
