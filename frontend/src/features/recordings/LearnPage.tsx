@@ -174,6 +174,12 @@ export function LearnPage() {
                   <div style={{ fontSize: 11, color: "var(--text-4)", lineHeight: 1.5 }}>
                     Don't run tests or functions against this tab while recording — their clicks would be recorded too.
                   </div>
+                  <div style={{ fontSize: 11, color: "var(--text-3)", lineHeight: 1.5, borderTop: "1px solid var(--glass-stroke-2)", paddingTop: 10 }}>
+                    <b style={{ color: "var(--text-2)" }}>Record so it can be replayed.</b> Mazda later replays your recording
+                    through the functions to check and fix them, starting again from the page you start on. So start from a
+                    point you can come back to — for example, first create the chart or item you will work on, then change it.
+                    When you choose from a menu, hovering a few other options first helps Mazda learn which choice you made.
+                  </div>
                 </>
               ) : (
                 <ActiveControl rec={active} onStop={onStop} stopping={stop.isPending || active.status === "Stopping"} />

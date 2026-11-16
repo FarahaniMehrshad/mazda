@@ -60,6 +60,7 @@ public static class DependencyInjection
         services.AddSingleton<Mazda.Application.Modules.RoundTrip.IReversePlanner, LlmReversePlanner>();
         services.AddSingleton<Mazda.Application.Modules.RoundTrip.IEffectJudge, LlmEffectJudge>();
         services.AddSingleton<Mazda.Application.Modules.RoundTrip.IRoundTripFixer, LlmRoundTripFixer>();
+        services.AddSingleton<Mazda.Application.Modules.RoundTrip.ICatalogueLint, Runner.CatalogueLintService>();
         // Long-lived "learn by watching" recorder processes (one per active session).
         services.AddSingleton<IRecordingHost, Runner.RecordingHost>();
         services.AddHttpClient("cdp");

@@ -111,3 +111,9 @@ public interface IRoundTripFixer
         RoundTripEvidence evidence,
         CancellationToken ct = default);
 }
+
+/// <summary>The catalogue's static body rules, so an automatic fix is held to them too.</summary>
+public interface ICatalogueLint
+{
+    IReadOnlyList<string> Issues(SignatureFunction function, string body);
+}

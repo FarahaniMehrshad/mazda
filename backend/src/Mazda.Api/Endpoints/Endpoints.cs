@@ -9,6 +9,7 @@ using Mazda.Application.Modules.Mcp;
 using Mazda.Application.Modules.Cdp;
 using Mazda.Application.Modules.Recordings;
 using Mazda.Application.Modules.Signatures;
+using Mazda.Application.Modules.RoundTrip;
 using Mazda.Infrastructure.Llm;
 
 namespace Mazda.Api.Endpoints;
@@ -255,6 +256,31 @@ public static class Endpoints
         sigs.MapPost("/{id:guid}/recordings/analyze", async (Guid id, [FromBody] AnalyzeRecordingsBody? body, ISender s) =>
             (await s.Send(new AnalyzeSignatureRecordingsCommand(id, body?.RecordingIds, body?.Fresh ?? false))).ToHttp());
 
+        // ── Round trip: replay a recording through the functions, compare, fix ──
+        sigs.MapGet("/{id:guid}/roundtrips", async (Guid id, ISender s) =>
+            (await s.Send(new ListRoundTripsQuery(id))).ToHttp());
+        // Rebuilds the plan from the recording (one model call); nothing runs until confirm.
+        sigs.MapPost("/{id:guid}/roundtrips", async (Guid id, [FromBody] StartRoundTripBody body, ISender s) =>
+            (await s.Send(new StartRoundTripCommand(id, body.RecordingId))).ToHttp());
+
+        var rts = app.MapGroup("/api/roundtrips").RequireAuthorization().WithTags("RoundTrips");
+        rts.MapGet("/{rid:guid}", async (Guid rid, ISender s) =>
+            (await s.Send(new GetRoundTripQuery(rid))).ToHttp());
+        rts.MapPut("/{rid:guid}/plan", async (Guid rid, [FromBody] RoundTripPlanBody body, ISender s) =>
+            (await s.Send(new UpdateRoundTripPlanCommand(rid, body.Steps ?? new()))).ToHttp());
+        // Starts replays that perform the plan's actions for real; `confirmed` is the author's go-ahead.
+        rts.MapPost("/{rid:guid}/confirm", async (Guid rid, [FromBody] ConfirmBody body, ISender s) =>
+            (await s.Send(new ConfirmRoundTripCommand(rid, body.Confirmed))).ToHttp());
+        rts.MapPost("/{rid:guid}/plan-change", async (Guid rid, [FromBody] PlanChangeBody body, ISender s) =>
+            (await s.Send(new DecidePlanChangeCommand(rid, body.Accept))).ToHttp());
+        rts.MapPost("/{rid:guid}/answers", async (Guid rid, [FromBody] AnswerBody body, ISender s) =>
+            (await s.Send(new AnswerRoundTripQuestionCommand(rid, body.Step, body.Same))).ToHttp());
+        rts.MapPost("/{rid:guid}/revert", async (Guid rid, [FromBody] RevertBody body, ISender s) =>
+            (await s.Send(new RevertRoundTripFixCommand(rid, body.Function))).ToHttp());
+        // side = demo | replay; phase = before | after; run optional (defaults to the step's last judged replay).
+        rts.MapGet("/{rid:guid}/shots/{side}/{step:int}/{phase}", async (Guid rid, string side, int step, string phase, [FromQuery] int? run, ISender s) =>
+            (await s.Send(new GetRoundTripShotQuery(rid, side, step, phase, run))).ToHttp());
+
         var recs = app.MapGroup("/api/recordings").RequireAuthorization().WithTags("Recordings");
 
         recs.MapGet("/{rid:guid}", async (Guid rid, ISender s) =>
@@ -295,6 +321,12 @@ public static class Endpoints
         // recorder host registered are streamed: an unknown or already-evicted
         // id gets an immediate `end` (the client then reads the stored
         // recording) instead of allocating an empty feed that never ends.
+        // Live round-trip progress, same transport as runs and recordings.
+        app.MapGet("/api/roundtrips/{rid:guid}/stream",
+            (Guid rid, IExecutionRegistry registry, HttpContext ctx, CancellationToken ct) =>
+                StreamRegistryAsync(rid, registry, ctx, ct, requireKnown: true))
+            .WithTags("RoundTrips");
+
         app.MapGet("/api/recordings/{rid:guid}/stream",
             (Guid rid, IExecutionRegistry registry, HttpContext ctx, CancellationToken ct) =>
                 StreamRegistryAsync(rid, registry, ctx, ct, requireKnown: true))
@@ -339,6 +371,12 @@ public static class Endpoints
     // is nothing static to bind to.
     public record TestFunctionBody(string? ArgsJson);
     public record AttachTabBody(string TargetId);
+    public record StartRoundTripBody(Guid RecordingId);
+    public record RoundTripPlanBody(List<PlanStepModel>? Steps);
+    public record ConfirmBody(bool Confirmed);
+    public record PlanChangeBody(bool Accept);
+    public record AnswerBody(int Step, bool Same);
+    public record RevertBody(string Function);
     public record CdpPortBody(int Port);
     public record StartRecordingBody(string? Label, string? Intent, IReadOnlyList<string>? AllowedOrigins, bool? CaptureBodies, bool? MaskAllInputs,
         bool? CaptureScreenshots = null);

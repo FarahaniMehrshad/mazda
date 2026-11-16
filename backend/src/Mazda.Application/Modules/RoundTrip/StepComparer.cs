@@ -13,16 +13,64 @@ public sealed record StepObservation(StepDelta Delta, bool Ran, bool Threw, stri
 /// <param name="Contrast">A replay with different arguments (<see cref="ContrastArgsJson"/>): what differs from <see cref="Replay"/> carries the choice.</param>
 /// <param name="Repetitions">Other demonstrated calls of the same function (different arguments) in the same recording.</param>
 /// <param name="Accepted">Difference keys the author said are fine ("same result").</param>
+/// <param name="Rejected">Difference keys the author said are NOT the same result.</param>
+/// <param name="Roles">Learned once per step from the first replays (noise, intent): a property of the app, reused for later replays.</param>
 public sealed record StepContext(
     string Call,
     string ArgsJson,
-    string? ContrastArgsJson,
     StepDelta Demo,
     StepObservation Replay,
     StepObservation? Twin,
-    StepObservation? Contrast,
     IReadOnlyList<StepDelta> Repetitions,
-    IReadOnlySet<string> Accepted);
+    IReadOnlySet<string> Accepted,
+    IReadOnlySet<string> Rejected,
+    LearnedRoles Roles);
+
+/// <summary>
+/// Which values are noise and which carry the user's choice, for one step.
+/// Keys: <c>field:{request key}:{field}</c> and <c>dom:{signature}</c>.
+/// </summary>
+public sealed record LearnedRoles(IReadOnlySet<string> Noise, IReadOnlySet<string> Intent)
+{
+    public static readonly LearnedRoles None = new(new HashSet<string>(), new HashSet<string>());
+
+    /// <summary>
+    /// Noise = what differs between two replays with the same arguments from the same fresh start.
+    /// Intent = what differs between a replay and a replay where only this step's arguments changed.
+    /// </summary>
+    public static LearnedRoles Learn(StepDelta a, StepDelta? twin, StepDelta? contrast)
+    {
+        var noise = new HashSet<string>(StringComparer.Ordinal);
+        var intent = new HashSet<string>(StringComparer.Ordinal);
+        if (twin is not null)
+        {
+            foreach (var (key, field) in DifferingFields(a, twin)) noise.Add($"field:{key}:{field}");
+            var x = a.Dom.ToHashSet(); var y = twin.Dom.ToHashSet();
+            foreach (var sig in x.Except(y).Concat(y.Except(x))) noise.Add("dom:" + sig);
+        }
+        if (contrast is not null)
+            foreach (var (key, field) in DifferingFields(a, contrast))
+                if (!noise.Contains($"field:{key}:{field}")) intent.Add($"field:{key}:{field}");
+        return new LearnedRoles(noise, intent);
+    }
+
+    private static IEnumerable<(string Key, string Field)> DifferingFields(StepDelta a, StepDelta b)
+    {
+        foreach (var group in a.Requests.GroupBy(r => r.Key))
+        {
+            var others = b.Requests.Where(r => r.Key == group.Key).ToList();
+            var n = 0;
+            foreach (var ra in group)
+            {
+                var rb = n < others.Count ? others[n] : null;
+                n++;
+                if (rb is null) continue;
+                foreach (var (f, v) in ra.Fields)
+                    if (rb.Fields.TryGetValue(f, out var w) && w != v) yield return (group.Key, f);
+            }
+        }
+    }
+}
 
 /// <param name="Severity">blocking (the step did something else) | unexplained (needs a judge or the author) | note</param>
 /// <param name="Key">Stable id of this kind of difference, used to remember the author's answer.</param>
@@ -57,6 +105,8 @@ public static class StepComparer
         {
             if (x.Severity != "note" && c.Accepted.Contains(x.Key))
                 f.Add(x with { Severity = "note", Summary = "Accepted as the same result: " + x.Summary });
+            else if (x.Severity == "unexplained" && c.Rejected.Contains(x.Key))
+                f.Add(x with { Severity = "blocking", Summary = x.Summary + " (you said this is not the same result)" });
             else f.Add(x);
         }
 
@@ -89,7 +139,6 @@ public static class StepComparer
             var occurrence = demo.Take(i).Count(x => x.Key == d.Key);
             var a = Nth(c.Replay.Delta.Requests, d.Key, occurrence);
             var b = c.Twin is null ? null : Nth(c.Twin.Delta.Requests, d.Key, occurrence);
-            var k = c.Contrast is null ? null : Nth(c.Contrast.Delta.Requests, d.Key, occurrence);
 
             if (a is null)
             {
@@ -117,11 +166,12 @@ public static class StepComparer
                 if (dv == av) continue;
 
                 // Varies between two identical replays: noise.
+                var roleKey = $"field:{d.Key}:{field}";
+                if (c.Roles.Noise.Contains(roleKey)) continue;
                 if (b is not null && b.Fields.TryGetValue(field, out var bv) && bv != av) continue;
 
                 var isChosen = chosen.Any(v => Same(v, dv) || Same(v, av));
-                var reactsToChoice = k is not null && c.ContrastArgsJson is not null
-                                     && k.Fields.TryGetValue(field, out var kv) && kv != av;
+                var reactsToChoice = c.Roles.Intent.Contains(roleKey);
                 if (isChosen || reactsToChoice)
                 {
                     add(new Finding("blocking", "intent-differs", $"field:{d.Key}:{field}",
@@ -172,7 +222,7 @@ public static class StepComparer
 
         // Without requests, the page change is the only evidence: compare its shape, minus replay-to-replay noise.
         if (demo.Requests.Count > 0) return;
-        var noise = new HashSet<string>(StringComparer.Ordinal);
+        var noise = new HashSet<string>(c.Roles.Noise.Where(k => k.StartsWith("dom:")).Select(k => k[4..]), StringComparer.Ordinal);
         if (c.Twin is not null)
         {
             var a = rep.Dom.ToHashSet(); var b = c.Twin.Delta.Dom.ToHashSet();
