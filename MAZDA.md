@@ -376,11 +376,41 @@ The Application layer defines the contracts; Infrastructure implements them.
 `Mazda.Infrastructure.Runner` (`FunctionHarnessBuilder`, `StateGatherer`,
 `PlanInterpreter`, `LocalProcessScriptRunner`).
 
-Each LLM class is a thin wrapper around the OpenAI chat client with a
-carefully-engineered system prompt and strict JSON output validation. The
+Each LLM class is a thin wrapper around `ILlmGateway` (see *Providers* below)
+with a carefully-engineered system prompt and strict JSON output validation. The
 catalogue generator and the plan generator both use the **generator** model
 rather than the analyzer model — one writes real Playwright, the other needs
 solid instruction-following to ground arguments in observed state.
+
+**Providers.** Every LLM call goes through `ILlmGateway.ChatAsync(LlmTier.Analyzer|Generator)`
+(`Infrastructure/Llm/LlmGateway.cs`), which picks the provider in effect. Messages stay in
+the OpenAI SDK's types; the answer is an `LlmCompletion(Text, Tokens)`.
+- `openai`: any OpenAI-compatible API with an API key (`OpenAiCompatibleChat`).
+- `claude-code`: the Claude Code CLI on the user's computer (`ClaudeBridgeChat`). The API runs
+  in Docker, so a host bridge, `tools/claude-bridge/bridge.mjs` (Node, no dependencies), runs
+  one `claude -p` per call with the user's own login. That login never enters Docker. Mazda sends
+  `POST /v1/complete {model, system, content[], timeoutSec}` with a Bearer token. The bridge
+  and the API share `CLAUDE_BRIDGE_TOKEN` through `.env`.
+  - **Isolation:** each call runs in an empty temporary folder, so there is no CLAUDE.md. It
+    passes `--tools ""`, `--strict-mcp-config` and `--setting-sources ""`, so none of the
+    user's hooks or settings apply, and `--no-session-persistence`. `--bare` cannot be used,
+    because it does not read the subscription login.
+  - **Images:** the input is stream-json, so pictures (the picture judge) are real image blocks.
+  - **Conversations:** a multi-turn exchange, such as the catalogue's repair round, is
+    flattened into one user message that quotes the earlier answer
+    (`<your_previous_answer>`, `<follow_up>`), because print mode takes one user turn.
+  - **JSON mode:** there is none; the prompts already ask for JSON only, and
+    `StripCodeFences` handles fences.
+  - **Listening address:** the bridge listens on the docker0 address (what
+    `host.docker.internal` resolves to on Linux), else 127.0.0.1, never 0.0.0.0 unless told.
+  - **Limits:** at most 2 calls run at once; each process is killed at its timeout.
+- **Settings:** chosen in the UI (`/settings`) and stored in one installation-wide row,
+  `llm_settings`. An empty field falls back to `.env` (`LLM_PROVIDER`, `LLM_*`, `CLAUDE_*`), and
+  `LlmSettingsResolver` (Application) is the one place that merges the two.
+  - `LlmSettingsStore` caches the result for 30 s and is invalidated on save.
+  - API keys are write-only: the API reports only whether one is saved. The bridge token
+    lives only in `.env`.
+  - `POST /api/settings/llm/test` sends "Reply with OK" through the settings in effect.
 
 **Relationship vocabulary** (step 4): `labels`, `grouped-under`, `controls`,
 `submits`, `opens`, `closes`, `mutually-exclusive`, `depends-on`, `refers-to`,

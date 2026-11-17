@@ -407,6 +407,21 @@ public class McpToolRepository(MazdaDbContext db) : IMcpToolRepository
     }
 }
 
+public class LlmSettingsRepository(MazdaDbContext db) : ILlmSettingsRepository
+{
+    public Task<Mazda.Domain.Modules.Settings.LlmSettings?> GetAsync(CancellationToken ct = default)
+        => db.LlmSettings.OrderBy(x => x.CreatedAt).FirstOrDefaultAsync(ct);
+
+    public async Task<Mazda.Domain.Modules.Settings.LlmSettings> GetOrCreateAsync(CancellationToken ct = default)
+    {
+        var existing = await GetAsync(ct);
+        if (existing is not null) return existing;
+        var created = Mazda.Domain.Modules.Settings.LlmSettings.CreateDefault();
+        await db.LlmSettings.AddAsync(created, ct);
+        return created;
+    }
+}
+
 public class UserSettingsRepository(MazdaDbContext db) : IUserSettingsRepository
 {
     public async Task<UserSettings> GetOrCreateAsync(Guid userId, CancellationToken ct = default)

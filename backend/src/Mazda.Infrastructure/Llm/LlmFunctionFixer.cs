@@ -16,7 +16,7 @@ namespace Mazda.Infrastructure.Llm;
 ///
 /// Body only. Schemas are out of scope (see <see cref="IFunctionFixer"/>).
 /// </summary>
-public class LlmFunctionFixer(IOptions<LlmOptions> options) : IFunctionFixer
+public class LlmFunctionFixer(ILlmGateway llm) : IFunctionFixer
 {
     private static readonly string SystemPrompt = """
         You are Mazda's function REPAIR engineer. A single high-level function
@@ -134,8 +134,7 @@ public class LlmFunctionFixer(IOptions<LlmOptions> options) : IFunctionFixer
         string? userHint,
         CancellationToken ct = default)
     {
-        var opts = options.Value;
-        var chat = ChatClientFactory.ForModel(opts, opts.GeneratorModel);
+        var chat = await llm.ChatAsync(LlmTier.Generator, ct);
 
         var payload = JsonSerializer.Serialize(new
         {
@@ -235,8 +234,8 @@ public class LlmFunctionFixer(IOptions<LlmOptions> options) : IFunctionFixer
             },
             ct);
 
-        var raw = LlmComponentAnalyzer.StripCodeFences(completion.Value.Content[0].Text ?? "{}");
-        var tokens = completion.Value.Usage?.TotalTokenCount ?? 0;
+        var raw = LlmComponentAnalyzer.StripCodeFences(completion.TextOr("{}"));
+        var tokens = completion.Tokens;
 
         try
         {

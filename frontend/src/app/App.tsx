@@ -18,6 +18,7 @@ import { TracePage } from "@/features/traces/TracePage";
 import { RunPage } from "@/features/generation/RunPage";
 import { RunsPage } from "@/features/generation/RunsPage";
 import { McpServerPage } from "@/features/mcp/McpServerPage";
+import { SettingsPage } from "@/features/settings/SettingsPage";
 
 const qc = new QueryClient({
   defaultOptions: {
@@ -58,6 +59,7 @@ export function App() {
           <Route path="/runs/:id" element={<RequireAuth><RunPage /></RequireAuth>} />
           <Route path="/runs" element={<RequireAuth><RunsPage /></RequireAuth>} />
           <Route path="/mcp" element={<RequireAuth><McpServerPage /></RequireAuth>} />
+          <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

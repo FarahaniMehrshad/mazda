@@ -6,7 +6,7 @@ using Mazda.Domain.Modules.Signatures;
 
 namespace Mazda.Infrastructure.Llm;
 
-public class LlmInformationalAnalyzer(IOptions<LlmOptions> options) : IInformationalAnalyzer
+public class LlmInformationalAnalyzer(ILlmGateway llm) : IInformationalAnalyzer
 {
     private static readonly string SystemPrompt = """
         You are Mazda's READ-TARGET analyst. You receive (1) an EXISTING component
@@ -221,8 +221,7 @@ public class LlmInformationalAnalyzer(IOptions<LlmOptions> options) : IInformati
 
     public async Task<InformationalAnalysisResult> AnalyzeInformationalAsync(Signature signature, string componentSource, CancellationToken ct = default)
     {
-        var opts = options.Value;
-        var chat = ChatClientFactory.ForModel(opts, opts.AnalyzerModel);
+        var chat = await llm.ChatAsync(LlmTier.Analyzer, ct);
 
         var existingSig = JsonSerializer.Serialize(new
         {
@@ -253,8 +252,8 @@ public class LlmInformationalAnalyzer(IOptions<LlmOptions> options) : IInformati
             },
             ct);
 
-        var raw = LlmComponentAnalyzer.StripCodeFences(completion.Value.Content[0].Text ?? "{}");
-        var tokens = completion.Value.Usage?.TotalTokenCount ?? 0;
+        var raw = LlmComponentAnalyzer.StripCodeFences(completion.TextOr("{}"));
+        var tokens = completion.Tokens;
 
         var elements = new List<AnalyzedElement>();
         try

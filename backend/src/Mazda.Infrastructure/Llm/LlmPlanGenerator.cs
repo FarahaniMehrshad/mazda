@@ -24,7 +24,7 @@ namespace Mazda.Infrastructure.Llm;
 /// blocks — showing them would tempt the model to write a plan that "reads"
 /// state mid-execution, which v1 doesn't support.
 /// </summary>
-public class LlmPlanGenerator(IOptions<LlmOptions> options) : IPlanGenerator
+public class LlmPlanGenerator(ILlmGateway llm) : IPlanGenerator
 {
     private static readonly string SystemPrompt = """
         You are Mazda's runtime PLANNER. You receive:
@@ -170,11 +170,10 @@ public class LlmPlanGenerator(IOptions<LlmOptions> options) : IPlanGenerator
         string userPrompt,
         CancellationToken ct = default)
     {
-        var opts = options.Value;
         // Runtime path uses the generator model, same tier as the catalogue
         // generator. The plan is short but grounding args in observed state
         // benefits from a strong instruction-follower.
-        var chat = ChatClientFactory.ForModel(opts, opts.GeneratorModel);
+        var chat = await llm.ChatAsync(LlmTier.Generator, ct);
 
         var actionCatalogue = BuildActionCatalogue(signature, dependencies);
         // Empty catalogue is an actionable failure: no functions → no plan
@@ -220,8 +219,8 @@ public class LlmPlanGenerator(IOptions<LlmOptions> options) : IPlanGenerator
             },
             ct);
 
-        var raw = LlmComponentAnalyzer.StripCodeFences(completion.Value.Content[0].Text ?? "{}");
-        var tokens = completion.Value.Usage?.TotalTokenCount ?? 0;
+        var raw = LlmComponentAnalyzer.StripCodeFences(completion.TextOr("{}"));
+        var tokens = completion.Tokens;
 
         Plan plan;
         try

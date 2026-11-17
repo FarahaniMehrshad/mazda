@@ -114,6 +114,7 @@ public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContex
 {
     public DbSet<User> Users => Set<User>();
     public DbSet<UserSettings> UserSettings => Set<UserSettings>();
+    public DbSet<Mazda.Domain.Modules.Settings.LlmSettings> LlmSettings => Set<Mazda.Domain.Modules.Settings.LlmSettings>();
     public DbSet<Signature> Signatures => Set<Signature>();
     public DbSet<SignatureElement> SignatureElements => Set<SignatureElement>();
     public DbSet<SignatureDependency> SignatureDependencies => Set<SignatureDependency>();
@@ -139,6 +140,7 @@ public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContex
         mb.ApplyConfiguration(new RunTraceConfig());
         mb.ApplyConfiguration(new UserConfig());
         mb.ApplyConfiguration(new UserSettingsConfig());
+        mb.ApplyConfiguration(new LlmSettingsConfig());
         mb.ApplyConfiguration(new SignatureConfig());
         mb.ApplyConfiguration(new SignatureElementConfig());
         mb.ApplyConfiguration(new SignatureDependencyConfig());
@@ -158,6 +160,24 @@ public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContex
         var result = await work(ct);
         await tx.CommitAsync(ct);
         return result;
+    }
+}
+
+internal class LlmSettingsConfig : IEntityTypeConfiguration<Mazda.Domain.Modules.Settings.LlmSettings>
+{
+    public void Configure(EntityTypeBuilder<Mazda.Domain.Modules.Settings.LlmSettings> b)
+    {
+        b.ToTable("llm_settings");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Provider).HasColumnName("provider").HasMaxLength(30);
+        b.Property(x => x.OpenAiBaseUrl).HasColumnName("openai_base_url").HasMaxLength(2000);
+        b.Property(x => x.OpenAiApiKey).HasColumnName("openai_api_key").HasMaxLength(2000);
+        b.Property(x => x.OpenAiAnalyzerModel).HasColumnName("openai_analyzer_model").HasMaxLength(200);
+        b.Property(x => x.OpenAiGeneratorModel).HasColumnName("openai_generator_model").HasMaxLength(200);
+        b.Property(x => x.ClaudeBridgeUrl).HasColumnName("claude_bridge_url").HasMaxLength(2000);
+        b.Property(x => x.ClaudeAnalyzerModel).HasColumnName("claude_analyzer_model").HasMaxLength(200);
+        b.Property(x => x.ClaudeGeneratorModel).HasColumnName("claude_generator_model").HasMaxLength(200);
+        b.Property(x => x.TimeoutSeconds).HasColumnName("timeout_seconds");
     }
 }
 

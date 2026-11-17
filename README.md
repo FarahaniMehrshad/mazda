@@ -417,7 +417,26 @@ In the Mazda UI TopBar, open the **CDP panel**, verify the browser is reachable,
 
 ## LLM provider configuration
 
-Mazda speaks the **OpenAI Chat Completions API**. Set four env vars to point at any compatible endpoint:
+Choose the provider in **Settings → Language model**. The page's values override `.env`, and an empty field uses `.env`. There are two kinds of provider:
+
+### Claude Code on this computer (no API key)
+
+Mazda can use the [Claude Code](https://claude.com/claude-code) CLI you already have, with your own login (subscription). Mazda runs in Docker, so a small bridge on your computer runs `claude -p` for it:
+
+```bash
+# once: a shared token for the bridge and the API (both read .env)
+echo "CLAUDE_BRIDGE_TOKEN=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")" >> .env
+docker compose up -d api
+
+# keep this running while you use Mazda
+node tools/claude-bridge/bridge.mjs
+```
+
+Then choose **Claude Code on this computer** in Settings and click **Test connection**. The defaults are `sonnet` for analysis and `opus` for code, plans and fixes. You can use any alias or full model id. Each call is isolated from your own Claude Code setup: no tools, MCP servers, hooks or CLAUDE.md are used, and no session is saved.
+
+### Any OpenAI-compatible API
+
+Mazda speaks the **OpenAI Chat Completions API**. Set four env vars, or use the Settings page, to point at any compatible endpoint:
 
 | Provider | `LLM_BASE_URL` | Notes |
 |----------|----------------|-------|
@@ -472,7 +491,9 @@ All authenticated routes require `Authorization: Bearer <jwt>`. Full routing: [`
 | Method | Path | Auth | Purpose |
 |--------|------|:----:|---------|
 | GET | `/health` | – | Health check |
-| GET | `/api/meta` | – | App metadata |
+| GET | `/api/meta` | – | The LLM in effect (provider, models, ready) |
+| GET / PUT | `/api/settings/llm` | ✓ | LLM settings (API keys are write-only) |
+| POST | `/api/settings/llm/test` | ✓ | Send "Reply with OK" through the settings in effect |
 
 ### Auth
 

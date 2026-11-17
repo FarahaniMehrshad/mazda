@@ -13,6 +13,13 @@ namespace Mazda.Infrastructure.Llm;
 public class LlmOptions
 {
     /// <summary>
+    /// Default provider when Settings has none saved: "openai" (any
+    /// OpenAI-compatible API, below) or "claude-code" (the Claude Code CLI on
+    /// the user's computer through the host bridge, see <see cref="ClaudeBridgeOptions"/>).
+    /// </summary>
+    public string Provider { get; set; } = "openai";
+
+    /// <summary>
     /// Base URL of the OpenAI-compatible API. Default points at the public
     /// OpenAI API. Examples:
     ///   - https://api.openai.com/v1
@@ -43,25 +50,40 @@ public class LlmOptions
     public int TimeoutSeconds { get; set; } = 600;
 }
 
+/// <summary>
+/// The Claude Code host bridge (<c>tools/claude-bridge/bridge.mjs</c>). The
+/// token is shared with the bridge through the repository's .env and is
+/// never stored in the database or shown in the UI.
+/// </summary>
+public class ClaudeBridgeOptions
+{
+    /// <summary>Where the API reaches the bridge; empty for the default (host.docker.internal:8787).</summary>
+    public string Url { get; set; } = string.Empty;
+    public string Token { get; set; } = string.Empty;
+    /// <summary>Default models for Claude Code: aliases (sonnet, opus, haiku) or full model ids.</summary>
+    public string AnalyzerModel { get; set; } = string.Empty;
+    public string GeneratorModel { get; set; } = string.Empty;
+}
+
 internal static class ChatClientFactory
 {
-    public static ChatClient ForModel(LlmOptions opts, string model)
+    public static ChatClient Create(string baseUrl, string apiKey, string model, int timeoutSeconds)
     {
-        if (string.IsNullOrWhiteSpace(opts.ApiKey))
-            throw new InvalidOperationException("Llm:ApiKey is not configured.");
-        if (string.IsNullOrWhiteSpace(opts.BaseUrl))
-            throw new InvalidOperationException("Llm:BaseUrl is not configured.");
-        if (!Uri.TryCreate(opts.BaseUrl, UriKind.Absolute, out var endpoint))
-            throw new InvalidOperationException($"Llm:BaseUrl is not a valid absolute URL: '{opts.BaseUrl}'.");
+        if (string.IsNullOrWhiteSpace(apiKey))
+            throw new LlmException("No LLM API key is configured: save one in Settings or set LLM_API_KEY in .env.");
+        if (string.IsNullOrWhiteSpace(baseUrl))
+            throw new LlmException("No LLM base URL is configured.");
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var endpoint))
+            throw new LlmException($"The LLM base URL is not a valid absolute URL: '{baseUrl}'.");
 
         var clientOptions = new OpenAIClientOptions
         {
             Endpoint = endpoint,
-            NetworkTimeout = TimeSpan.FromSeconds(Math.Max(1, opts.TimeoutSeconds)),
+            NetworkTimeout = TimeSpan.FromSeconds(Math.Max(1, timeoutSeconds)),
         };
         return new ChatClient(
             model: model,
-            credential: new ApiKeyCredential(opts.ApiKey),
+            credential: new ApiKeyCredential(apiKey),
             options: clientOptions);
     }
 }
