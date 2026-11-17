@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!--
-    Unit tests for pure pieces (no database, no browser, no model).
+    Unit tests for pure pieces (no database, no browser, no model), including
+    static helpers in Infrastructure such as the catalogue body lint.
     Kept out of Mazda.sln on purpose: the API image restores the solution
     and copies only the app projects. Run "dotnet test" in this folder, for
     example inside the mcr.microsoft.com/dotnet/sdk:8.0 image with backend/ mounted.
@@ -18,6 +19,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Mazda.Application\Mazda.Application.csproj" />
+    <ProjectReference Include="..\..\src\Mazda.Infrastructure\Mazda.Infrastructure.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
