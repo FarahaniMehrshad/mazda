@@ -151,13 +151,38 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
              the browser to collect all records in one round-trip — it is
              faster and avoids races where the DOM shifts between reads.
              A state function reports what the page shows NOW, and "absent"
-             is a valid answer (no card selected → no settings panel). Never
-             call a single-element read — `textContent()`, `innerText()`,
-             `getAttribute()`, `inputValue()` — on a locator that may not
-             exist: it waits the full action timeout each time. Check
-             `await loc.count()` first, or read with `evaluateAll` /
-             `allTextContents()`, which return at once. Trying several
-             candidate selectors in turn multiplies that wait.
+             is a valid answer (an empty list → `[]`, nothing selected → no
+             details panel → empty fields). The harness lets the page settle
+             before it reads state, so a state function NEVER WAITS:
+               ✗ `await list.first().waitFor(...)` (even with `.catch`) before
+                 reading — on an empty list it burns its whole timeout
+               ✗ waitForSelector / waitForResponse / waitForLoadState /
+                 waitForTimeout
+               ✗ a single-element read — `textContent()`, `innerText()`,
+                 `getAttribute()`, `inputValue()`, `isChecked()` — on a
+                 locator that may not exist: it waits the full action
+                 timeout each time (a `.catch` only hides that)
+               ✓ `evaluateAll` / `allTextContents()` / `count()`, which
+                 return at once, or `(await loc.count()) > 0 ? … : ''`
+             Trying several candidate selectors in turn multiplies any wait.
+             The one exception: a function that must interact to see
+             something (open a menu, hover for a tooltip) may wait for what
+             that interaction reveals, right after it — see REVEALED READS.
+
+        ── REVEALED READS (a label that only shows after a hover / click) ──
+        Reading a label that an interaction reveals — a tooltip per option, a
+        popover — is a short, TOLERANT read: the popup can be slow or skip one
+        hover, and one missed label must not fail the whole function (it then
+        only lacks that one name). Keep both the wait and the read tolerant,
+        and short:
+            await option.hover();
+            const tip = page.locator(<tooltip selector>).last();
+            await tip.waitFor({ state: 'visible', timeout: 1500 }).catch(() => {});
+            const label = ((await tip.textContent({ timeout: 1000 }).catch(() => '')) ?? '').trim();
+        This `.catch` is right: it is a wait the function can go on without.
+        The `.catch` rules above are about different waits — a state function
+        waiting BEFORE reading the page, and an action waiting for a request
+        that may not come.
           5. Action functions perform their effect and `return;` implicitly
              (return type is void).
           6. Await every Playwright call. Never `.click()` without `await`.
@@ -181,7 +206,7 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
           ✗ comparing state before / after (counts, texts) and throwing
           ✗ waiting for something to appear / disappear / become visible /
             hidden / detached AFTER the last interaction, e.g.
-              await page.locator('div.chart-container').waitFor({ state: 'visible' });
+              await page.locator('.result-panel').waitFor({ state: 'visible' });
               await rows.nth(i).waitFor({ state: 'detached' });
         After the LAST interaction the ONLY allowed waits are
         `page.waitForResponse(...)` for the requests that interaction fires —
@@ -193,13 +218,15 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
         Allowed throws: argument problems only (neither name nor index given,
         unknown name — list the available names).
 
-        ── RESOLVE BY WAITING, NOT BY CHECKING — HARD RULE ──
-        A function may start while the previous step's UI is still rendering
+        ── RESOLVE BY WAITING, NOT BY CHECKING — HARD RULE (action functions) ──
+        This is for ACTIONS, which need their target to exist; state
+        functions never wait (BODY RULE 4).
+        An action may start while the previous step's UI is still rendering
         (a panel opening, a list loading). Playwright locators WAIT for their
         element; snapshots don't. So:
           • Find targets with locators — `.filter({ hasText })`, `.nth(i)`,
             `getByRole` — and interact; the action's auto-wait does the
-            rest. Prefer `page.locator(<slot>).filter({ hasText: /base|محور/ })
+            rest. Prefer `page.locator(<slot>).filter({ hasText: <name> })
             .first()` over reading all titles and searching them.
           • Before reading a list with `evaluateAll` / `allTextContents` /
             `count()` to turn a name into an index (or to range-check one),
@@ -216,6 +243,16 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
             request (POST/PUT/PATCH/DELETE in the episodes) awaits that
             `waitForResponse` (created before the trigger), so the next step
             starts once the server has answered.
+          • Wait for the request the interaction ITSELF sends — the first
+            mutating request right after it, seen EVERY time the user did
+            it — and nothing more. Do NOT also wait for the requests that
+            follow it (a reload, a refresh, a recomputation the app starts
+            after the change): they do not fire every time, and the harness
+            already lets the page settle before the next step. Never make a
+            request wait optional with `.catch(...)` or a timeout: when the
+            request does not come, every call pays the full timeout.
+              ✗ const refreshed = page.waitForResponse(r => …, { timeout: 15000 }).catch(() => undefined);
+              ✓ const saved = page.waitForResponse(r => <the mutating request>);
 
         ── SELECTOR DISCIPLINE ──
         Every selector string in every body MUST be a byte-for-byte match of
@@ -469,8 +506,15 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
             request paths may come from it.
 
         ── FINAL CHECKS BEFORE YOU EMIT ──
-          • Does any function read a list (evaluateAll / count / allTextContents)
+          • Does any ACTION read a list (evaluateAll / count / allTextContents)
             without first waiting for it, or throw on such a snapshot?
+          • Does any STATE function wait (`.waitFor`, waitForSelector, …)
+            before reading, or call textContent / innerText / getAttribute /
+            inputValue on an element that may be absent? Read with
+            evaluateAll / allTextContents / count() instead.
+          • Does any action wait for a request that may not come (a
+            `waitForResponse(...).catch(...)`, a follow-up refresh)? Keep
+            only the request its interaction always sends.
           • Does every action whose interaction fires a request wait for it?
           • Does any action end with a wait / check on the UI (a locator
             `.waitFor`, `waitForFunction`, a before/after comparison, expect)
@@ -599,18 +643,21 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
                 $"{raw[..Math.Min(200, raw.Length)]}", ex);
         }
 
-        // NO POST-CONDITIONS guard: one repair round for actions that assert
-        // or wait on the UI, then strip what is still left at the tail.
+        // Body rules guard: one repair round for actions that assert, wait on
+        // the UI or wait for requests that may not come, and for state
+        // functions that wait for elements the page may not have; then strip
+        // what is still left (trailing UI waits, swallowed waits in state).
         var observedRequests = ObservedRequests(recordedEpisodes);
-        var flagged = parsed
-            .Where(f => CatalogueBodyLint.IsAction(f.Kind) && CatalogueBodyLint.Issues(f.Body, observedRequests).Count > 0)
-            .ToList();
+        IReadOnlyList<string> Lint(GeneratedFunction f) => CatalogueBodyLint.IsAction(f.Kind)
+            ? CatalogueBodyLint.Issues(f.Body, observedRequests)
+            : CatalogueBodyLint.StateIssues(f.Body);
+        var flagged = parsed.Where(f => Lint(f).Count > 0).ToList();
         if (flagged.Count > 0)
         {
             try
             {
                 var report = string.Join("\n\n", flagged.Select(f =>
-                    $"- {f.Name}: " + string.Join("; ", CatalogueBodyLint.Issues(f.Body, observedRequests)) +
+                    $"- {f.Name} ({f.Kind}): " + string.Join("; ", Lint(f)) +
                     $"\n```ts\n{f.Body}\n```"));
                 var repair = await chat.CompleteChatSafeAsync(
                     new List<ChatMessage>
@@ -619,15 +666,19 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
                         new UserChatMessage(userMsg),
                         new AssistantChatMessage(raw),
                         new UserChatMessage(
-                            "These ACTION functions break the NO ASSERTIONS / NO POST-CONDITIONS or the " +
-                            "RESOLVE BY WAITING hard rule:\n\n" +
+                            "These functions break a hard rule (NO POST-CONDITIONS / RESOLVE BY WAITING for " +
+                            "actions, BODY RULE 4 for state functions):\n\n" +
                             report + "\n\n" +
-                            "Rewrite ONLY these functions. Keep name, kind, description, parameters, returns and " +
-                            "preconditions; fix the body so that it finds targets with waiting locators " +
-                            "(wait for a list before reading it, no throws on snapshots), awaits the " +
-                            "requests its interactions fire (waitForResponse created before the trigger), " +
-                            "and after its last interaction waits for nothing else — no locator.waitFor, " +
-                            "waitForFunction, waitForTimeout, expect, or before/after checks. " +
+                            "Rewrite ONLY these functions, and in them change ONLY the lines the report names: " +
+                            "keep every other line exactly as it is (tolerant revealed reads with .catch stay). " +
+                            "Keep name, kind, description, parameters, returns and preconditions. An ACTION finds targets with waiting locators (wait for a list " +
+                            "before reading it, no throws on snapshots), awaits only the request each " +
+                            "interaction itself always sends (waitForResponse created before the trigger, " +
+                            "never made optional with .catch), and after its last interaction waits for " +
+                            "nothing else — no locator.waitFor, waitForFunction, waitForTimeout, expect, or " +
+                            "before/after checks. A STATE function reads the page as it is now without " +
+                            "waiting: evaluateAll / allTextContents / count(), and a single-element read " +
+                            "only after `count() > 0`. " +
                             "Return {\"functions\": [...]} with just these functions."),
                     },
                     new ChatCompletionOptions { ResponseFormat = ChatResponseFormat.CreateJsonObjectFormat() },
@@ -635,15 +686,16 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
                 tokens += repair.Value.Usage?.TotalTokenCount ?? 0;
                 var fixedFns = ParseAndValidate(LlmComponentAnalyzer.StripCodeFences(repair.Value.Content[0].Text ?? "{}"))
                     .ToDictionary(f => f.Name, StringComparer.Ordinal);
-                parsed = parsed.Select(f => fixedFns.TryGetValue(f.Name, out var nf) && CatalogueBodyLint.IsAction(nf.Kind) ? nf : f).ToList();
+                parsed = parsed.Select(f => fixedFns.TryGetValue(f.Name, out var nf) && nf.Kind == f.Kind ? nf : f).ToList();
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 // Repair is best-effort; the strip below still applies.
             }
-            parsed = parsed.Select(f => CatalogueBodyLint.IsAction(f.Kind) && CatalogueBodyLint.Issues(f.Body).Count > 0
-                ? f with { Body = CatalogueBodyLint.StripTrailingUiWaits(f.Body) }
-                : f).ToList();
+            parsed = parsed.Select(f =>
+                CatalogueBodyLint.IsAction(f.Kind)
+                    ? (CatalogueBodyLint.Issues(f.Body).Count > 0 ? f with { Body = CatalogueBodyLint.StripTrailingUiWaits(f.Body) } : f)
+                    : (CatalogueBodyLint.StateIssues(f.Body).Count > 0 ? f with { Body = CatalogueBodyLint.StripStateDeadWaits(f.Body) } : f)).ToList();
         }
 
         return new FunctionCatalogueResult(parsed, tokens);

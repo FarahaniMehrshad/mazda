@@ -9,5 +9,5 @@ public sealed class CatalogueLintService : ICatalogueLint
     public IReadOnlyList<string> Issues(SignatureFunction function, string body)
         => Llm.CatalogueBodyLint.IsAction(function.Kind.ToString())
             ? Llm.CatalogueBodyLint.Issues(body)
-            : Array.Empty<string>();
+            : Llm.CatalogueBodyLint.StateIssues(body);
 }

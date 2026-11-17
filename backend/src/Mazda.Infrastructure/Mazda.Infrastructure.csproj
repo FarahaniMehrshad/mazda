@@ -10,6 +10,9 @@
     <EmbeddedResource Include="Runner\Recorder\recorder-page.js" LogicalName="Mazda.Recorder.recorder-page.js" />
   </ItemGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Mazda.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\Mazda.Application\Mazda.Application.csproj" />
   </ItemGroup>
   <ItemGroup>

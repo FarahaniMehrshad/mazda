@@ -94,7 +94,9 @@ export function Pill({ children, tone = "neutral", icon }: PillProps) {
         alignItems: "center",
         gap: 6,
         padding: "3px 9px",
-        borderRadius: 999,
+        // About half a one-line pill's height: a capsule on one line, a
+        // rounded box (not an ellipse) when a long message wraps.
+        borderRadius: 12,
         background: t.bg,
         border: `1px solid ${t.bd}`,
         color: t.fg,
