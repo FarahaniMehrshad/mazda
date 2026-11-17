@@ -120,11 +120,12 @@ export function useRoundTrip(id: string | null) {
 }
 
 /** A picture, or null when that side has none. Keyed by run so a new replay refetches. */
-export function useShot(id: string, side: "demo" | "replay", step: number, phase: "before" | "after", run?: number) {
+export function useShot(id: string, side: "demo" | "replay", step: number, phase: "before" | "after", run?: number, enabled = true) {
   return useQuery({
     queryKey: ["roundtrip-shot", id, side, step, phase, run ?? 0],
     queryFn: () => roundTripApi.shot(id, side, step, phase, run).catch(() => null),
     staleTime: Infinity,
+    enabled,
   });
 }
 

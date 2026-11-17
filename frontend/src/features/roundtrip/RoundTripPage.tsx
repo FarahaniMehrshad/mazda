@@ -6,6 +6,7 @@ import { ApiError } from "@/shared/api/client";
 import { useSignature } from "@/features/signatures/api";
 import { useRecordings } from "@/features/recordings/api";
 import { TraceLinks } from "@/features/traces/TracePage";
+import { ZoomableImage, type ViewerImage } from "@/shared/components/ImageViewer";
 import {
   roundTripApi,
   useRoundTrip,
@@ -586,6 +587,7 @@ const VERDICT: Record<StepResult["verdict"], { tone: "ok" | "err" | "warn" | "ne
 function StepCard({ rt, sigId, step, result }: { rt: RoundTrip; sigId: string; step: RoundTripStep | undefined; result: StepResult }) {
   const answer = useRoundTripMutation((same: boolean) => roundTripApi.answer(rt.id, result.index, same), sigId);
   const [open, setOpen] = useState(result.verdict === "different" || result.verdict === "question");
+  const shots = useStepShots(rt.id, result.index, result.run, result.call, open);
   const v = VERDICT[result.verdict];
   const blocking = result.findings.filter((f) => f.severity !== "note");
   const notes = result.findings.filter((f) => f.severity === "note");
@@ -628,11 +630,11 @@ function StepCard({ rt, sigId, step, result }: { rt: RoundTrip; sigId: string; s
             <Side title="What you did">
               {step?.demoSteps && <div style={{ fontSize: 12, color: "var(--text-2)", lineHeight: 1.6 }}>{step.demoSteps.join(" → ")}</div>}
               <Requests lines={result.demoRequests} />
-              <Pictures id={rt.id} side="demo" step={result.index} />
+              <Pictures shots={shots.slice(0, 2)} gallery={shots} offset={0} />
             </Side>
             <Side title={`What ${result.call} did (replay ${result.run})`}>
               <Requests lines={result.replayRequests} />
-              <Pictures id={rt.id} side="replay" step={result.index} run={result.run} />
+              <Pictures shots={shots.slice(2, 4)} gallery={shots} offset={2} />
             </Side>
           </div>
 
@@ -651,18 +653,42 @@ function StepCard({ rt, sigId, step, result }: { rt: RoundTrip; sigId: string; s
   );
 }
 
-function Pictures({ id, side, step, run }: { id: string; side: "demo" | "replay"; step: number; run?: number }) {
-  const before = useShot(id, side, step, "before", run);
-  const after = useShot(id, side, step, "after", run);
+interface Shot {
+  caption: string;
+  label: string;
+  src: string | null;
+  loading: boolean;
+}
+
+/** The step's four pictures, in viewing order: what you did before / after, what the function did before / after. */
+function useStepShots(id: string, step: number, run: number, call: string, enabled: boolean): Shot[] {
+  const qs = [
+    { q: useShot(id, "demo", step, "before", undefined, enabled), caption: "What you did: before", label: "before" },
+    { q: useShot(id, "demo", step, "after", undefined, enabled), caption: "What you did: after", label: "after" },
+    { q: useShot(id, "replay", step, "before", run, enabled), caption: `What ${call} did (replay ${run}): before`, label: "before" },
+    { q: useShot(id, "replay", step, "after", run, enabled), caption: `What ${call} did (replay ${run}): after`, label: "after" },
+  ];
+  return qs.map(({ q, caption, label }) => ({ caption: `Step ${step + 1}. ${caption}`, label, src: q.data ? `data:image/jpeg;base64,${q.data}` : null, loading: q.isLoading }));
+}
+
+/** Before / after side by side; a click opens the picture bigger, ← / → go through all four of the step. */
+function Pictures({ shots, gallery, offset }: { shots: Shot[]; gallery: Shot[]; offset: number }) {
+  const viewable: ViewerImage[] = gallery.filter((g) => g.src).map((g) => ({ src: g.src!, caption: g.caption }));
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
-      {[{ label: "before", q: before }, { label: "after", q: after }].map(({ label, q }) => (
-        <div key={label}>
-          <div style={{ fontSize: 11, color: "var(--text-4)" }}>{label}</div>
-          {q.data ? (
-            <img alt={`${side} ${label}`} src={`data:image/jpeg;base64,${q.data}`} style={{ width: "100%", border: "1px solid var(--glass-stroke-2)", borderRadius: 6 }} />
+      {shots.map((s, k) => (
+        <div key={s.label}>
+          <div style={{ fontSize: 11, color: "var(--text-4)" }}>{s.label}</div>
+          {s.src ? (
+            <ZoomableImage
+              src={s.src}
+              alt={s.caption}
+              gallery={viewable}
+              index={viewable.findIndex((v) => v.caption === gallery[offset + k].caption)}
+              style={{ border: "1px solid var(--glass-stroke-2)", borderRadius: 6 }}
+            />
           ) : (
-            <div style={{ fontSize: 11, color: "var(--text-4)" }}>{q.isLoading ? "…" : "no picture"}</div>
+            <div style={{ fontSize: 11, color: "var(--text-4)" }}>{s.loading ? "…" : "no picture"}</div>
           )}
         </div>
       ))}
