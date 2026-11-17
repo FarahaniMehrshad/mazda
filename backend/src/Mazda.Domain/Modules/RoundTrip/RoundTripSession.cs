@@ -29,6 +29,16 @@ public class RoundTripSession : Entity
     /// <summary>What happened, in order: replays, verdicts, fixes, reverts.</summary>
     public string LogJson { get; private set; } = "[]";
     public string Error { get; private set; } = string.Empty;
+    /// <summary>The page every replay opens first; empty = the page the recording started on.</summary>
+    public string StartUrl { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// Ask the picture judge (a model looking at the before/after pictures) about steps the
+    /// comparison cannot decide. Off by default: those steps go straight to the author.
+    /// </summary>
+    public bool PictureJudge { get; private set; }
+
+    public const int MaxStartUrl = 2000;
 
     private RoundTripSession() { }
 
@@ -44,6 +54,8 @@ public class RoundTripSession : Entity
     public void SetStatus(RoundTripStatus s, string? error = null) { Status = s; Error = error ?? string.Empty; Touch(); }
     public void SetPendingPlanChange(string json) { PendingPlanChangeJson = json ?? string.Empty; Touch(); }
     public void SetResult(string json) { ResultJson = json ?? string.Empty; Touch(); }
+    public void SetPictureJudge(bool on) { PictureJudge = on; Touch(); }
+    public void SetStartUrl(string? url) { StartUrl = url?.Trim() ?? string.Empty; Touch(); }
     public void SetLog(string json) { LogJson = string.IsNullOrWhiteSpace(json) ? "[]" : json; Touch(); }
 }
 

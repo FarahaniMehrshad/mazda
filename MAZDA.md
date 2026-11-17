@@ -766,7 +766,8 @@ no assertions.
    sides are observed alike; each step gets before/after pictures.
 4. **Judge** each step: its delta (what it changed) against the delta of its
    demonstrated span (`StepComparer`). What the comparison cannot decide goes
-   to the picture judge (`LlmEffectJudge`), then to the author.
+   to the author, or first to the picture judge (`LlmEffectJudge`) when it is
+   switched on for the round trip (off by default).
 5. **Fix** the earliest step that differs (`LlmRoundTripFixer`): the model
    first names the fault (function / plan / earlier step / nondeterminism).
    Body fixes must pass `CatalogueBodyLint` and must not hard-code the
@@ -783,7 +784,7 @@ is a small number yet depends on what is already on the page):
 | two replays with the same choices | noise | ignored |
 | only the choice (contrast replay), or equals a chosen value | intent | must match the demo |
 | nothing | structure | must match |
-| none of the above | unexplained | picture judge, then the author; the answer is remembered per function |
+| none of the above | unexplained | the author (picture judge first, if on); the answer is remembered per function |
 
 Compared: mutating requests (method + templated path, flattened bodies with
 JSON-in-strings opened), DOM change signatures (no class/style churn, no
@@ -802,11 +803,36 @@ the Stop button). The replay's browser run is ended; a fix that was applied but
 not yet judged is undone; fixes already kept stay (undo them individually).
 Status becomes `Stopped`; "Run again" starts over.
 
-**Recording guideline.** Replays restart from the page the recording started
-on, so recordings should be self-contained: start by creating what you will
+**Start page.** Every replay first opens the round trip's start page: the page
+the recording started on, unless the author changed it ("Start page" →
+Change, `PUT /api/roundtrips/{id}/start-url` with `{ url }`; an empty url goes
+back to the recording's). Use it when the app moved (another host, port or
+environment) or the recorded page was a one-off. Not while running; the
+address must be a full http(s) URL (`roundtrip_sessions.start_url`, '' = the
+recording's).
+
+**Picture judge.** Off by default: a step the comparison cannot decide becomes
+a question for the author, who compares the pictures. Switched on ("Picture
+judge" on the round-trip page, `PUT /api/roundtrips/{id}/picture-judge` with
+`{ enabled }`; not while running), a model compares the before/after pictures
+first (one call per such step) and the author is asked only when it is unsure
+(`roundtrip_sessions.picture_judge`).
+
+**Recording guideline.** Replays restart from the start page, so recordings should be self-contained: start by creating what you will
 work on. Hovering a few other options before choosing gives the planner a
 contrast choice. The recorder takes a picture at the start and after each
 action (`recording_screenshots`, off with "mask all inputs").
+
+**When a picture is taken.** Every picture, while recording and while
+replaying, waits until the page is ready for it (`PictureReadiness`): no
+request of any kind in flight (and none in the last 400 ms; websockets, event
+streams, media and requests open over 10 s do not count), the document, its
+fonts and the visible images loaded, no visible loading indicator
+(`aria-busy`, indeterminate progress bar, spinner / loader / skeleton), no
+finite animation running, and the DOM quiet for 300 ms; then two frames are
+painted. At most 15 s: past that the picture is taken anyway and labelled with
+why the page was still busy (a `picture` recording event; a line in the round
+trip's log). While recording, the wait also ends when you act again.
 
 **Storage.** `roundtrip_sessions` (plan, status, results, log),
 `roundtrip_shots` (replay pictures), `function_body_history` (bodies replaced

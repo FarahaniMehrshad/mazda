@@ -36,7 +36,14 @@ public record RoundTripDto(
     List<LogEntry> Log,
     string Error,
     DateTime CreatedAt,
-    DateTime UpdatedAt);
+    DateTime UpdatedAt,
+    /// <summary>The page the replays open: the author's choice, or where the recording started.</summary>
+    string StartUrl,
+    /// <summary>Where the recording started (query values hidden).</summary>
+    string RecordedStartUrl,
+    bool StartUrlIsCustom,
+    /// <summary>A model judges the pictures of steps the comparison cannot decide; off = the author is asked.</summary>
+    bool PictureJudge);
 
 public record RoundTripSummaryDto(Guid Id, Guid RecordingId, string RecordingLabel, string Status, string Summary, DateTime CreatedAt);
 
@@ -59,7 +66,9 @@ internal static class RoundTripMapping
             RoundTripJson.Read<PlanChangeModel>(s.PendingPlanChangeJson),
             RoundTripJson.Read<ResultModel>(s.ResultJson),
             RoundTripJson.Read<List<LogEntry>>(s.LogJson) ?? new List<LogEntry>(),
-            s.Error, s.CreatedAt, s.UpdatedAt);
+            s.Error, s.CreatedAt, s.UpdatedAt,
+            string.IsNullOrEmpty(s.StartUrl) ? rec?.StartUrl ?? "" : s.StartUrl,
+            rec?.StartUrl ?? "", !string.IsNullOrEmpty(s.StartUrl), s.PictureJudge);
     }
 
     public static List<SignatureFunction> Actions(Signature sig) => sig.Functions.Where(f => f.Kind == FunctionKind.Action).ToList();
@@ -195,6 +204,58 @@ public class UpdateRoundTripPlanHandler(IRoundTripRepository roundTrips, ISignat
         s.SetStatus(RoundTripStatus.Draft);
         await uow.SaveChangesAsync(ct);
         return Result.Success(RoundTripMapping.ToDto(s, rec, RoundTripMapping.Actions(sig)));
+    }
+}
+
+// ── Start page ───────────────────────────────────────────────────────
+
+/// <param name="Url">An http(s) address; empty goes back to the page the recording started on.</param>
+public record SetRoundTripStartUrlCommand(Guid Id, string? Url) : IRequest<Result<RoundTripDto>>;
+
+public class SetRoundTripStartUrlHandler(IRoundTripRepository roundTrips, ISignatureRepository signatures, IRecordingRepository recordings, ICurrentUser me, IUnitOfWork uow)
+    : IRequestHandler<SetRoundTripStartUrlCommand, Result<RoundTripDto>>
+{
+    public async Task<Result<RoundTripDto>> Handle(SetRoundTripStartUrlCommand cmd, CancellationToken ct)
+    {
+        if (me.UserId is null) return Result.Failure<RoundTripDto>(Error.Validation("Not authenticated."));
+        var s = await roundTrips.FindAsync(cmd.Id, me.UserId.Value, ct);
+        if (s is null) return Result.Failure<RoundTripDto>(Error.NotFound("Round trip"));
+        if (s.Status == RoundTripStatus.Running) return Result.Failure<RoundTripDto>(Error.Conflict("The round trip is running; stop it or wait for it to finish."));
+        var url = cmd.Url?.Trim() ?? "";
+        if (url.Length > 0)
+        {
+            if (url.Length > RoundTripSession.MaxStartUrl)
+                return Result.Failure<RoundTripDto>(Error.Validation($"The address is longer than {RoundTripSession.MaxStartUrl} characters."));
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var u) || (u.Scheme != Uri.UriSchemeHttp && u.Scheme != Uri.UriSchemeHttps))
+                return Result.Failure<RoundTripDto>(Error.Validation("Enter a full http:// or https:// address."));
+        }
+        var rec = await recordings.FindByIdAsync(s.RecordingId, me.UserId.Value, ct);
+        // Typing the recording's own start page back in is the same as "use the recording's".
+        s.SetStartUrl(rec is not null && url == rec.StartUrl ? "" : url);
+        await uow.SaveChangesAsync(ct);
+        var sig = await signatures.FindByIdAsync(s.SignatureId, me.UserId.Value, ct);
+        return Result.Success(RoundTripMapping.ToDto(s, rec, sig is null ? new List<SignatureFunction>() : RoundTripMapping.Actions(sig)));
+    }
+}
+
+// ── Picture judge ────────────────────────────────────────────────────
+
+public record SetRoundTripPictureJudgeCommand(Guid Id, bool Enabled) : IRequest<Result<RoundTripDto>>;
+
+public class SetRoundTripPictureJudgeHandler(IRoundTripRepository roundTrips, ISignatureRepository signatures, IRecordingRepository recordings, ICurrentUser me, IUnitOfWork uow)
+    : IRequestHandler<SetRoundTripPictureJudgeCommand, Result<RoundTripDto>>
+{
+    public async Task<Result<RoundTripDto>> Handle(SetRoundTripPictureJudgeCommand cmd, CancellationToken ct)
+    {
+        if (me.UserId is null) return Result.Failure<RoundTripDto>(Error.Validation("Not authenticated."));
+        var s = await roundTrips.FindAsync(cmd.Id, me.UserId.Value, ct);
+        if (s is null) return Result.Failure<RoundTripDto>(Error.NotFound("Round trip"));
+        if (s.Status == RoundTripStatus.Running) return Result.Failure<RoundTripDto>(Error.Conflict("The round trip is running; stop it or wait for it to finish."));
+        s.SetPictureJudge(cmd.Enabled);
+        await uow.SaveChangesAsync(ct);
+        var rec = await recordings.FindByIdAsync(s.RecordingId, me.UserId.Value, ct);
+        var sig = await signatures.FindByIdAsync(s.SignatureId, me.UserId.Value, ct);
+        return Result.Success(RoundTripMapping.ToDto(s, rec, sig is null ? new List<SignatureFunction>() : RoundTripMapping.Actions(sig)));
     }
 }
 

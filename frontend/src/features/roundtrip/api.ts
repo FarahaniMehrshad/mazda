@@ -69,6 +69,13 @@ export interface RoundTrip {
   error: string;
   createdAt: string;
   updatedAt: string;
+  /** The page every replay opens first: the author's choice, or where the recording started. */
+  startUrl: string;
+  /** Where the recording started (query values hidden). */
+  recordedStartUrl: string;
+  startUrlIsCustom: boolean;
+  /** A model judges the pictures of steps the comparison cannot decide; off (the default) = you are asked. */
+  pictureJudge: boolean;
 }
 
 export interface RoundTripSummary {
@@ -85,6 +92,9 @@ export const roundTripApi = {
   start: (sigId: string, recordingId: string) => api.post<RoundTrip>(`/api/signatures/${sigId}/roundtrips`, { recordingId }),
   get: (id: string) => api.get<RoundTrip>(`/api/roundtrips/${id}`),
   savePlan: (id: string, steps: PlanStep[]) => api.put<RoundTrip>(`/api/roundtrips/${id}/plan`, { steps }),
+  /** An empty url goes back to the page the recording started on. */
+  setStartUrl: (id: string, url: string) => api.put<RoundTrip>(`/api/roundtrips/${id}/start-url`, { url }),
+  setPictureJudge: (id: string, enabled: boolean) => api.put<RoundTrip>(`/api/roundtrips/${id}/picture-judge`, { enabled }),
   confirm: (id: string) => api.post<RoundTrip>(`/api/roundtrips/${id}/confirm`, { confirmed: true }),
   /** Ends a running round trip; a fix still being checked is undone. */
   stop: (id: string) => api.post<RoundTrip>(`/api/roundtrips/${id}/stop`, {}),

@@ -43,6 +43,8 @@ internal class RoundTripSessionConfig : IEntityTypeConfiguration<RoundTripSessio
         b.Property(x => x.ResultJson).HasColumnName("result_json");
         b.Property(x => x.LogJson).HasColumnName("log_json");
         b.Property(x => x.Error).HasColumnName("error");
+        b.Property(x => x.StartUrl).HasColumnName("start_url").HasMaxLength(RoundTripSession.MaxStartUrl);
+        b.Property(x => x.PictureJudge).HasColumnName("picture_judge");
         b.HasIndex(x => new { x.SignatureId, x.CreatedAt });
     }
 }

@@ -24,7 +24,12 @@ public sealed record ReplayedStep(
     string? UrlAfter,
     string? Aria,
     string? BeforeJpeg,
-    string? AfterJpeg);
+    string? AfterJpeg)
+{
+    /// <summary>Why the page was still busy when the "before" picture had to be taken; null = it was ready.</summary>
+    public string? BeforeBusy { get; init; }
+    public string? AfterBusy { get; init; }
+}
 
 public sealed record ReplayRun(IReadOnlyList<ReplayedStep> Steps, string LogTail);
 
