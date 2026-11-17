@@ -133,6 +133,13 @@ public interface IUserSettingsRepository
     Task<UserSettings> GetOrCreateAsync(Guid userId, CancellationToken ct = default);
 }
 
+/// <summary>The one row of LLM settings (installation-wide).</summary>
+public interface ILlmSettingsRepository
+{
+    Task<Mazda.Domain.Modules.Settings.LlmSettings?> GetAsync(CancellationToken ct = default);
+    Task<Mazda.Domain.Modules.Settings.LlmSettings> GetOrCreateAsync(CancellationToken ct = default);
+}
+
 /// <summary>Round trips: sessions, replay pictures, body history, the author's answers per function.</summary>
 public interface IRoundTripRepository
 {

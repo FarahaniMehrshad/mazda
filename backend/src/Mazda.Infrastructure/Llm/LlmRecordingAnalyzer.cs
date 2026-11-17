@@ -16,7 +16,7 @@ namespace Mazda.Infrastructure.Llm;
 /// Output is a proposal — the application layer validates it against what was
 /// actually observed and the user reviews it before anything is merged.
 /// </summary>
-public class LlmRecordingAnalyzer(IOptions<LlmOptions> options) : IRecordingAnalyzer
+public class LlmRecordingAnalyzer(ILlmGateway llm) : IRecordingAnalyzer
 {
     private static readonly string SystemPrompt = """
         You are MAZDA's behaviour analyst. A user operated a web UI while MAZDA
@@ -179,12 +179,11 @@ public class LlmRecordingAnalyzer(IOptions<LlmOptions> options) : IRecordingAnal
         bool ignoreLearned = false,
         CancellationToken ct = default)
     {
-        var opts = options.Value;
         // GeneratorModel, not AnalyzerModel: one call per analysis, and
         // interpreting behaviour (which candidate generalises, which effect a
         // script must wait on) is where small models slip — and every
         // function generated later inherits the result.
-        var chat = ChatClientFactory.ForModel(opts, opts.GeneratorModel);
+        var chat = await llm.ChatAsync(LlmTier.Generator, ct);
 
         var recordings = new JsonArray();
         foreach (var s in sessions)
@@ -238,8 +237,8 @@ public class LlmRecordingAnalyzer(IOptions<LlmOptions> options) : IRecordingAnal
             new ChatCompletionOptions { ResponseFormat = ChatResponseFormat.CreateJsonObjectFormat() },
             ct);
 
-        var raw = LlmComponentAnalyzer.StripCodeFences(completion.Value.Content[0].Text ?? "{}");
-        var tokens = completion.Value.Usage?.TotalTokenCount ?? 0;
+        var raw = LlmComponentAnalyzer.StripCodeFences(completion.TextOr("{}"));
+        var tokens = completion.Tokens;
 
         JsonObject root;
         try { root = JsonNode.Parse(raw) as JsonObject ?? throw new JsonException("not an object"); }

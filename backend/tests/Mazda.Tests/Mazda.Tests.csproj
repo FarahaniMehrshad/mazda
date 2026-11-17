@@ -18,6 +18,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Mazda.Application\Mazda.Application.csproj" />
+    <ProjectReference Include="..\..\src\Mazda.Infrastructure\Mazda.Infrastructure.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Fixtures\**" CopyToOutputDirectory="PreserveNewest" />

@@ -6,7 +6,7 @@ using Mazda.Domain.Modules.Signatures;
 
 namespace Mazda.Infrastructure.Llm;
 
-public class LlmFlowAnalyzer(IOptions<LlmOptions> options) : IFlowAnalyzer
+public class LlmFlowAnalyzer(ILlmGateway llm) : IFlowAnalyzer
 {
     private static readonly string SystemPrompt = """
         you are mazda's flow analyst. given a ui signature (a list of css-selector-
@@ -80,8 +80,7 @@ public class LlmFlowAnalyzer(IOptions<LlmOptions> options) : IFlowAnalyzer
 
     public async Task<FlowAnalysisResult> InferFlowsAsync(Signature signature, CancellationToken ct = default)
     {
-        var opts = options.Value;
-        var chat = ChatClientFactory.ForModel(opts, opts.AnalyzerModel);
+        var chat = await llm.ChatAsync(LlmTier.Analyzer, ct);
 
         var sigJson = JsonSerializer.Serialize(new
         {
@@ -112,8 +111,8 @@ public class LlmFlowAnalyzer(IOptions<LlmOptions> options) : IFlowAnalyzer
             },
             ct);
 
-        var raw = LlmComponentAnalyzer.StripCodeFences(completion.Value.Content[0].Text ?? "{}");
-        var tokens = completion.Value.Usage?.TotalTokenCount ?? 0;
+        var raw = LlmComponentAnalyzer.StripCodeFences(completion.TextOr("{}"));
+        var tokens = completion.Tokens;
 
         // Defensive parse — at minimum ensure it's valid JSON. Don't shape it.
         try { using var _ = JsonDocument.Parse(raw); }

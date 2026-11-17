@@ -18,7 +18,7 @@ namespace Mazda.Infrastructure.Llm;
 /// Signature + raw source, asks the LLM for JSON, returns it verbatim
 /// (the use case persists it onto the signature).
 /// </summary>
-public class LlmRelationshipAnalyzer(IOptions<LlmOptions> options) : IRelationshipAnalyzer
+public class LlmRelationshipAnalyzer(ILlmGateway llm) : IRelationshipAnalyzer
 {
     private static readonly string SystemPrompt = """
         You are Mazda's RELATIONSHIP analyst. You receive (1) an EXISTING
@@ -226,8 +226,7 @@ public class LlmRelationshipAnalyzer(IOptions<LlmOptions> options) : IRelationsh
     public async Task<RelationshipAnalysisResult> AnalyzeRelationshipsAsync(
         Signature signature, string componentSource, CancellationToken ct = default)
     {
-        var opts = options.Value;
-        var chat = ChatClientFactory.ForModel(opts, opts.AnalyzerModel);
+        var chat = await llm.ChatAsync(LlmTier.Analyzer, ct);
 
         var existingSig = JsonSerializer.Serialize(new
         {
@@ -261,8 +260,8 @@ public class LlmRelationshipAnalyzer(IOptions<LlmOptions> options) : IRelationsh
             },
             ct);
 
-        var raw = LlmComponentAnalyzer.StripCodeFences(completion.Value.Content[0].Text ?? "{}");
-        var tokens = completion.Value.Usage?.TotalTokenCount ?? 0;
+        var raw = LlmComponentAnalyzer.StripCodeFences(completion.TextOr("{}"));
+        var tokens = completion.Tokens;
 
         // Validate the JSON shape lightly here so a malformed payload is caught
         // at write time rather than at frontend render time. We accept the

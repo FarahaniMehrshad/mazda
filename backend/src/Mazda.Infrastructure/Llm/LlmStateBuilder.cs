@@ -6,7 +6,7 @@ using Mazda.Domain.Modules.Signatures;
 
 namespace Mazda.Infrastructure.Llm;
 
-public class LlmStateBuilder(IOptions<LlmOptions> options) : IStateBuilder
+public class LlmStateBuilder(ILlmGateway llm) : IStateBuilder
 {
     private static readonly string SystemPrompt = """
         You are Mazda's state synthesizer. You receive (1) a UI Signature describing
@@ -254,8 +254,7 @@ public class LlmStateBuilder(IOptions<LlmOptions> options) : IStateBuilder
 
     public async Task<StateBuildResult> BuildStateAsync(Signature signature, string rawExtractionJson, IReadOnlyList<Signature>? dependencies = null, CancellationToken ct = default)
     {
-        var opts = options.Value;
-        var chat = ChatClientFactory.ForModel(opts, opts.AnalyzerModel);
+        var chat = await llm.ChatAsync(LlmTier.Analyzer, ct);
 
         // Union of root + dependency informational elements. The analyze
         // script captured every informational selector in the union, so the
@@ -311,8 +310,8 @@ public class LlmStateBuilder(IOptions<LlmOptions> options) : IStateBuilder
             new ChatCompletionOptions { ResponseFormat = ChatResponseFormat.CreateJsonObjectFormat() },
             ct);
 
-        var raw = LlmComponentAnalyzer.StripCodeFences(completion.Value.Content[0].Text ?? "{}");
-        var tokens = completion.Value.Usage?.TotalTokenCount ?? 0;
+        var raw = LlmComponentAnalyzer.StripCodeFences(completion.TextOr("{}"));
+        var tokens = completion.Tokens;
 
         // Validate the response is valid JSON; if not, throw clearly.
         try { using var _ = JsonDocument.Parse(raw); }

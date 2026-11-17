@@ -32,6 +32,12 @@ services:
       Llm__AnalyzerModel: "${LLM_ANALYZER_MODEL:-gpt-4o-mini}"
       Llm__GeneratorModel: "${LLM_GENERATOR_MODEL:-gpt-4o}"
       Llm__TimeoutSeconds: "${LLM_TIMEOUT_SECONDS:-600}"
+      Llm__Provider: "${LLM_PROVIDER:-openai}"
+      # Claude Code on this computer (tools/claude-bridge/bridge.mjs reads the same .env).
+      ClaudeBridge__Url: "${CLAUDE_BRIDGE_URL:-}"
+      ClaudeBridge__Token: "${CLAUDE_BRIDGE_TOKEN:-}"
+      ClaudeBridge__AnalyzerModel: "${CLAUDE_ANALYZER_MODEL:-}"
+      ClaudeBridge__GeneratorModel: "${CLAUDE_GENERATOR_MODEL:-}"
       Cors__AllowedOrigin: "http://localhost:5173"
       ASPNETCORE_ENVIRONMENT: "Development"
     extra_hosts:

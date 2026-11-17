@@ -18,7 +18,7 @@ namespace Mazda.Infrastructure.Llm;
 /// model) — the body of every function is real Playwright TypeScript, and
 /// weak models regress here badly.
 /// </summary>
-public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunctionCatalogueGenerator
+public class LlmFunctionCatalogueGenerator(ILlmGateway llm) : IFunctionCatalogueGenerator
 {
     private static readonly string SystemPrompt = """
         You are Mazda's FUNCTION CATALOGUE author. You receive a fully-analyzed
@@ -497,11 +497,10 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
         IReadOnlyList<string>? recordedEpisodes = null,
         CancellationToken ct = default)
     {
-        var opts = options.Value;
         // Function bodies ARE Playwright TypeScript, not analysis JSON, so we
         // use the stronger GeneratorModel here — the AnalyzerModel is tuned
         // for JSON extraction and regresses hard on real code generation.
-        var chat = ChatClientFactory.ForModel(opts, opts.GeneratorModel);
+        var chat = await llm.ChatAsync(LlmTier.Generator, ct);
 
         var signatureView = new
         {
@@ -584,8 +583,8 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
             },
             ct);
 
-        var raw = LlmComponentAnalyzer.StripCodeFences(completion.Value.Content[0].Text ?? "{}");
-        var tokens = completion.Value.Usage?.TotalTokenCount ?? 0;
+        var raw = LlmComponentAnalyzer.StripCodeFences(completion.TextOr("{}"));
+        var tokens = completion.Tokens;
 
         List<GeneratedFunction> parsed;
         try
@@ -632,8 +631,8 @@ public class LlmFunctionCatalogueGenerator(IOptions<LlmOptions> options) : IFunc
                     },
                     new ChatCompletionOptions { ResponseFormat = ChatResponseFormat.CreateJsonObjectFormat() },
                     ct);
-                tokens += repair.Value.Usage?.TotalTokenCount ?? 0;
-                var fixedFns = ParseAndValidate(LlmComponentAnalyzer.StripCodeFences(repair.Value.Content[0].Text ?? "{}"))
+                tokens += repair.Tokens;
+                var fixedFns = ParseAndValidate(LlmComponentAnalyzer.StripCodeFences(repair.TextOr("{}")))
                     .ToDictionary(f => f.Name, StringComparer.Ordinal);
                 parsed = parsed.Select(f => fixedFns.TryGetValue(f.Name, out var nf) && CatalogueBodyLint.IsAction(nf.Kind) ? nf : f).ToList();
             }

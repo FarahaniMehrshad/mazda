@@ -19,11 +19,19 @@ public static class Endpoints
     public static void MapMazdaEndpoints(this IEndpointRouteBuilder app)
     {
         // ── Meta (public) ─────────────────────────────────────────
-        app.MapGet("/api/meta", (IOptions<LlmOptions> opts) => Results.Ok(new
+        // The LLM in effect (Settings over .env), for the model chip in the top bar.
+        app.MapGet("/api/meta", async (Mazda.Application.Modules.Settings.ILlmSettingsStore store, CancellationToken ct) =>
         {
-            analyzerModel = opts.Value.AnalyzerModel,
-            generatorModel = opts.Value.GeneratorModel,
-        })).WithTags("Meta");
+            var s = await store.GetAsync(ct);
+            var claude = s.Provider == Mazda.Domain.Modules.Settings.LlmProviders.ClaudeCode;
+            return Results.Ok(new
+            {
+                provider = s.Provider,
+                analyzerModel = s.AnalyzerModel,
+                generatorModel = s.GeneratorModel,
+                ready = claude ? !string.IsNullOrEmpty(s.ClaudeBridgeToken) : !string.IsNullOrEmpty(s.OpenAiApiKey),
+            });
+        }).WithTags("Meta");
 
         // ── Identity (public) ─────────────────────────────────────
         var auth = app.MapGroup("/api/auth").WithTags("Auth");
@@ -226,6 +234,18 @@ public static class Endpoints
 
         cdp.MapPut("/port", async ([FromBody] CdpPortBody body, ISender s) =>
             (await s.Send(new SetCdpPortCommand(body.Port))).ToHttp());
+
+        // ── Settings: the LLM connection (installation-wide) ──────
+        var settings = app.MapGroup("/api/settings").RequireAuthorization().WithTags("Settings");
+
+        settings.MapGet("/llm", async (ISender s) =>
+            (await s.Send(new Mazda.Application.Modules.Settings.GetLlmSettingsQuery())).ToHttp());
+
+        settings.MapPut("/llm", async ([FromBody] Mazda.Application.Modules.Settings.UpdateLlmSettingsCommand body, ISender s) =>
+            (await s.Send(body)).ToHttp());
+
+        settings.MapPost("/llm/test", async (ISender s) =>
+            (await s.Send(new Mazda.Application.Modules.Settings.TestLlmConnectionCommand())).ToHttp());
 
         var mcp = app.MapGroup("/api/mcp-tools").RequireAuthorization().WithTags("McpTools");
 

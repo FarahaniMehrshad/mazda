@@ -10,7 +10,7 @@ namespace Mazda.Infrastructure.Llm;
 // verdict; the caller validates and decides. Nothing here is app-specific.
 
 /// <summary>Rebuilds, from a recording, the function calls that reproduce what the user did.</summary>
-public class LlmReversePlanner(IOptions<LlmOptions> options) : IReversePlanner
+public class LlmReversePlanner(ILlmGateway llm) : IReversePlanner
 {
     private static readonly string SystemPrompt = """
         You are Mazda's REVERSE PLANNER. A user recorded themselves doing a task
@@ -63,8 +63,7 @@ public class LlmReversePlanner(IOptions<LlmOptions> options) : IReversePlanner
         string episodesJson,
         CancellationToken ct = default)
     {
-        var opts = options.Value;
-        var chat = ChatClientFactory.ForModel(opts, opts.GeneratorModel);
+        var chat = await llm.ChatAsync(LlmTier.Generator, ct);
 
         var functions = JsonSerializer.Serialize(actions.OrderBy(f => f.Order).Select(f => new
         {
@@ -88,8 +87,8 @@ public class LlmReversePlanner(IOptions<LlmOptions> options) : IReversePlanner
             new ChatCompletionOptions { ResponseFormat = ChatResponseFormat.CreateJsonObjectFormat() },
             ct);
 
-        var raw = LlmComponentAnalyzer.StripCodeFences(completion.Value.Content[0].Text ?? "{}");
-        var tokens = completion.Value.Usage?.TotalTokenCount ?? 0;
+        var raw = LlmComponentAnalyzer.StripCodeFences(completion.TextOr("{}"));
+        var tokens = completion.Tokens;
         try
         {
             using var doc = JsonDocument.Parse(raw);
@@ -132,7 +131,7 @@ public class LlmReversePlanner(IOptions<LlmOptions> options) : IReversePlanner
 }
 
 /// <summary>Judges, from pictures and the listed differences, whether a replayed step had the same result as the demonstration.</summary>
-public class LlmEffectJudge(IOptions<LlmOptions> options) : IEffectJudge
+public class LlmEffectJudge(ILlmGateway llm) : IEffectJudge
 {
     private static readonly string SystemPrompt = """
         You compare two runs of the same user operation in a web app: the user's
@@ -156,8 +155,7 @@ public class LlmEffectJudge(IOptions<LlmOptions> options) : IEffectJudge
         string? demoBefore, string? demoAfter, string? replayBefore, string? replayAfter,
         CancellationToken ct = default)
     {
-        var opts = options.Value;
-        var chat = ChatClientFactory.ForModel(opts, opts.GeneratorModel);
+        var chat = await llm.ChatAsync(LlmTier.Generator, ct);
         var parts = new List<ChatMessageContentPart>
         {
             ChatMessageContentPart.CreateTextPart($"Operation: {stepDescription}\n\nDifferences found automatically:\n{differences}"),
@@ -177,8 +175,8 @@ public class LlmEffectJudge(IOptions<LlmOptions> options) : IEffectJudge
             new List<ChatMessage> { new SystemChatMessage(SystemPrompt), new UserChatMessage(parts) },
             new ChatCompletionOptions { ResponseFormat = ChatResponseFormat.CreateJsonObjectFormat() },
             ct);
-        var raw = LlmComponentAnalyzer.StripCodeFences(completion.Value.Content[0].Text ?? "{}");
-        var tokens = completion.Value.Usage?.TotalTokenCount ?? 0;
+        var raw = LlmComponentAnalyzer.StripCodeFences(completion.TextOr("{}"));
+        var tokens = completion.Tokens;
         try
         {
             using var doc = JsonDocument.Parse(raw);
@@ -191,7 +189,7 @@ public class LlmEffectJudge(IOptions<LlmOptions> options) : IEffectJudge
 }
 
 /// <summary>Diagnoses why a replayed step did not reproduce the demonstration and proposes one change.</summary>
-public class LlmRoundTripFixer(IOptions<LlmOptions> options) : IRoundTripFixer
+public class LlmRoundTripFixer(ILlmGateway llm) : IRoundTripFixer
 {
     private static readonly string SystemPrompt = """
         You are Mazda's ROUND-TRIP REPAIR engineer. A user demonstrated a task in
@@ -253,8 +251,7 @@ public class LlmRoundTripFixer(IOptions<LlmOptions> options) : IRoundTripFixer
         RoundTripEvidence ev,
         CancellationToken ct = default)
     {
-        var opts = options.Value;
-        var chat = ChatClientFactory.ForModel(opts, opts.GeneratorModel);
+        var chat = await llm.ChatAsync(LlmTier.Generator, ct);
 
         var payload = JsonSerializer.Serialize(new
         {
@@ -300,8 +297,8 @@ public class LlmRoundTripFixer(IOptions<LlmOptions> options) : IRoundTripFixer
             new List<ChatMessage> { new SystemChatMessage(SystemPrompt), new UserChatMessage(parts) },
             new ChatCompletionOptions { ResponseFormat = ChatResponseFormat.CreateJsonObjectFormat() },
             ct);
-        var raw = LlmComponentAnalyzer.StripCodeFences(completion.Value.Content[0].Text ?? "{}");
-        var tokens = completion.Value.Usage?.TotalTokenCount ?? 0;
+        var raw = LlmComponentAnalyzer.StripCodeFences(completion.TextOr("{}"));
+        var tokens = completion.Tokens;
         try
         {
             using var doc = JsonDocument.Parse(raw);

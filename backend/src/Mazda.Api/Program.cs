@@ -407,6 +407,25 @@ using (var scope = app.Services.CreateScope())
         CREATE UNIQUE INDEX IF NOT EXISTS ix_user_settings_user ON user_settings(user_id);
         """);
 
+    // The LLM connection chosen in Settings: one row for the installation.
+    // Empty fields fall back to .env (LLM_*, CLAUDE_BRIDGE_*).
+    db.Database.ExecuteSqlRaw("""
+        CREATE TABLE IF NOT EXISTS llm_settings (
+            "Id"                    uuid          PRIMARY KEY,
+            provider                varchar(30)   NOT NULL DEFAULT '',
+            openai_base_url         varchar(2000) NOT NULL DEFAULT '',
+            openai_api_key          varchar(2000) NOT NULL DEFAULT '',
+            openai_analyzer_model   varchar(200)  NOT NULL DEFAULT '',
+            openai_generator_model  varchar(200)  NOT NULL DEFAULT '',
+            claude_bridge_url       varchar(2000) NOT NULL DEFAULT '',
+            claude_analyzer_model   varchar(200)  NOT NULL DEFAULT '',
+            claude_generator_model  varchar(200)  NOT NULL DEFAULT '',
+            timeout_seconds         integer       NOT NULL DEFAULT 0,
+            "CreatedAt"             timestamptz   NOT NULL DEFAULT NOW(),
+            "UpdatedAt"             timestamptz   NOT NULL DEFAULT NOW()
+        );
+        """);
+
     // Collapse mcp_tools' setup/test prompt pair into one default_prompt.
     // The pair dated from when a run was two LLM calls (fixtures, then
     // assertions); under the function catalogue there is a single planner

@@ -6,17 +6,19 @@ import { api } from "@/shared/api/client";
 import { CdpStatusChip } from "@/features/cdp/CdpPanel";
 
 interface MetaResponse {
+  provider: string;
   analyzerModel: string;
   generatorModel: string;
+  ready: boolean;
 }
 
-function useAnalyzerModel(): string {
+function useLlmMeta(): MetaResponse | undefined {
   const { data } = useQuery({
     queryKey: ["meta"],
     queryFn: () => api.get<MetaResponse>("/api/meta"),
-    staleTime: Infinity,
+    staleTime: 60_000,
   });
-  return data?.analyzerModel ?? "loading";
+  return data;
 }
 
 interface TopBarProps {
@@ -28,13 +30,14 @@ const NAV = [
   { label: "Signatures", path: "/signatures" },
   { label: "Runs", path: "/runs" },
   { label: "MCP", path: "/mcp" },
+  { label: "Settings", path: "/settings" },
 ];
 
 export function TopBar({ crumb }: TopBarProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuth();
-  const analyzerModel = useAnalyzerModel();
+  const meta = useLlmMeta();
 
   const isActive = (path: string) =>
     path === "/" ? location.pathname === "/" : location.pathname.startsWith(path);
@@ -99,7 +102,10 @@ export function TopBar({ crumb }: TopBarProps) {
         {/* Which Chrome tab MAZDA drives — sits beside the model chip because
             both answer "what is this about to run against?". */}
         <CdpStatusChip />
-        <div
+        <button
+          type="button"
+          onClick={() => navigate("/settings")}
+          title="Language model: open Settings"
           style={{
             display: "flex",
             alignItems: "center",
@@ -111,14 +117,20 @@ export function TopBar({ crumb }: TopBarProps) {
             fontSize: 11.5,
             color: "var(--text-2)",
             fontFamily: "var(--f-mono)",
+            cursor: "pointer",
           }}
         >
           <span
             className="mz-dot"
-            style={{ background: "var(--ok)", boxShadow: "0 0 8px var(--ok)" }}
+            style={meta && !meta.ready
+              ? { background: "var(--warn, #e8b04a)", boxShadow: "0 0 8px var(--warn, #e8b04a)" }
+              : { background: "var(--ok)", boxShadow: "0 0 8px var(--ok)" }}
           />
-          <span>{analyzerModel} · ready</span>
-        </div>
+          <span>
+            {!meta ? "loading"
+              : `${meta.provider === "claude-code" ? "Claude Code · " : ""}${meta.analyzerModel} · ${meta.ready ? "ready" : "not set up"}`}
+          </span>
+        </button>
         <button
           onClick={logout}
           title="Sign out"

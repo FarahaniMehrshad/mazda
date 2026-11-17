@@ -6,7 +6,7 @@ using Mazda.Domain.Modules.Signatures;
 
 namespace Mazda.Infrastructure.Llm;
 
-public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
+public class LlmScriptGenerator(ILlmGateway llm) : IScriptGenerator
 {
     // ── SETUP ────────────────────────────────────────────────────────
     private static readonly string SetupSystemPrompt = """
@@ -1360,7 +1360,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
     {
         var userMsg = BuildSignatureContext(signature, dependencies) +
             $"\n\nSetup prompt:\n{setupPrompt}";
-        return Call(opts => opts.GeneratorModel, SetupSystemPrompt, userMsg, ct);
+        return Call(LlmTier.Generator, SetupSystemPrompt, userMsg, ct);
     }
 
     public Task<ScriptGenerationResult> GenerateTestAsync(Signature signature, string testPrompt, string? setupScript, string? stateJson = null, IReadOnlyList<Signature>? dependencies = null, CancellationToken ct = default)
@@ -1375,7 +1375,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
             : $"\n\nCurrent component state (captured live before this run; semantic JSON built from the informational signature elements):\n```json\n{stateJson}\n```";
         var userMsg = BuildSignatureContext(signature, dependencies) + flowsBlock + relationshipsBlock + setupBlock + stateBlock +
             $"\n\nTest prompt:\n{testPrompt}";
-        return Call(opts => opts.GeneratorModel, TestSystemPrompt, userMsg, ct);
+        return Call(LlmTier.Generator, TestSystemPrompt, userMsg, ct);
     }
 
     /// <summary>
@@ -1476,7 +1476,7 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
             {testScript}
             ```
             """;
-        return Call(opts => opts.GeneratorModel, MergeSystemPrompt, userMsg, ct);
+        return Call(LlmTier.Generator, MergeSystemPrompt, userMsg, ct);
     }
 
     // ── helpers ──────────────────────────────────────────────────────
@@ -1536,10 +1536,9 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
         })
     };
 
-    private async Task<ScriptGenerationResult> Call(Func<LlmOptions, string> modelPicker, string systemPrompt, string userMsg, CancellationToken ct)
+    private async Task<ScriptGenerationResult> Call(LlmTier tier, string systemPrompt, string userMsg, CancellationToken ct)
     {
-        var opts = options.Value;
-        var chat = ChatClientFactory.ForModel(opts, modelPicker(opts));
+        var chat = await llm.ChatAsync(tier, ct);
 
         var completion = await chat.CompleteChatSafeAsync(
             new List<ChatMessage>
@@ -1550,8 +1549,8 @@ public class LlmScriptGenerator(IOptions<LlmOptions> options) : IScriptGenerator
             new ChatCompletionOptions(),
             ct);
 
-        var script = LlmComponentAnalyzer.StripCodeFences(completion.Value.Content[0].Text ?? string.Empty);
-        var tokens = completion.Value.Usage?.TotalTokenCount ?? 0;
+        var script = LlmComponentAnalyzer.StripCodeFences(completion.Text);
+        var tokens = completion.Tokens;
         return new ScriptGenerationResult(script, tokens);
     }
 }

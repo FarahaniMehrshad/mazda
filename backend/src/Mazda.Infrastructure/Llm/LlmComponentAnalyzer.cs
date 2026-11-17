@@ -5,7 +5,7 @@ using Mazda.Application.Common.Abstractions;
 
 namespace Mazda.Infrastructure.Llm;
 
-public class LlmComponentAnalyzer(IOptions<LlmOptions> options) : IComponentAnalyzer
+public class LlmComponentAnalyzer(ILlmGateway llm) : IComponentAnalyzer
 {
     private static readonly string SystemPrompt = """
         You are Mazda, an expert front-end analyst. You read React / TSX / TS / JSX source —
@@ -522,8 +522,7 @@ public class LlmComponentAnalyzer(IOptions<LlmOptions> options) : IComponentAnal
 
     public async Task<ComponentAnalysisResult> AnalyzeAsync(string componentSource, string fileName, string? humanDescription = null, CancellationToken ct = default)
     {
-        var opts = options.Value;
-        var chat = ChatClientFactory.ForModel(opts, opts.AnalyzerModel);
+        var chat = await llm.ChatAsync(LlmTier.Analyzer, ct);
         var descriptionBlock = string.IsNullOrWhiteSpace(humanDescription)
             ? string.Empty
             : $"Human-written description of how the component works (use as context, do not echo back):\n\n{humanDescription}\n\n---\n\n";
@@ -546,8 +545,8 @@ public class LlmComponentAnalyzer(IOptions<LlmOptions> options) : IComponentAnal
             completionOptions,
             ct);
 
-        var raw = completion.Value.Content[0].Text ?? "{}";
-        var tokens = completion.Value.Usage?.TotalTokenCount ?? 0;
+        var raw = completion.TextOr("{}");
+        var tokens = completion.Tokens;
 
         // Some compatible servers wrap JSON in ```json fences even when asked not to.
         raw = StripCodeFences(raw);

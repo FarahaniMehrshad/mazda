@@ -23,6 +23,7 @@ public static class DependencyInjection
         services.AddScoped<IGenerationRepository, GenerationRepository>();
         services.AddScoped<IMcpToolRepository, McpToolRepository>();
         services.AddScoped<IUserSettingsRepository, UserSettingsRepository>();
+        services.AddScoped<ILlmSettingsRepository, LlmSettingsRepository>();
         services.AddScoped<IRecordingRepository, RecordingRepository>();
         services.AddScoped<IRoundTripRepository, RoundTripRepository>();
         services.AddSingleton<Mazda.Application.Common.Tracing.ITraceStore, TraceStore>();
@@ -32,8 +33,15 @@ public static class DependencyInjection
         services.AddSingleton<IPasswordHasher, BCryptPasswordHasher>();
         services.AddSingleton<IJwtIssuer, JwtIssuer>();
 
-        // LLM (any OpenAI-compatible provider: OpenAI, Ollama, vLLM, OpenRouter, …)
+        // LLM: any OpenAI-compatible API (OpenAI, Ollama, vLLM, OpenRouter, …) or
+        // the Claude Code CLI on the user's computer through the host bridge.
+        // Which one, and the models, come from Settings over .env.
         services.Configure<LlmOptions>(cfg.GetSection("Llm"));
+        services.Configure<ClaudeBridgeOptions>(cfg.GetSection("ClaudeBridge"));
+        services.AddHttpClient(ClaudeBridgeChat.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
+        services.AddSingleton<Mazda.Application.Modules.Settings.ILlmSettingsStore, LlmSettingsStore>();
+        services.AddSingleton<ILlmGateway, LlmGateway>();
+        services.AddSingleton<Mazda.Application.Modules.Settings.ILlmConnectionTester, LlmConnectionTester>();
         services.Configure<Cdp.CdpOptions>(cfg.GetSection("Cdp"));
         services.AddSingleton<IComponentAnalyzer, LlmComponentAnalyzer>();
         services.AddSingleton<IInformationalAnalyzer, LlmInformationalAnalyzer>();
