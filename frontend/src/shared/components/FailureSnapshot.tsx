@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ZoomableImage } from "@/shared/components/ImageViewer";
 import { BtnGhost, Pill } from "@/shared/components/Primitives";
 import type { ForensicsBundle, ForensicsRequest } from "@/shared/api/types";
 
@@ -72,18 +73,14 @@ export function FailureSnapshot({ bundle, report }: { bundle: ForensicsBundle; r
       </div>
 
       {bundle.screenshotJpegBase64 && (
-        <img
-          alt="Page when the step failed"
-          src={`data:image/jpeg;base64,${bundle.screenshotJpegBase64}`}
-          style={{
-            display: "block",
-            marginTop: 10,
-            maxWidth: "100%",
-            maxHeight: 360,
-            border: "1px solid var(--glass-stroke-2)",
-            borderRadius: 6,
-          }}
-        />
+        <div style={{ marginTop: 10, maxWidth: "100%", width: "fit-content" }}>
+          <ZoomableImage
+            alt="Page when the step failed"
+            caption={bundle.url ? `Page when the step failed: ${bundle.url}` : "Page when the step failed"}
+            src={`data:image/jpeg;base64,${bundle.screenshotJpegBase64}`}
+            style={{ width: "auto", maxWidth: "100%", maxHeight: 360, border: "1px solid var(--glass-stroke-2)", borderRadius: 6 }}
+          />
+        </div>
       )}
 
       <Block title={`Network (${bundle.networkTotal ?? network.length} seen)`} open={bad.length > 0}>
