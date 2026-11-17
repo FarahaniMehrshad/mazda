@@ -693,6 +693,29 @@ execute harness runs `__mzSettle`: it waits until no XHR/fetch has been in
 flight and the DOM has been quiet for 300 ms (cap 5 s) — a pause, never a
 failure.
 
+**No dead waits.** A wait that runs out its timeout when the thing it waits
+for does not happen costs that timeout on every run, and traces showed these
+were most of a run's time. Two rules, held by `CatalogueBodyLint` (one LLM
+repair round for the generator; fixes from the round trip that break them are
+rejected):
+- *An action waits only for the request its interaction itself sends every
+  time*, never for follow-up requests (a refresh the app starts after the
+  change), and never optionally (`waitForResponse(…).catch(…)`): when that
+  request does not come, every call pays the full timeout. The settle between
+  steps covers the follow-ups.
+- *A state function never waits.* It reports what the page shows now, and an
+  empty list or a missing panel is a valid answer. No `waitFor` before reading
+  (the gather harness settles the page once before the first state function),
+  and no `textContent()` / `getAttribute()` / … on an element that may be
+  absent unless `count() > 0` was checked: they wait the whole action timeout.
+  Waiting is fine only right after the function's own interaction (opening a
+  menu, hovering for a tooltip). Reading such a revealed label stays short and
+  tolerant (`waitFor({timeout: 1500}).catch(…)`, `textContent().catch(() => '')`):
+  one slow tooltip must leave one label empty, not fail the function. The
+  repair round changes only the lines the lint named, so it cannot strip that
+  tolerance while fixing something else. Swallowed waits (`waitFor(…).catch(() => {})`)
+  that survive the repair round are stripped: they can only delay.
+
 **Identifying attributes.** Besides test ids and `data-*`, the recorder keeps
 short semantic attributes (`icon`, `name`, `title`, `aria-label`,
 `formcontrolname`, … and any token-like input on a custom element) on targets,

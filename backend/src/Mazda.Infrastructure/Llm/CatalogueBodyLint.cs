@@ -7,7 +7,12 @@ namespace Mazda.Infrastructure.Llm;
 /// Enforces the catalogue's NO POST-CONDITIONS rule on ACTION bodies: an
 /// action performs interactions and then waits only for the network
 /// responses they trigger. Assertions, timeouts and waits on what the UI
-/// shows afterwards make an action fail although it worked.
+/// shows afterwards make an action fail although it worked; a wait for a
+/// request that may not come costs its full timeout every time it doesn't.
+///
+/// And the "what the page shows now" rule on STATE bodies
+/// (<see cref="StateIssues"/>): no waits before reading, no single-element
+/// reads of elements that may be absent.
 ///
 /// Pure string analysis (no TypeScript parser): bodies are split into
 /// top-level statements, the last interaction is located, and anything
@@ -69,6 +74,8 @@ internal static class CatalogueBodyLint
                 break;
             }
         }
+        foreach (var s in OptionalRequestWaits(statements))
+            issues.Add($"waits for a request that may never come and swallows the timeout: `{Shorten(s)}` — whenever the app does not send it, every call pays the full timeout. Await only the request the interaction itself sends every time; the harness lets follow-up requests finish between steps");
         foreach (Match m in Forbidden.Matches(body))
         {
             var what = m.Value.TrimEnd('(', ' ');
@@ -78,6 +85,98 @@ internal static class CatalogueBodyLint
         foreach (var s in TrailingUiStatements(body))
             issues.Add($"waits on / checks the UI after its last interaction: `{Shorten(s)}`");
         return issues;
+    }
+
+    private static readonly Regex OptionalRequestWait = new(
+        @"\bwaitFor(Response|Request)\s*\(.*\.catch\s*\(", RegexOptions.Compiled | RegexOptions.Singleline);
+
+    /// <summary>`page.waitForResponse(…).catch(…)`: a wait for a request that may not come.</summary>
+    private static IEnumerable<string> OptionalRequestWaits(IReadOnlyList<string> statements)
+        => statements.Where(st => OptionalRequestWait.IsMatch(st));
+
+    // ── State functions ──
+
+    /// <summary>Waits that are fine only for what the function itself just revealed (a menu it opened).</summary>
+    private static readonly Regex StateWait = new(
+        @"\.waitFor\s*\(|\bwaitFor(Selector|Response|Request|LoadState|URL|Function|Timeout)\s*\(",
+        RegexOptions.Compiled);
+
+    /// <summary>
+    /// Playwright reads that wait for their element (up to the action timeout):
+    /// <c>await &lt;locator&gt;.textContent()</c> and friends. Calls inside a
+    /// browser callback (`=&gt;`) are DOM reads and return at once.
+    /// </summary>
+    private static readonly Regex SingleRead = new(
+        @"\bawait\s+(?<loc>(?:(?!=>|\bawait\b)[^;])+?)\.(?<m>textContent|innerText|innerHTML|getAttribute|inputValue|isChecked|isEnabled|isDisabled|isEditable)\s*\(",
+        RegexOptions.Compiled | RegexOptions.Singleline);
+
+    private static readonly Regex TrailingPick = new(@"\.(first|last)\(\)\s*$|\.nth\([^()]*\)\s*$", RegexOptions.Compiled);
+
+    /// <summary>
+    /// Violations of the state-function rule "report what the page shows
+    /// now": a state function that waits for an element the page does not
+    /// have right now (nothing selected, an empty list) pays the full timeout
+    /// on every gather. Waits and single-element reads are fine once the
+    /// function has interacted (opened a menu, hovered for a tooltip): they
+    /// are about what it just revealed.
+    /// </summary>
+    public static IReadOnlyList<string> StateIssues(string body)
+    {
+        var issues = new List<string>();
+        var statements = Split(body);
+        var first = FirstInteraction(statements);
+        var before = first < 0 ? statements : statements.Take(first).ToList();
+        foreach (var st in before)
+        {
+            if (StateWait.IsMatch(st))
+                issues.Add($"waits before reading: `{Shorten(st)}` — a state function reports what the page shows now; when the element is absent (an empty list, nothing selected) this wait runs out its whole timeout. Read directly with evaluateAll / allTextContents / count(), which return at once");
+            foreach (Match m in SingleRead.Matches(st))
+            {
+                var loc = m.Groups["loc"].Value.Trim();
+                if (Guarded(body, loc)) continue;
+                issues.Add($"`{m.Groups["m"].Value}()` on `{Shorten(loc)}` waits up to the action timeout when that element is absent — check `await loc.count()` first, or read it inside evaluate / evaluateAll");
+            }
+        }
+        return issues.Distinct().ToList();
+    }
+
+    /// <summary>The body counts the same locator (or its un-picked base) before reading it.</summary>
+    private static bool Guarded(string body, string loc)
+    {
+        var compact = (string x) => Regex.Replace(x, @"\s+", "");
+        var b = compact(body);
+        var l = compact(loc).TrimStart('(');
+        var baseLoc = TrailingPick.Replace(l, "");
+        return b.Contains(l + ".count()", StringComparison.Ordinal)
+            || (baseLoc.Length > 0 && b.Contains(baseLoc + ".count()", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Deterministic clean-up for state bodies the repair round left as they
+    /// were: drops `await x.waitFor(…).catch(…)` statements before the first
+    /// interaction. They can only delay (the `.catch` swallows the timeout),
+    /// so removing them never changes what the function returns.
+    /// </summary>
+    public static string StripStateDeadWaits(string body)
+    {
+        var statements = Split(body);
+        var first = FirstInteraction(statements);
+        var kept = new List<string>();
+        for (var i = 0; i < statements.Count; i++)
+        {
+            var st = statements[i];
+            var dead = (first < 0 || i < first)
+                && Regex.IsMatch(st, @"^\s*await\s+[^;]*\.waitFor(Selector)?\s*\([^;]*\)\s*\.catch\s*\(\s*\(\s*\)\s*=>\s*(\{\s*\}|undefined|null)\s*\)\s*;?\s*$", RegexOptions.Singleline);
+            if (!dead) kept.Add(st);
+        }
+        return kept.Count == statements.Count ? body : string.Join("\n", kept.Select(k => k.Trim())).Trim();
+    }
+
+    private static int FirstInteraction(IReadOnlyList<string> statements)
+    {
+        for (var i = 0; i < statements.Count; i++)
+            if (Interaction.IsMatch(statements[i])) return i;
+        return -1;
     }
 
     /// <summary>Drops the trailing UI waits / checks after the last interaction.</summary>

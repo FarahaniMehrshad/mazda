@@ -236,10 +236,17 @@ public class LlmRoundTripFixer(ILlmGateway llm) : IRoundTripFixer
           waitForFunction; after the last interaction wait only for network
           responses registered before it (page.waitForResponse). Wait only for a
           request the app sends EVERY time; a request the evidence shows does not
-          always fire must not be awaited.
+          always fire must not be awaited, and never make a request wait optional
+          with .catch (it costs its full timeout whenever the request is missing).
+        • State functions read the page as it is now and never wait: no
+          .waitFor before reading, no textContent/innerText/getAttribute on an
+          element that may be absent unless guarded by `count() > 0`.
         • Reading a value off the page (e.g. a tooltip to resolve a name): make
           sure the text read belongs to the element just hovered, not a previous
-          one still on screen.
+          one still on screen. Such a read is short and tolerant
+          (`.waitFor({ timeout: 1500 }).catch(() => {})`, `.textContent({ timeout: 1000 }).catch(() => '')`):
+          one popup that is slow or does not show must leave that one label
+          empty, not fail the whole function.
         • Use the helpers already used by the body (__mzClick, __mzPointerDrag, …).
         • No console.log, no try/catch that swallows failures.
         """;

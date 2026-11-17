@@ -100,6 +100,12 @@ internal static class FunctionHarnessBuilder
         // something the page does not have (a settings panel when nothing is
         // selected) must cost its own entry, not the whole gather. The test
         // timeout is sized so every function can use its full budget.
+        // State functions read the page as it is and never wait themselves:
+        // the harness lets it settle once (requests answered, DOM quiet,
+        // capped), instead of each function waiting for elements that may
+        // legitimately be absent.
+        AppendSettleHelper(sb);
+        sb.AppendLine("  await __mzSettle(page);");
         sb.AppendLine($"  const __mz_stateBudgetMs = {StateFunctionBudgetMs};");
         sb.AppendLine($"  test.setTimeout({stateFunctions.Count} * __mz_stateBudgetMs + 30_000);");
         sb.AppendLine("  for (const [__mz_name, __mz_fn] of __mz_state_calls) {");

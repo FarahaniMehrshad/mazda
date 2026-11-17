@@ -83,11 +83,16 @@ public class LlmFunctionFixer(ILlmGateway llm) : IFunctionFixer
           • A wrong or empty return from a state function — the read targeted
             the wrong node, or needed .allInnerTexts() / .textContent() rather
             than .innerText().
-          • A state function that times out — it waits for something the page
-            does not show right now (a settings panel when nothing is selected).
-            "Absent" is a valid answer: check `await loc.count()` before a
-            single-element read (textContent/innerText/getAttribute), or read
-            with evaluateAll / allTextContents, which return at once.
+          • A slow or timed-out state function — it waits for something the
+            page does not show right now (a details panel when nothing is
+            selected, an empty list). "Absent" is a valid answer and a state
+            function never waits: drop `.waitFor(...)` before reading, check
+            `await loc.count()` before a single-element read
+            (textContent/innerText/getAttribute), or read with evaluateAll /
+            allTextContents, which return at once.
+          • A slow action that waits for a request the app does not always
+            send (`waitForResponse(...).catch(...)`, a follow-up refresh) —
+            keep only the request its interaction itself sends every time.
           • The page URL shows a different view than the function assumes — say
             so in `explanation`. Do not paper over it by adding navigation the
             function was never meant to perform.
@@ -111,7 +116,10 @@ public class LlmFunctionFixer(ILlmGateway llm) : IFunctionFixer
         Do not add console.log, page.pause(), page.screenshot(), waits "just in
         case", or try/catch that swallows the failure. The harness owns
         observability, and a swallowed error turns a loud failure into a silent
-        wrong result.
+        wrong result. The exception is a short read of what a hover / click
+        reveals (a tooltip label per option): keep it tolerant
+        (`.catch(() => {})` on its wait, `.catch(() => '')` on its read), so one
+        slow popup leaves one label empty instead of failing the function.
 
         If you genuinely cannot determine a fix from the evidence, return the
         body unchanged and use `explanation` to say what additional information
