@@ -85,7 +85,11 @@ public sealed class RoundTripReplayer(IScriptRunner runner, IExecutionRegistry r
                     UrlAfter: Str(s["urlAfter"]),
                     Aria: Str(s["aria"]),
                     BeforeJpeg: Str(s["before"]),
-                    AfterJpeg: Str(s["after"])));
+                    AfterJpeg: Str(s["after"]))
+                {
+                    BeforeBusy = Str(s["beforeBusy"]),
+                    AfterBusy = Str(s["afterBusy"]),
+                });
             }
             return new ReplayRun(steps, logTail);
         }

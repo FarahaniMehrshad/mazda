@@ -82,6 +82,7 @@ internal static class RecorderScriptBuilder
             captureBodies = spec.CaptureBodies,
             screenshots = spec.CaptureScreenshots && !spec.MaskAllInputs,
             maxShots = MaxScreenshots,
+            pictureWaitMs = PictureReadiness.MaxWaitMs,
             maxEvents = MaxEvents,
             maxBytes = MaxBytes,
             maxMs = MaxMinutes * 60_000,
@@ -90,6 +91,7 @@ internal static class RecorderScriptBuilder
         var sb = new StringBuilder();
         sb.AppendLine("import * as __mzFs from 'node:fs';");
         FunctionHarnessBuilder.AppendPreamble(sb, "mazda-recorder", spec.Target);
+        sb.Append(PictureReadiness.Ts);
         sb.AppendLine($"  const CFG: any = {JsonSerializer.Serialize(cfg)};");
         sb.AppendLine($"  const PAGE_SRC: string = {JsonSerializer.Serialize(PageScript.Value)};");
         sb.Append(Body);
@@ -161,20 +163,35 @@ internal static class RecorderScriptBuilder
           // One JPEG per action, taken once its effects have settled, so the
           // author can later see "what I did" next to "what the function did".
           // Written to files (not events: a picture does not fit an event line).
+          // "Settled" is PictureReadiness: no request in flight, document and
+          // images loaded, no spinner or running animation, DOM quiet. The wait
+          // ends early when the user acts again: the picture is taken then,
+          // before the next action's effects show.
           const SHOT_DIR = process.env.MZ_SHOT_DIR || '';
           const shotTimers = new Map<string, any>();
+          const snapping = new Map<string, boolean>();   // action → asked again while its picture was being taken
           let shots = 0;
           const snap = async (actionId: string) => {
             if (!CFG.screenshots || !SHOT_DIR) return;
+            if (snapping.has(actionId)) { snapping.set(actionId, true); return; }
+            const superseded = () => stopRequested || (actionId === '_start' ? lastAction !== null : (lastAction !== null && lastAction.id !== actionId));
+            snapping.set(actionId, false);
             try {
-              const file = SHOT_DIR + '/' + actionId.replace(/[^A-Za-z0-9_-]/g, '_') + '.jpg';
-              const isNew = !__mzFs.existsSync(file);
-              if (isNew && shots >= CFG.maxShots) return;
-              const buf = await page.screenshot({ type: 'jpeg', quality: 50, timeout: 3000 });
-              __mzFs.mkdirSync(SHOT_DIR, { recursive: true });
-              __mzFs.writeFileSync(file, buf);
-              if (isNew) shots++;
+              do {
+                snapping.set(actionId, false);
+                const file = SHOT_DIR + '/' + actionId.replace(/[^A-Za-z0-9_-]/g, '_') + '.jpg';
+                const isNew = !__mzFs.existsSync(file);
+                if (isNew && shots >= CFG.maxShots) return;
+                const waited = await __mzReadyForPicture(page, CFG.pictureWaitMs, superseded);
+                const busy = waited && superseded() && !stopRequested ? 'you acted again before the page settled (' + waited + ')' : waited;
+                const buf = await page.screenshot({ type: 'jpeg', quality: 50, timeout: 3000 });
+                __mzFs.mkdirSync(SHOT_DIR, { recursive: true });
+                __mzFs.writeFileSync(file, buf);
+                if (isNew) shots++;
+                if (busy) out('picture', { busy, msg: 'The picture was taken while the page was still busy: ' + busy }, actionId === '_start' ? null : actionId);
+              } while (snapping.get(actionId) && !superseded());
             } catch { /* page busy or gone: a missing picture is not worth a warning */ }
+            finally { snapping.delete(actionId); }
           };
           const scheduleSnap = (actionId: string, ms: number) => {
             if (!CFG.screenshots || stopRequested) return;
@@ -265,7 +282,8 @@ internal static class RecorderScriptBuilder
 
           out('ready', { url: page.url(), title: await page.title().catch(() => '') }, null, { url: page.url() });
           // The page as it was when recording started: the "before" of the first demonstrated step.
-          await snap('_start');
+          // Not awaited: it waits for the page to be ready (or for the first action) while recording runs.
+          void snap('_start');
 
           // Requests that hang (backend down, VPN dropped, browser connection
           // pool exhausted) never reach loadingFinished, so they'd silently

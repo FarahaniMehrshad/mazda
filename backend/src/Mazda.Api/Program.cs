@@ -320,6 +320,12 @@ using (var scope = app.Services.CreateScope())
         );
         CREATE INDEX IF NOT EXISTS ix_roundtrip_sessions_signature
             ON roundtrip_sessions(signature_id, "CreatedAt");
+        -- The page every replay opens first; '' = where the recording started.
+        ALTER TABLE roundtrip_sessions
+            ADD COLUMN IF NOT EXISTS start_url varchar(2000) NOT NULL DEFAULT '';
+        -- Ask the picture judge about steps the comparison cannot decide; off = ask the author.
+        ALTER TABLE roundtrip_sessions
+            ADD COLUMN IF NOT EXISTS picture_judge boolean NOT NULL DEFAULT FALSE;
 
         CREATE TABLE IF NOT EXISTS roundtrip_shots (
             session_id  uuid         NOT NULL REFERENCES roundtrip_sessions("Id") ON DELETE CASCADE,

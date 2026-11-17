@@ -275,6 +275,12 @@ public static class Endpoints
             (await s.Send(new GetRoundTripQuery(rid))).ToHttp());
         rts.MapPut("/{rid:guid}/plan", async (Guid rid, [FromBody] RoundTripPlanBody body, ISender s) =>
             (await s.Send(new UpdateRoundTripPlanCommand(rid, body.Steps ?? new()))).ToHttp());
+        // The page every replay opens first; an empty url goes back to the recording's start page.
+        rts.MapPut("/{rid:guid}/start-url", async (Guid rid, [FromBody] StartUrlBody body, ISender s) =>
+            (await s.Send(new SetRoundTripStartUrlCommand(rid, body.Url))).ToHttp());
+        // Whether a model judges the pictures of steps the comparison cannot decide (off by default).
+        rts.MapPut("/{rid:guid}/picture-judge", async (Guid rid, [FromBody] PictureJudgeBody body, ISender s) =>
+            (await s.Send(new SetRoundTripPictureJudgeCommand(rid, body.Enabled))).ToHttp());
         // Starts replays that perform the plan's actions for real; `confirmed` is the author's go-ahead.
         rts.MapPost("/{rid:guid}/confirm", async (Guid rid, [FromBody] ConfirmBody body, ISender s) =>
             (await s.Send(new ConfirmRoundTripCommand(rid, body.Confirmed))).ToHttp());
@@ -382,6 +388,8 @@ public static class Endpoints
     public record AttachTabBody(string TargetId);
     public record StartRoundTripBody(Guid RecordingId);
     public record RoundTripPlanBody(List<PlanStepModel>? Steps);
+    public record StartUrlBody(string? Url);
+    public record PictureJudgeBody(bool Enabled);
     public record ConfirmBody(bool Confirmed);
     public record PlanChangeBody(bool Accept);
     public record AnswerBody(int Step, bool Same);

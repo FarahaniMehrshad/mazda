@@ -14,8 +14,8 @@ namespace Mazda.Application.Modules.RoundTrip;
 /// Runs one round trip in the background:
 ///   1. learn  - replay the confirmed plan twice (what differs is noise) and once
 ///               with the contrast choices (what differs carries the choice);
-///   2. judge  - compare every step with its demonstrated span; ask the picture
-///               judge about what the comparison cannot decide; questions for the author;
+///   2. judge  - compare every step with its demonstrated span; what the comparison cannot
+///               decide goes to the picture judge when it is on (off by default), else to the author;
 ///   3. fix    - earliest step that differs: diagnose (function / plan / earlier step /
 ///               nondeterminism), apply one change, replay from the start, keep the change
 ///               only if that step got closer and no earlier step got worse;
@@ -118,6 +118,12 @@ public sealed class RoundTripEngine(
 
         var actions = Actions();
         var profiles = (await roundTrips.ListProfilesAsync(_sig.Id, ct)).ToDictionary(p => p.FunctionId);
+
+        Say("info", _session.PictureJudge
+            ? "The picture judge is on: a model compares the pictures of steps the comparison cannot decide."
+            : "The picture judge is off: steps the comparison cannot decide are left for you to answer.");
+        if (!string.IsNullOrWhiteSpace(_session.StartUrl))
+            Say("info", $"Every replay starts on {_session.StartUrl} (chosen for this round trip; the recording started elsewhere).");
 
         // ── 1. Learn ─────────────────────────────────────────────────
         Say("info", $"Replaying {_plan.Steps.Count} step(s) twice to learn what naturally differs between runs.");
@@ -325,12 +331,17 @@ public sealed class RoundTripEngine(
         => _plan.Steps.Select(s => new RoundTripCall(s.Call,
             contrast && !string.IsNullOrWhiteSpace(s.ContrastArgsJson) ? s.ContrastArgsJson! : s.ArgsJson)).ToList();
 
+    private const int PictureReadinessMaxSeconds = 15;
+
+    /// <summary>The page every replay opens first: the author's choice, else where the recording started.</summary>
+    private string? StartUrl => string.IsNullOrWhiteSpace(_session.StartUrl) ? _demo.StartUrl : _session.StartUrl;
+
     private async Task<ReplayRun> ReplayAsync(List<RoundTripCall> calls, string label, CancellationToken ct)
     {
         Say("replay", $"Replay {_runs + 1}: {label}…");
         ReplayRun run;
         using (_trace.Span($"replay {_runs + 1}: {label}"))
-            run = await replayer.ReplayAsync(_session.Id, _sig, _deps, calls, _target, _demo.StartUrl, ct);
+            run = await replayer.ReplayAsync(_session.Id, _sig, _deps, calls, _target, StartUrl, ct);
         // A stopped replay comes back as a cancelled run, not an exception: stop here before judging it.
         ct.ThrowIfCancellationRequested();
         _runs++;
@@ -340,6 +351,10 @@ public sealed class RoundTripEngine(
         {
             if (run.Steps[i].BeforeJpeg is { } bj) shots.Add(new RoundTripShot(_session.Id, _runs, i, "before", bj));
             if (run.Steps[i].AfterJpeg is { } aj) shots.Add(new RoundTripShot(_session.Id, _runs, i, "after", aj));
+            foreach (var (phase, busy) in new[] { ("before", run.Steps[i].BeforeBusy), ("after", run.Steps[i].AfterBusy) })
+                if (busy is not null)
+                    Say("info", $"Replay {_runs}, step {i + 1} ({run.Steps[i].Call}): the {phase} picture was taken while the page was still busy " +
+                                $"({busy}); waited {PictureReadinessMaxSeconds} s for it.", run.Steps[i].Call);
         }
         await roundTrips.ReplaceShotsAsync(_session.Id, _runs, shots, ct);
         await uow.SaveChangesAsync(ct);
@@ -405,7 +420,14 @@ public sealed class RoundTripEngine(
             var verdict = judgement.Verdict;
             JudgeModel? judgeModel = null;
             string? question = null;
-            if (verdict == "unexplained")
+            if (verdict == "unexplained" && !_session.PictureJudge)
+            {
+                // The picture judge is off: the author compares the pictures.
+                verdict = "question";
+                question = "Mazda could not tell whether the function did what you did. Compare the pictures: is the result the same?";
+                Say("question", $"Step {i + 1} ({step.Call}): the comparison cannot decide and the picture judge is off. Asking you.", step.Call);
+            }
+            else if (verdict == "unexplained")
             {
                 var (jv, jr) = await PictureJudgeAsync(i, runNo, judgement, ct);
                 judgeModel = new JudgeModel(jv, jr);

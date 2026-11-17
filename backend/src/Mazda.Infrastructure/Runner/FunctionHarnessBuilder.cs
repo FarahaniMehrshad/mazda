@@ -368,6 +368,8 @@ internal static class FunctionHarnessBuilder
         sb.AppendLine("  page.on('request', (r: any) => { if (['xhr', 'fetch'].includes(r.resourceType())) __mz_inflight.add(r); });");
         sb.AppendLine("  page.on('requestfinished', (r: any) => __mz_inflight.delete(r));");
         sb.AppendLine("  page.on('requestfailed', (r: any) => __mz_inflight.delete(r));");
+        sb.AppendLine("  // A response is an answer: a body the page never reads never \"finishes\".");
+        sb.AppendLine("  page.on('response', (res: any) => { try { __mz_inflight.delete(res.request()); } catch {} });");
         sb.AppendLine("  const __mzSettle = (p: Page, maxMs = 5000) => test.step('mz: settle', async () => {");
         sb.AppendLine("    const end = Date.now() + maxMs;");
         sb.AppendLine("    let quietSince = Date.now();");
@@ -415,6 +417,7 @@ internal static class FunctionHarnessBuilder
         var sb = new StringBuilder();
         AppendPreamble(sb, testName: "mazda roundtrip", target);
         AppendSettleHelper(sb);
+        sb.Append(PictureReadiness.Ts);
         sb.Append(ForensicsHelperTs);
         sb.AppendLine();
         AppendFunctionDeclarations(sb, all, prefix: "__mz_fn_");
@@ -437,11 +440,17 @@ internal static class FunctionHarnessBuilder
     private const string RoundTripLoopTs = """
   const __mz_say = (m: string) => console.log('__MZ_RT__ ' + m);
   const __mz_pause = (ms: number) => test.step(`mz: pause ${ms} ms`, () => new Promise((r) => setTimeout(r, ms)));
-  const __mz_shot = (): Promise<string | null> => test.step('mz: screenshot', async () => {
-    const b: any = await __mzBound(page.screenshot({ type: 'jpeg', quality: 50, timeout: 3000 }), 4000);
-    const s = b ? b.toString('base64') : null;
-    return s && s.length <= 900000 ? s : null;
-  });
+  // A picture only once the page is ready for it (PictureReadiness); `busy` says why it was not, when the wait ran out.
+  const __mz_shot = async (which: string): Promise<{ jpeg: string | null; busy: string | null }> => {
+    const busy = await test.step(`mz: wait for the page before the ${which} picture`, () => __mzReadyForPicture(page));
+    if (busy) __mz_say(`the ${which} picture was taken while the page was still busy: ${busy}`);
+    const jpeg = await test.step('mz: screenshot', async () => {
+      const b: any = await __mzBound(page.screenshot({ type: 'jpeg', quality: 50, timeout: 3000 }), 4000);
+      const s = b ? b.toString('base64') : null;
+      return s && s.length <= 900000 ? s : null;
+    });
+    return { jpeg, busy };
+  };
 
   // The recorder's page-side script, exactly as used while the user demonstrated:
   // the replay's mutation summaries then have the demonstration's shape.
@@ -475,7 +484,7 @@ internal static class FunctionHarnessBuilder
     __mz_out.push(rec);
     if (__mz_failed) continue;
     await __mzSettle(page);
-    rec.before = await __mz_shot();
+    { const shot = await __mz_shot(`step ${__mz_i + 1} "before"`); rec.before = shot.jpeg; rec.beforeBusy = shot.busy; }
     rec.ran = true;
     __mz_say(`step ${__mz_i + 1}/${__mz_calls.length}: ${__mz_c.call}`);
     __mz_curStep = 's' + __mz_i;
@@ -495,7 +504,7 @@ internal static class FunctionHarnessBuilder
     await __mz_pause(600);
     __mz_curStep = null;
     try { rec.urlAfter = page.url(); } catch {}
-    rec.after = await __mz_shot();
+    { const shot = await __mz_shot(`step ${__mz_i + 1} "after"`); rec.after = shot.jpeg; rec.afterBusy = shot.busy; }
     const tree: any = await test.step('mz: aria snapshot', () => __mzBound((async () => {
       const t = await (page as any).accessibility?.snapshot({ interestingOnly: true });
       return t ? __mzAriaText(t) : null;

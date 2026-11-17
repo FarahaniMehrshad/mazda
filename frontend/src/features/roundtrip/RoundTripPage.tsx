@@ -230,6 +230,9 @@ function RoundTripView({ rt, sigId }: { rt: RoundTrip; sigId: string }) {
 
       {running && <LiveFeed id={rt.id} />}
 
+      <StartPage rt={rt} sigId={sigId} editable={!running} onError={setErr} />
+      <PictureJudgeSwitch rt={rt} sigId={sigId} editable={!running} onError={setErr} />
+
       <PlanEditor rt={rt} sigId={sigId} editable={!running && rt.status !== "NeedsPlan"} onError={setErr} />
 
       {rt.result && rt.result.steps.length > 0 && (
@@ -348,7 +351,13 @@ function ConfirmDialog({ rt, onCancel, onRun }: { rt: RoundTrip; onCancel: () =>
       <div style={{ background: "var(--surface-1, #14100c)", border: "1px solid var(--glass-stroke-2)", borderRadius: 14, padding: 24, width: "min(640px, 100%)" }}>
         <div style={{ fontSize: 16, fontWeight: 500 }}>Replay this plan for real</div>
         <div style={{ fontSize: 13, color: "#f1d18a", marginTop: 10, lineHeight: 1.6 }}>
-          Mazda opens the page your recording started on and performs these {rt.plan.length} step(s) on the attached tab — at
+          Mazda opens{" "}
+          {rt.startUrlIsCustom ? (
+            <span style={{ fontFamily: "var(--f-mono)", wordBreak: "break-all" }}>{rt.startUrl}</span>
+          ) : (
+            "the page your recording started on"
+          )}{" "}
+          and performs these {rt.plan.length} step(s) on the attached tab — at
           least {contrasts > 0 ? "three" : "twice"} times ({contrasts > 0 ? "twice as recorded, once with other choices" : "twice as recorded"}), and again after
           every fix it tries. Whatever they create or change in the app is really created or changed each time.
         </div>
@@ -361,6 +370,116 @@ function ConfirmDialog({ rt, onCancel, onRun }: { rt: RoundTrip; onCancel: () =>
           <BtnPrimary onClick={onRun} disabled={!ack}>Run</BtnPrimary>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Start page ───────────────────────────────────────────────────────
+
+/** The page every replay opens before the first step; the recording's by default. */
+function StartPage({ rt, sigId, editable, onError }: { rt: RoundTrip; sigId: string; editable: boolean; onError: (m: string | null) => void }) {
+  const save = useRoundTripMutation((url: string) => roundTripApi.setStartUrl(rt.id, url), sigId);
+  const [draft, setDraft] = useState<string | null>(null);
+
+  const submit = async (url: string) => {
+    onError(null);
+    try {
+      await save.mutateAsync(url.trim());
+      setDraft(null);
+    } catch (e) {
+      onError(e instanceof ApiError ? e.message : String(e));
+    }
+  };
+
+  const field = { flex: 1, minWidth: 0, padding: "6px 8px", background: "var(--glass-1)", border: "1px solid var(--glass-stroke-2)", borderRadius: 6, color: "var(--text-1)", fontFamily: "var(--f-mono)", fontSize: 12 } as const;
+
+  return (
+    <div className="mz-glass" style={{ padding: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div className="mz-eyebrow">START PAGE</div>
+        <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+          {rt.startUrlIsCustom ? "Chosen for this round trip; every replay opens it first." : "Where the recording started; every replay opens it first."}
+        </span>
+      </div>
+      {draft === null ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
+          <a
+            href={rt.startUrl || undefined}
+            target="_blank"
+            rel="noreferrer"
+            style={{ flex: 1, minWidth: 0, fontFamily: "var(--f-mono)", fontSize: 12, wordBreak: "break-all", color: "var(--text-1)" }}
+          >
+            {rt.startUrl || "(none: the replays start on whatever page the tab shows)"}
+          </a>
+          {editable && <BtnGhost onClick={() => setDraft(rt.startUrl)}>Change</BtnGhost>}
+          {editable && rt.startUrlIsCustom && (
+            <BtnGhost onClick={() => void submit("")} disabled={save.isPending}>Use the recording's</BtnGhost>
+          )}
+        </div>
+      ) : (
+        <form
+          style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submit(draft);
+          }}
+        >
+          <input
+            autoFocus
+            type="url"
+            value={draft}
+            placeholder="https://…"
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setDraft(null);
+            }}
+            style={field}
+          />
+          <BtnGhost type="button" onClick={() => setDraft(null)}>Cancel</BtnGhost>
+          <BtnPrimary type="submit" disabled={save.isPending || draft.trim() === rt.startUrl}>Save</BtnPrimary>
+        </form>
+      )}
+      {rt.startUrlIsCustom && rt.recordedStartUrl && (
+        <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 8, wordBreak: "break-all" }}>
+          The recording started on <span style={{ fontFamily: "var(--f-mono)" }}>{rt.recordedStartUrl}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Whether a model looks at the pictures of steps the comparison cannot decide. Off by default. */
+function PictureJudgeSwitch({ rt, sigId, editable, onError }: { rt: RoundTrip; sigId: string; editable: boolean; onError: (m: string | null) => void }) {
+  const save = useRoundTripMutation((on: boolean) => roundTripApi.setPictureJudge(rt.id, on), sigId);
+  const toggle = async (on: boolean) => {
+    onError(null);
+    try {
+      await save.mutateAsync(on);
+    } catch (e) {
+      onError(e instanceof ApiError ? e.message : String(e));
+    }
+  };
+  return (
+    <div className="mz-glass" style={{ padding: 16 }}>
+      <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: editable ? "pointer" : "default" }}>
+        <input
+          type="checkbox"
+          aria-label="Picture judge"
+          checked={rt.pictureJudge}
+          disabled={!editable || save.isPending}
+          onChange={(e) => void toggle(e.target.checked)}
+          style={{ marginTop: 3 }}
+        />
+        <span>
+          <span className="mz-eyebrow">PICTURE JUDGE</span>{" "}
+          <span style={{ fontSize: 12, color: "var(--text-3)" }}>{rt.pictureJudge ? "on" : "off"}</span>
+          <span style={{ display: "block", fontSize: 12, color: "var(--text-3)", marginTop: 4, lineHeight: 1.5 }}>
+            {rt.pictureJudge
+              ? "When the comparison cannot decide whether a step did what you did, a model compares the before/after pictures first; you are asked only when it is unsure."
+              : "When the comparison cannot decide whether a step did what you did, you are asked to compare the pictures. Turn on to let a model judge them first (one model call per such step)."}
+          </span>
+        </span>
+      </label>
     </div>
   );
 }
