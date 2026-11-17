@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { BtnGhost, BtnPrimary, Pill } from "@/shared/components/Primitives";
 import { ApiError } from "@/shared/api/client";
@@ -548,6 +549,11 @@ function TestResultView({ result }: { result: FunctionTestResultDto }) {
         <div style={{ fontSize: 11, fontFamily: "var(--f-mono)", color: "var(--text-3)" }}>
           {result.durationMs} ms
         </div>
+        {result.traceId && (
+          <Link to={`/traces/${result.traceId}`} style={{ fontSize: 12, color: "var(--accent-hot)", textDecoration: "none" }}>
+            Where the time went →
+          </Link>
+        )}
       </div>
 
       {result.pageUrl && (

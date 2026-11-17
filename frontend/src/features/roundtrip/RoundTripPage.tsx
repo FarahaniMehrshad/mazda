@@ -5,6 +5,7 @@ import { TopBar } from "@/shared/components/TopBar";
 import { ApiError } from "@/shared/api/client";
 import { useSignature } from "@/features/signatures/api";
 import { useRecordings } from "@/features/recordings/api";
+import { TraceLinks } from "@/features/traces/TracePage";
 import {
   roundTripApi,
   useRoundTrip,
@@ -209,6 +210,7 @@ function RoundTripView({ rt, sigId }: { rt: RoundTrip; sigId: string }) {
           </BtnPrimary>
         )}
       </div>
+      <TraceLinks subject={rt.id} refreshKey={`${rt.status}-${rt.log.length}`} />
       {rt.error && <Pill tone="err">{rt.error}</Pill>}
       {err && <Pill tone="err">{err}</Pill>}
 

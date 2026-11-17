@@ -7,6 +7,7 @@ using Mazda.Domain.Modules.Generations;
 using Mazda.Domain.Modules.Mcp;
 using Mazda.Domain.Modules.Recordings;
 using Mazda.Domain.Modules.RoundTrip;
+using Mazda.Domain.Modules.Tracing;
 
 namespace Mazda.Infrastructure.Persistence;
 
@@ -76,6 +77,23 @@ internal class FunctionBodyRevisionConfig : IEntityTypeConfiguration<FunctionBod
     }
 }
 
+internal class RunTraceConfig : IEntityTypeConfiguration<RunTrace>
+{
+    public void Configure(EntityTypeBuilder<RunTrace> b)
+    {
+        b.ToTable("run_traces");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Id).ValueGeneratedNever();
+        b.Property(x => x.OwnerId).HasColumnName("owner_id");
+        b.Property(x => x.Kind).HasColumnName("kind").HasMaxLength(30);
+        b.Property(x => x.SubjectId).HasColumnName("subject_id");
+        b.Property(x => x.Label).HasColumnName("label");
+        b.Property(x => x.TotalMs).HasColumnName("total_ms");
+        b.Property(x => x.TraceJson).HasColumnName("trace_json");
+        b.HasIndex(x => new { x.SubjectId, x.CreatedAt });
+    }
+}
+
 internal class FunctionComparisonProfileConfig : IEntityTypeConfiguration<FunctionComparisonProfile>
 {
     public void Configure(EntityTypeBuilder<FunctionComparisonProfile> b)
@@ -107,6 +125,7 @@ public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContex
     public DbSet<RoundTripShot> RoundTripShots => Set<RoundTripShot>();
     public DbSet<FunctionBodyRevision> FunctionBodyRevisions => Set<FunctionBodyRevision>();
     public DbSet<FunctionComparisonProfile> FunctionComparisonProfiles => Set<FunctionComparisonProfile>();
+    public DbSet<RunTrace> RunTraces => Set<RunTrace>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -115,6 +134,7 @@ public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContex
         mb.ApplyConfiguration(new RoundTripShotConfig());
         mb.ApplyConfiguration(new FunctionBodyRevisionConfig());
         mb.ApplyConfiguration(new FunctionComparisonProfileConfig());
+        mb.ApplyConfiguration(new RunTraceConfig());
         mb.ApplyConfiguration(new UserConfig());
         mb.ApplyConfiguration(new UserSettingsConfig());
         mb.ApplyConfiguration(new SignatureConfig());

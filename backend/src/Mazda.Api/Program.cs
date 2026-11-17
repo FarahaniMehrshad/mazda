@@ -353,6 +353,20 @@ using (var scope = app.Services.CreateScope())
             updated_at     timestamptz  NOT NULL DEFAULT NOW()
         );
 
+        -- Where the time went in one operation (function check, gather + plan, run, round trip).
+        CREATE TABLE IF NOT EXISTS run_traces (
+            "Id"          uuid         PRIMARY KEY,
+            owner_id      uuid         NOT NULL REFERENCES users("Id") ON DELETE CASCADE,
+            kind          varchar(30)  NOT NULL,
+            subject_id    uuid         NOT NULL,
+            label         text         NOT NULL DEFAULT '',
+            total_ms      bigint       NOT NULL DEFAULT 0,
+            trace_json    text         NOT NULL DEFAULT '{{}}',
+            "CreatedAt"   timestamptz  NOT NULL DEFAULT NOW(),
+            "UpdatedAt"   timestamptz  NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS ix_run_traces_subject ON run_traces(subject_id, "CreatedAt");
+
         -- User intent (optional) and the analyzer's readback per session.
         ALTER TABLE recording_sessions
             ADD COLUMN IF NOT EXISTS label_is_auto boolean NOT NULL DEFAULT TRUE,

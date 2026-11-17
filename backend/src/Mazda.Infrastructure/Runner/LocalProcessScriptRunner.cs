@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 using Mazda.Application.Common.Abstractions;
+using Mazda.Application.Common.Tracing;
 using Microsoft.Extensions.Logging;
 
 namespace Mazda.Infrastructure.Runner;
@@ -30,7 +31,8 @@ public sealed class LocalProcessScriptRunner(
           timeout: 60_000,
           // Print each step (await page.click(...), expect(...), etc.) as it runs so
           // a hang shows the LAST step it was stuck on rather than just "timeout".
-          reporter: [['list', { printSteps: true }]],
+          // The trace reporter records every step and API call with its timing and source line.
+          reporter: [['list', { printSteps: true }], ['./mz-trace-reporter.mjs']],
           use: {
             // Per-action timeout (default is 30s = half the test budget). 10s is short
             // enough to fail fast on a stuck locator and surface a precise stack trace
@@ -42,6 +44,51 @@ public sealed class LocalProcessScriptRunner(
             video: 'off',
           },
         });
+        """;
+
+    public const string TraceReporterFile = "mz-trace-reporter.mjs";
+    public const string TraceDirName = "trace";
+    public const string TraceFileName = "steps.json";
+
+    /// <summary>
+    /// Playwright reporter that records the test's start/end and every step and API call: title,
+    /// start, duration, source line, parent, error. Written to trace/steps.json when the run ends.
+    /// Steps nest by their parent; ids are assigned on first sight because children end first.
+    /// </summary>
+    private const string TraceReporterSource = """
+        import fs from 'node:fs';
+        import path from 'node:path';
+        const KEEP = new Set(['pw:api', 'test.step', 'expect']);
+        const MAX_STEPS = 20000;
+        export default class MzTraceReporter {
+          constructor() { this.steps = []; this.ids = new WeakMap(); this.next = 1; this.dropped = 0; }
+          idOf(step) { let id = this.ids.get(step); if (!id) { id = this.next++; this.ids.set(step, id); } return id; }
+          onBegin() { this.begin = Date.now(); }
+          onTestBegin(test, result) { this.title = test.title; this.testStart = result.startTime.getTime(); }
+          onTestEnd(test, result) { this.testEnd = this.testStart + result.duration; this.status = result.status; }
+          onStepEnd(test, result, step) {
+            if (!KEEP.has(step.category)) return;
+            if (this.steps.length >= MAX_STEPS) { this.dropped++; return; }
+            let parent = step.parent;
+            while (parent && !KEEP.has(parent.category)) parent = parent.parent;
+            this.steps.push({
+              id: this.idOf(step), parent: parent ? this.idOf(parent) : null, cat: step.category,
+              title: String(step.title).slice(0, 300), start: step.startTime.getTime(), ms: step.duration,
+              file: step.location ? path.basename(step.location.file) : null, line: step.location ? step.location.line : null,
+              err: step.error ? String(step.error.message ?? step.error.value ?? '').slice(0, 400) : null,
+            });
+          }
+          onEnd() {
+            try {
+              fs.mkdirSync('trace', { recursive: true });
+              fs.writeFileSync(path.join('trace', 'steps.json'), JSON.stringify({
+                title: this.title, begin: this.begin, testStart: this.testStart, testEnd: this.testEnd ?? Date.now(),
+                end: Date.now(), status: this.status, dropped: this.dropped, steps: this.steps,
+              }));
+            } catch (e) { /* a missing trace must never fail the run */ }
+          }
+          printsToStdio() { return false; }
+        }
         """;
 
     private static readonly string PackageJson = """
@@ -60,7 +107,10 @@ public sealed class LocalProcessScriptRunner(
     {
         var workdirRoot = Environment.GetEnvironmentVariable("MAZDA_RUNNER_WORKDIR") ?? "/var/mazda/runs";
         var runDir = Path.Combine(workdirRoot, generationId.ToString("N"));
+        var prepareStart = TraceRecorder.Now();
         await PrepareRunDirAsync(runDir, script, opts.PlaywrightConfigOverride ?? PlaywrightConfig, ct);
+        var prepareEnd = TraceRecorder.Now();
+        long spawnAt = prepareEnd;
 
         var stopFile = Path.Combine(runDir, "STOP");
         // A STOP file left over from a previous run in the same dir would make
@@ -151,6 +201,7 @@ public sealed class LocalProcessScriptRunner(
 
         try
         {
+            spawnAt = TraceRecorder.Now();
             proc.Start();
         }
         catch (Exception ex)
@@ -172,6 +223,7 @@ public sealed class LocalProcessScriptRunner(
         }
         catch (OperationCanceledException)
         {
+            AttachTrace(runDir, new RunnerTimings(prepareStart, prepareEnd, spawnAt, TraceRecorder.Now()));
             if (opts.GracefulStopTimeout is { } grace && !proc.HasExited)
             {
                 try { await File.WriteAllTextAsync(stopFile, "stop", CancellationToken.None); }
@@ -194,7 +246,29 @@ public sealed class LocalProcessScriptRunner(
             return new RunnerCompletion(RunnerExitKind.Cancelled, -1, FullLog());
         }
 
+        AttachTrace(runDir, new RunnerTimings(prepareStart, prepareEnd, spawnAt, TraceRecorder.Now()));
         return Classify(proc, Emit, runDir, FullLog);
+    }
+
+    /// <summary>
+    /// Hands what the trace reporter wrote (plus the process timings) to the trace of the operation
+    /// running on this async flow, if any. Never throws: a missing trace must not fail a run.
+    /// </summary>
+    private void AttachTrace(string runDir, RunnerTimings timings)
+    {
+        var trace = TraceContext.Current;
+        if (trace is null) return;
+        try
+        {
+            var file = Path.Combine(runDir, TraceDirName, TraceFileName);
+            var json = File.Exists(file) && new FileInfo(file).Length <= 64 * 1024 * 1024 ? File.ReadAllText(file) : "{}";
+            var spec = File.ReadAllText(Path.Combine(runDir, "mazda.spec.ts"));
+            trace.AddScript(ScriptTrace.Build(json, spec, timings));
+        }
+        catch (Exception ex)
+        {
+            log.LogWarning(ex, "Could not read the run's trace in {RunDir}", runDir);
+        }
     }
 
     /// <summary>Reads and redacts <c>&lt;runDir&gt;/forensics/forensics.json</c> if the harness wrote one.</summary>
@@ -283,6 +357,9 @@ public sealed class LocalProcessScriptRunner(
         await File.WriteAllTextAsync(Path.Combine(runDir, "mazda.spec.ts"), rewritten, ct);
         await File.WriteAllTextAsync(Path.Combine(runDir, "playwright.config.ts"), config, ct);
         await File.WriteAllTextAsync(Path.Combine(runDir, "package.json"), PackageJson, ct);
+        await File.WriteAllTextAsync(Path.Combine(runDir, TraceReporterFile), TraceReporterSource, ct);
+        // A trace left by an earlier run in the same directory must not be read as this run's.
+        try { Directory.Delete(Path.Combine(runDir, TraceDirName), recursive: true); } catch { }
 
         // Node ESM resolution doesn't look at the global node_modules. Symlink the
         // run dir's node_modules to the global one so `@playwright/test` resolves.
@@ -302,7 +379,10 @@ public sealed class LocalProcessScriptRunner(
         // with the wizard's main run flow potentially, so don't collide.
         var workdirRoot = Environment.GetEnvironmentVariable("MAZDA_RUNNER_WORKDIR") ?? "/var/mazda/runs";
         var runDir = Path.Combine(workdirRoot, "once-" + Guid.NewGuid().ToString("N"));
+        var prepareStart = TraceRecorder.Now();
         await PrepareRunDirAsync(runDir, script, PlaywrightConfig, ct);
+        var prepareEnd = TraceRecorder.Now();
+        long spawnAt = prepareEnd;
 
         var fullLog = new StringBuilder();
         void Capture(string line)
@@ -335,6 +415,7 @@ public sealed class LocalProcessScriptRunner(
 
         try
         {
+            spawnAt = TraceRecorder.Now();
             proc.Start();
         }
         catch (Exception ex)
@@ -353,9 +434,11 @@ public sealed class LocalProcessScriptRunner(
         catch (OperationCanceledException)
         {
             try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
+            AttachTrace(runDir, new RunnerTimings(prepareStart, prepareEnd, spawnAt, TraceRecorder.Now()));
             Capture("runner: cancelled by user");
             return new RunnerCompletion(RunnerExitKind.Cancelled, -1, fullLog.ToString());
         }
+        AttachTrace(runDir, new RunnerTimings(prepareStart, prepareEnd, spawnAt, TraceRecorder.Now()));
 
         var kind = proc.ExitCode switch
         {
@@ -805,6 +888,28 @@ async function __mzSelectOption(page: any, trigger: any, text: string): Promise<
         if (needsDragHelper) injection += PointerDragHelperBlock;
         if (needsSwapHelper) injection += PointerSwapHelperBlock;
         if (needsSelectHelper) injection += SelectOptionHelperBlock;
+        injection = BoxHelpersForTrace(injection);
         return rewritten.Insert(insertPos, injection);
+    }
+
+    private static readonly string[] TracedHelpers = { "__mzClick", "__mzPointerDrag", "__mzPointerSwap", "__mzSelectOption" };
+
+    /// <summary>
+    /// Each injected helper becomes a boxed <c>test.step</c>: the trace then shows one entry at the
+    /// body line that called the helper, with the helper's own Playwright calls nested under it
+    /// (without boxing they would point at the helper's lines, not the caller's).
+    /// </summary>
+    private static string BoxHelpersForTrace(string injection)
+    {
+        var wrappers = new StringBuilder();
+        foreach (var name in TracedHelpers)
+        {
+            var decl = $"async function {name}(";
+            if (!injection.Contains(decl, StringComparison.Ordinal)) continue;
+            injection = injection.Replace(decl, $"async function {name}__impl(", StringComparison.Ordinal);
+            wrappers.AppendLine($"const {name} = (...a: any[]): Promise<any> => __mzTraceTest.step('{name}', () => ({name}__impl as any)(...a), {{ box: true }});");
+        }
+        if (wrappers.Length == 0) return injection;
+        return "\nimport { test as __mzTraceTest } from '@playwright/test';" + injection + wrappers + "\n";
     }
 }

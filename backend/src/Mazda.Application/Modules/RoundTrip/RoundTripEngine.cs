@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json.Nodes;
 using Mazda.Application.Common.Abstractions;
+using Mazda.Application.Common.Tracing;
 using Mazda.Application.Modules.Cdp;
 using Mazda.Application.Modules.Recordings;
 using Mazda.Domain.Common;
@@ -34,6 +35,7 @@ public sealed class RoundTripEngine(
     IRoundTripFixer fixer,
     ICatalogueLint lint,
     IExecutionRegistry feed,
+    ITraceStore traces,
     IUnitOfWork uow)
 {
     public const int MaxFixAttempts = 6;
@@ -53,8 +55,14 @@ public sealed class RoundTripEngine(
     /// <summary>A fix applied but not yet judged: undone if the run stops before the verdict.</summary>
     private (SignatureFunction Fn, string OldBody)? _trial;
 
+    private TraceRecorder _trace = null!;
+    private Guid _ownerId;
+
     public async Task RunAsync(Guid sessionId, Guid ownerId, CancellationToken ct = default)
     {
+        _trace = TraceContext.Begin("roundtrip", "round trip");
+        _ownerId = ownerId;
+        var root = _trace.Span("round trip");
         try
         {
             var session = await roundTrips.FindAsync(sessionId, ownerId, ct) ?? throw new InvalidOperationException("Round trip not found.");
@@ -87,6 +95,8 @@ public sealed class RoundTripEngine(
         }
         finally
         {
+            root.Dispose();
+            await traces.SaveAsync(_trace, ownerId, sessionId, CancellationToken.None);
             feed.Complete(sessionId, new RunnerCompletion(RunnerExitKind.Passed, 0, string.Empty));
         }
     }
@@ -97,6 +107,7 @@ public sealed class RoundTripEngine(
         if (_sig.DependencyIds.Count > 0)
             _deps = (await resolver.ResolveAsync(_sig.Id, ownerId, ct))?.Where(s => s.Id != _sig.Id).ToList();
         _plan = RoundTripJson.Read<PlanModel>(_session.PlanJson) ?? throw new InvalidOperationException("The plan could not be read.");
+        _trace.Label = $"round trip: {_plan.Steps.Count} step(s) ({string.Join(", ", _plan.Steps.Select(x => x.Call).Distinct().Take(4))})";
         var events = await recordings.ListAllEventsAsync(_session.RecordingId, ct);
         if (events.Count == 0) throw new InvalidOperationException("The recording has no events.");
         _demo = RoundTripDemo.Build(_plan, events);
@@ -158,9 +169,11 @@ public sealed class RoundTripEngine(
             perFunction[fn.Name] = perFunction.GetValueOrDefault(fn.Name) + 1;
 
             Say("fix", $"Step {target + 1} ({fn.Name}) did not reproduce your demonstration. Asking for a diagnosis…", fn.Name);
-            var evidence = await EvidenceAsync(target, results, current, currentRun, previousAttempts.GetValueOrDefault(target)?.ToString(), ct);
+            RoundTripEvidence evidence;
+            using (_trace.Span($"collect evidence for step {target + 1}", TraceCategory.Db))
+                evidence = await EvidenceAsync(target, results, current, currentRun, previousAttempts.GetValueOrDefault(target)?.ToString(), ct);
             RoundTripFix fix;
-            try { fix = await fixer.DiagnoseAsync(_sig, fn, actions, evidence, ct); }
+            try { using (_trace.Span($"diagnose step {target + 1} (LLM)", TraceCategory.Llm)) fix = await fixer.DiagnoseAsync(_sig, fn, actions, evidence, ct); }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
                 Say("error", $"The repair model could not be reached: {ExceptionMessage.Describe(ex)}", fn.Name);
@@ -315,10 +328,13 @@ public sealed class RoundTripEngine(
     private async Task<ReplayRun> ReplayAsync(List<RoundTripCall> calls, string label, CancellationToken ct)
     {
         Say("replay", $"Replay {_runs + 1}: {label}…");
-        var run = await replayer.ReplayAsync(_session.Id, _sig, _deps, calls, _target, _demo.StartUrl, ct);
+        ReplayRun run;
+        using (_trace.Span($"replay {_runs + 1}: {label}"))
+            run = await replayer.ReplayAsync(_session.Id, _sig, _deps, calls, _target, _demo.StartUrl, ct);
         // A stopped replay comes back as a cancelled run, not an exception: stop here before judging it.
         ct.ThrowIfCancellationRequested();
         _runs++;
+        using var saving = _trace.Span("save the replay's pictures", TraceCategory.Db);
         var shots = new List<RoundTripShot>();
         for (var i = 0; i < run.Steps.Count; i++)
         {
@@ -428,6 +444,7 @@ public sealed class RoundTripEngine(
             var replayBefore = await roundTrips.FindShotAsync(_session.Id, runNo, step, "before", ct);
             var replayAfter = await roundTrips.FindShotAsync(_session.Id, runNo, step, "after", ct);
             var diffs = string.Join("\n", j.Findings.Where(f => f.Severity != "note").Select(f => "- " + f.Summary));
+            using var span = _trace.Span($"picture judge, step {step + 1} (LLM)", TraceCategory.Llm);
             var v = await judge.JudgeAsync($"{_plan.Steps[step].Call} {_plan.Steps[step].ArgsJson}: {_demo.Descriptions[step]}",
                 diffs, demoBefore, demoAfter, replayBefore, replayAfter, ct);
             return (v.Verdict, v.Reason);
@@ -577,7 +594,10 @@ public sealed class RoundTripEngine(
         _session.SetResult(RoundTripJson.Write(new ResultModel(results, _runs, Summary(results))));
         _session.SetLog(RoundTripJson.Write(_log));
         _session.SetStatus(status);
-        await uow.SaveChangesAsync(ct);
+        using (_trace.Span("save", TraceCategory.Db))
+            await uow.SaveChangesAsync(ct);
+        // The trace so far, so it can be looked at while the round trip runs.
+        await traces.SaveAsync(_trace, _ownerId, _session.Id, CancellationToken.None);
     }
 
     private void Say(string kind, string message, string? function = null)

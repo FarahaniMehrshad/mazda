@@ -15,6 +15,7 @@ import type {
   StepErrorKind,
 } from "@/shared/api/types";
 import { ApiError } from "@/shared/api/client";
+import { TraceLinks } from "@/features/traces/TracePage";
 
 /**
  * Step 7 of the wizard — Run.
@@ -160,6 +161,11 @@ export function RunPage() {
         {planBlob && <PlanPane plan={planBlob} />}
         {runId && gen.data?.executionStatus && gen.data.executionStatus !== "Idle" && (
           <ExecutionPane key={runId} runId={runId} status={gen.data.executionStatus} envelope={envelope} hasForensics={!!gen.data.hasForensics} onDone={() => gen.refetch()} />
+        )}
+        {runId && (
+          <div style={{ marginTop: 20 }}>
+            <TraceLinks subject={runId} refreshKey={`${gen.data?.status}-${gen.data?.executionStatus}`} />
+          </div>
         )}
         </div>
       </div>

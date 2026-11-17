@@ -1,3 +1,4 @@
+using Mazda.Application.Common.Tracing;
 using System.Text.Json;
 using FluentValidation;
 using MediatR;
@@ -167,6 +168,7 @@ public class PlanRunHandler(
     IPlanGenerator planner,
     IUserSettingsRepository userSettings,
     ICdpClient cdp,
+    ITraceStore traces,
     ICurrentUser me,
     IUnitOfWork uow) : IRequestHandler<PlanRunCommand, Result<GenerationDto>>
 {
@@ -193,26 +195,39 @@ public class PlanRunHandler(
         await generations.AddAsync(gen, ct);
         await uow.SaveChangesAsync(ct);
 
+        var trace = TraceContext.Begin("plan", "gather + plan: " + (cmd.Prompt.Length > 80 ? cmd.Prompt[..80] + "…" : cmd.Prompt));
+        var root = trace.Span("gather state and plan");
         try
         {
-            var (target, cdpError) = await CdpTargetResolver.ResolveValidatedAsync(
-                userSettings, cdp, me.UserId.Value, ct);
-            if (cdpError is not null)
+            CdpTarget target;
+            using (trace.Span("find the attached browser tab", TraceCategory.Startup))
             {
-                gen.MarkFailed(cdpError);
-                await uow.SaveChangesAsync(ct);
-                return Result.Failure<GenerationDto>(Error.Validation(cdpError));
+                var (t, cdpError) = await CdpTargetResolver.ResolveValidatedAsync(
+                    userSettings, cdp, me.UserId.Value, ct);
+                if (cdpError is not null)
+                {
+                    gen.MarkFailed(cdpError);
+                    await uow.SaveChangesAsync(ct);
+                    return Result.Failure<GenerationDto>(Error.Validation(cdpError));
+                }
+                target = t;
             }
-            var state = await gatherer.GatherAsync(sig, deps, target, ct);
+            GatheredState state;
+            using (trace.Span("gather state"))
+                state = await gatherer.GatherAsync(sig, deps, target, ct);
             gen.RecordGatheredState(GenerationMapper.SerializeGatheredState(state));
             // Persist between phases so the UI can render the state
             // snapshot even if the plan call hangs or the browser is slow.
-            await uow.SaveChangesAsync(ct);
+            using (trace.Span("save", TraceCategory.Db))
+                await uow.SaveChangesAsync(ct);
 
-            var planResult = await planner.GeneratePlanAsync(sig, deps, state, cmd.Prompt, ct);
+            PlanGenerationResult planResult;
+            using (trace.Span("plan (LLM)", TraceCategory.Llm))
+                planResult = await planner.GeneratePlanAsync(sig, deps, state, cmd.Prompt, ct);
             gen.RecordPlan(GenerationMapper.SerializePlan(planResult.Plan));
             gen.MarkReady(planResult.TokensUsed);
-            await uow.SaveChangesAsync(ct);
+            using (trace.Span("save", TraceCategory.Db))
+                await uow.SaveChangesAsync(ct);
 
             return Result.Success(gen.ToDto());
         }
@@ -237,6 +252,11 @@ public class PlanRunHandler(
             gen.MarkFailed(ExceptionMessage.Describe(ex));
             await uow.SaveChangesAsync(ct);
             return Result.Failure<GenerationDto>(Error.External(ExceptionMessage.Describe(ex)));
+        }
+        finally
+        {
+            root.Dispose();
+            await traces.SaveAsync(trace, me.UserId.Value, gen.Id, CancellationToken.None);
         }
     }
 }
@@ -266,6 +286,7 @@ public class ExecuteRunHandler(
     IUserSettingsRepository userSettings,
     ICurrentUser me,
     IUnitOfWork uow,
+    ITraceStore traces,
     IServiceScopeFactory scopeFactory) : IRequestHandler<ExecuteRunCommand, Result<GenerationDto>>
 {
     // The CancellationToken parameter is deliberately named `_ct` (not `_`)
@@ -329,9 +350,12 @@ public class ExecuteRunHandler(
         // IExecutionRegistry via IScriptRunner.RunAsync. The SSE endpoint
         // reads from there; we persist the terminal state in a fresh scope
         // because the MediatR request scope dies as soon as we return.
+        var label = "run: " + string.Join(", ", plan.Steps.Select(x => x.Call).Take(6)) + (plan.Steps.Count > 6 ? ", …" : "");
         _ = Task.Run(async () =>
         {
             RunnerCompletion completion = new(RunnerExitKind.Errored, -1, string.Empty);
+            var trace = TraceContext.Begin("execute", label);
+            var root = trace.Span("run the plan");
             try
             {
                 var envelope = await interpreter.ExecuteAsync(runId, sig, deps, plan, state, target, CancellationToken.None);
@@ -380,6 +404,8 @@ public class ExecuteRunHandler(
             }
             finally
             {
+                root.Dispose();
+                await traces.SaveAsync(trace, ownerId, runId, CancellationToken.None);
                 // Signal end-of-stream to SSE subscribers ONLY AFTER the
                 // terminal status has been persisted. Otherwise the client
                 // refetches on 'end' and races the DB write — the frontend

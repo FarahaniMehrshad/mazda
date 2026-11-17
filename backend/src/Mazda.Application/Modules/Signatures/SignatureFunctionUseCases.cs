@@ -1,3 +1,4 @@
+using Mazda.Application.Common.Tracing;
 using FluentValidation;
 using MediatR;
 using Mazda.Application.Common;
@@ -515,7 +516,9 @@ public record FunctionTestResultDto(
     /// Full page snapshot (JSON) when the body threw; rendered by the UI.
     string? ForensicsJson = null,
     /// Plain-text digest of the snapshot, sent back with a Fix-with-AI request.
-    string? FailureReport = null);
+    string? FailureReport = null,
+    /// Where the check's time went (GET /api/traces/{id}).
+    Guid? TraceId = null);
 
 public record TestSignatureFunctionCommand(
     Guid SignatureId,
@@ -539,6 +542,7 @@ public class TestSignatureFunctionHandler(
     IFunctionTester tester,
     IUserSettingsRepository userSettings,
     ICdpClient cdp,
+    ITraceStore traces,
     ICurrentUser me)
     : IRequestHandler<TestSignatureFunctionCommand, Result<FunctionTestResultDto>>
 {
@@ -579,26 +583,37 @@ public class TestSignatureFunctionHandler(
         // exactly how FunctionHarnessBuilder.Enumerate names them.
         var call = fn.Name;
 
-        var (target, cdpError) = await CdpTargetResolver.ResolveValidatedAsync(
-            userSettings, cdp, me.UserId.Value, ct);
-        if (cdpError is not null)
-            return Result.Failure<FunctionTestResultDto>(Error.Validation(cdpError));
-
+        var trace = TraceContext.Begin("function-check", $"{fn.Name}({(argsJson.Length > 80 ? argsJson[..80] + "…" : argsJson)})");
         FunctionTestOutcome outcome;
-        try
+        using (trace.Span($"check {fn.Name}"))
         {
-            outcome = await tester.TestAsync(sig, deps, call, argsJson, target, ct);
+            CdpTarget target;
+            using (trace.Span("find the attached browser tab", TraceCategory.Startup))
+            {
+                var (t, cdpError) = await CdpTargetResolver.ResolveValidatedAsync(userSettings, cdp, me.UserId.Value, ct);
+                if (cdpError is not null)
+                    return Result.Failure<FunctionTestResultDto>(Error.Validation(cdpError));
+                target = t;
+            }
+
+            try
+            {
+                outcome = await tester.TestAsync(sig, deps, call, argsJson, target, ct);
+            }
+            catch (HarnessException ex)
+            {
+                await traces.SaveAsync(trace, me.UserId.Value, fn.Id, CancellationToken.None);
+                return Result.Failure<FunctionTestResultDto>(
+                    Error.External(ExceptionMessage.Describe(ex)));
+            }
+            catch (Exception ex)
+            {
+                await traces.SaveAsync(trace, me.UserId.Value, fn.Id, CancellationToken.None);
+                return Result.Failure<FunctionTestResultDto>(
+                    Error.External($"Function test failed: {ExceptionMessage.Describe(ex)}"));
+            }
         }
-        catch (HarnessException ex)
-        {
-            return Result.Failure<FunctionTestResultDto>(
-                Error.External(ExceptionMessage.Describe(ex)));
-        }
-        catch (Exception ex)
-        {
-            return Result.Failure<FunctionTestResultDto>(
-                Error.External($"Function test failed: {ExceptionMessage.Describe(ex)}"));
-        }
+        await traces.SaveAsync(trace, me.UserId.Value, fn.Id, CancellationToken.None);
 
         return Result.Success(new FunctionTestResultDto(
             Call: call,
@@ -614,7 +629,8 @@ public class TestSignatureFunctionHandler(
             ForensicsJson: outcome.Ok ? null : outcome.ForensicsJson,
             FailureReport: !outcome.Ok && outcome.ForensicsJson is not null
                 ? Mazda.Application.Modules.Generations.ForensicsFormatter.Report(outcome.ForensicsJson)
-                : null));
+                : null,
+            TraceId: trace.Id));
     }
 }
 

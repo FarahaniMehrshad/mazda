@@ -21,13 +21,14 @@
 11. [CDP attach: the three-problem stack](#cdp-attach-the-three-problem-stack)
 12. [Learn by watching (recordings)](#learn-by-watching-recordings)
 13. [Round trip](#round-trip-check-and-fix-functions-against-a-recording)
-14. [MCP server](#mcp-server)
-15. [Frontend](#frontend)
-16. [Persistence](#persistence)
-17. [Deployment](#deployment)
-18. [Running and operating the stack](#running-and-operating-the-stack)
-19. [Quirks and gotchas](#quirks-and-gotchas)
-20. [Glossary](#glossary)
+14. [Trace: where the time goes](#trace-where-the-time-goes)
+15. [MCP server](#mcp-server)
+16. [Frontend](#frontend)
+17. [Persistence](#persistence)
+18. [Deployment](#deployment)
+19. [Running and operating the stack](#running-and-operating-the-stack)
+20. [Quirks and gotchas](#quirks-and-gotchas)
+21. [Glossary](#glossary)
 
 ---
 
@@ -818,6 +819,43 @@ as "no effect". State functions are not checked yet.
 
 Unit tests for the comparison engine: `backend/tests/Mazda.Tests` (standalone,
 not in `Mazda.sln`; run `dotnet test` there).
+
+---
+
+## Trace: where the time goes
+
+Every function check, gather + plan, run and round trip records a trace
+(`run_traces`, latest 30 per subject). Always on; viewed at `/traces/{id}`,
+linked from the check result, the run page and the round-trip page.
+API: `GET /api/traces/{id}` (trace + summary), `GET /api/traces?subject={id}`.
+
+**Three layers, one tree.**
+- *Backend spans* (`Application/Common/Tracing/TraceRecorder`): use cases open
+  spans (`trace.Span("diagnose step 3 (LLM)", TraceCategory.Llm)`); the trace
+  of the current async flow is `TraceContext.Current`.
+- *The runner* (`LocalProcessScriptRunner`): times preparing the run dir,
+  spawn → test start (TypeScript + worker) and shut-down, reads the reporter's
+  `trace/steps.json` and attaches the script under the open span
+  (`ScriptTrace.Build`). The runner is a singleton, so nothing in its result
+  types carries the trace, and a run that throws still leaves it behind.
+- *Inside the script*: a Playwright reporter (`mz-trace-reporter.mjs`, written
+  into every run dir and listed in the config) records every API call and
+  `test.step` with start, duration, error and source line. The harness wraps
+  each function call in `test.step('fn <name>')`, puts every body between
+  `// __MZ_BODY__ <name>` … `// __MZ_BODY_END__` (line mapping survives
+  whatever the runner injects above), wraps harness phases in `mz: …` steps
+  (connect, settle, screenshot, aria snapshot, pause, forensics, start page),
+  and boxes the injected helpers (`__mzClick`…) so their calls count at the
+  body line that called them.
+
+**Categories.** network (expected) · page actions (incl. Playwright's wait for
+the element) · element waits · page reads · fixed pauses · screenshots ·
+harness · start-up · LLM · database · function code (a body's own JS between
+calls) · **timed out** (any call that hit its timeout, also when the body
+swallowed it with `.catch`). `TraceAnalyzer` counts each node's own time
+once, so the buckets add up to the total, and lists the slowest body lines.
+A `waitForResponse` is charged to the line that starts the wait, not the
+`await`.
 
 ---
 
