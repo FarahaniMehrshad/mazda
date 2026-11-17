@@ -25,6 +25,7 @@ public static class DependencyInjection
         services.AddScoped<IUserSettingsRepository, UserSettingsRepository>();
         services.AddScoped<IRecordingRepository, RecordingRepository>();
         services.AddScoped<IRoundTripRepository, RoundTripRepository>();
+        services.AddSingleton<Mazda.Application.Common.Tracing.ITraceStore, TraceStore>();
 
         // Security
         services.Configure<JwtOptions>(cfg.GetSection("Jwt"));

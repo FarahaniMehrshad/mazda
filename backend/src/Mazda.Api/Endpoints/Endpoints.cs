@@ -199,6 +199,13 @@ public static class Endpoints
         gens.MapPost("/{id:guid}/execute", async (Guid id, ISender s) =>
             (await s.Send(new ExecuteRunCommand(id))).ToHttp());
 
+        // Where the time went: one trace, or the traces about a subject (function, generation, round trip).
+        var traces = app.MapGroup("/api/traces").RequireAuthorization().WithTags("Traces");
+        traces.MapGet("/{id:guid}", async (Guid id, ISender s) =>
+            (await s.Send(new Mazda.Application.Modules.Traces.GetTraceQuery(id))).ToHttp());
+        traces.MapGet("/", async ([FromQuery] Guid subject, ISender s) =>
+            (await s.Send(new Mazda.Application.Modules.Traces.ListTracesQuery(subject))).ToHttp());
+
         // ── MCP tools (auth) — REST CRUD ──────────────────────────
         // ── CDP attachment ────────────────────────────────────────
         // Which Chrome, and which tab, MAZDA drives. GET probes the browser

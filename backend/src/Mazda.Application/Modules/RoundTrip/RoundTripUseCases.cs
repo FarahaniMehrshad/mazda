@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Mazda.Application.Common.Abstractions;
+using Mazda.Application.Common.Tracing;
 using Mazda.Domain.Common;
 using Mazda.Domain.Modules.Recordings;
 using Mazda.Domain.Modules.RoundTrip;
@@ -70,7 +71,7 @@ public record StartRoundTripCommand(Guid SignatureId, Guid RecordingId) : IReque
 
 public class StartRoundTripHandler(
     ISignatureRepository signatures, IRecordingRepository recordings, IRoundTripRepository roundTrips,
-    IReversePlanner planner, ICurrentUser me, IUnitOfWork uow)
+    IReversePlanner planner, ITraceStore traces, ICurrentUser me, IUnitOfWork uow)
     : IRequestHandler<StartRoundTripCommand, Result<RoundTripDto>>
 {
     public async Task<Result<RoundTripDto>> Handle(StartRoundTripCommand cmd, CancellationToken ct)
@@ -85,8 +86,9 @@ public class StartRoundTripHandler(
         var actions = RoundTripMapping.Actions(sig);
         if (actions.Count == 0) return Result.Failure<RoundTripDto>(Error.Validation("Generate the function catalogue first."));
 
+        var trace = TraceContext.Begin("roundtrip-plan", $"rebuild the plan from “{rec.Label}”");
         ReversePlanResult planned;
-        try { planned = await planner.PlanAsync(sig, actions, rec.Label, rec.Intent, rec.EpisodesJson, ct); }
+        try { using (trace.Span("rebuild the plan (LLM)", TraceCategory.Llm)) planned = await planner.PlanAsync(sig, actions, rec.Label, rec.Intent, rec.EpisodesJson, ct); }
         catch (Exception ex) { return Result.Failure<RoundTripDto>(Error.External($"Could not rebuild the plan: {ExceptionMessage.Describe(ex)}")); }
 
         var plan = new PlanModel(planned.Steps.Select(s => new PlanStepModel(s.Call, s.ArgsJson, s.Episodes.ToList(), s.ContrastArgsJson, s.Why)).ToList(), planned.Notes);
@@ -94,6 +96,7 @@ public class StartRoundTripHandler(
         session.SetLog(RoundTripJson.Write(new List<LogEntry> { new(DateTime.UtcNow, "plan", $"Plan rebuilt from “{rec.Label}”: {plan.Steps.Count} step(s). Waiting for your confirmation.") }));
         await roundTrips.AddAsync(session, ct);
         await uow.SaveChangesAsync(ct);
+        await traces.SaveAsync(trace, me.UserId.Value, session.Id, CancellationToken.None);
         return Result.Success(RoundTripMapping.ToDto(session, rec, actions));
     }
 }

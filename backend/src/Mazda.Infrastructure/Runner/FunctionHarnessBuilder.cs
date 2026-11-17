@@ -1,4 +1,5 @@
 using System.Text;
+using Mazda.Application.Common.Tracing;
 using System.Text.Json;
 using Mazda.Application.Common.Abstractions;
 using Mazda.Domain.Modules.Signatures;
@@ -296,7 +297,7 @@ internal static class FunctionHarnessBuilder
       n.checked !== undefined ? '[checked=' + n.checked + ']' : '', n.disabled ? '[disabled]' : '', n.focused ? '[focused]' : ''].filter(Boolean).join(' ');
     return '  '.repeat(depth) + '- ' + label + '\n' + (n.children ?? []).map((c: any) => __mzAriaText(c, depth + 1)).join('');
   };
-  const __mzCaptureForensics = async (p: any, ctx: any) => {
+  const __mzCaptureForensics = (p: any, ctx: any) => test.step('mz: forensics', async () => {
     try {
       const out: any = { capturedAt: new Date().toISOString(), ...ctx };
       const [aria, dom, shot] = await Promise.all([
@@ -352,7 +353,7 @@ internal static class FunctionHarnessBuilder
         fs.writeFileSync(dir + '/forensics.json', JSON.stringify(out));
       }
     } catch { /* forensics must never change the run's outcome */ }
-  };
+  });
 """;
 
     /// <summary>
@@ -367,7 +368,7 @@ internal static class FunctionHarnessBuilder
         sb.AppendLine("  page.on('request', (r: any) => { if (['xhr', 'fetch'].includes(r.resourceType())) __mz_inflight.add(r); });");
         sb.AppendLine("  page.on('requestfinished', (r: any) => __mz_inflight.delete(r));");
         sb.AppendLine("  page.on('requestfailed', (r: any) => __mz_inflight.delete(r));");
-        sb.AppendLine("  const __mzSettle = async (p: Page, maxMs = 5000) => {");
+        sb.AppendLine("  const __mzSettle = (p: Page, maxMs = 5000) => test.step('mz: settle', async () => {");
         sb.AppendLine("    const end = Date.now() + maxMs;");
         sb.AppendLine("    let quietSince = Date.now();");
         sb.AppendLine("    while (Date.now() < end) {");
@@ -385,7 +386,7 @@ internal static class FunctionHarnessBuilder
         sb.AppendLine("      quiet = setTimeout(done, 300);");
         sb.AppendLine("      const cap = setTimeout(done, ms);");
         sb.AppendLine("    }), left).catch(() => {});");
-        sb.AppendLine("  };");
+        sb.AppendLine("  });");
         sb.AppendLine();
     }
 
@@ -435,12 +436,12 @@ internal static class FunctionHarnessBuilder
 
     private const string RoundTripLoopTs = """
   const __mz_say = (m: string) => console.log('__MZ_RT__ ' + m);
-  const __mz_pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const __mz_shot = async (): Promise<string | null> => {
+  const __mz_pause = (ms: number) => test.step(`mz: pause ${ms} ms`, () => new Promise((r) => setTimeout(r, ms)));
+  const __mz_shot = (): Promise<string | null> => test.step('mz: screenshot', async () => {
     const b: any = await __mzBound(page.screenshot({ type: 'jpeg', quality: 50, timeout: 3000 }), 4000);
     const s = b ? b.toString('base64') : null;
     return s && s.length <= 900000 ? s : null;
-  };
+  });
 
   // The recorder's page-side script, exactly as used while the user demonstrated:
   // the replay's mutation summaries then have the demonstration's shape.
@@ -459,7 +460,9 @@ internal static class FunctionHarnessBuilder
 
   if (__mz_rt.startUrl) {
     __mz_say('opening the start page');
-    try { await page.goto(__mz_rt.startUrl, { waitUntil: 'load', timeout: 20000 }); } catch (e: any) { __mz_say('could not open the start page: ' + __mzPlain(e?.message ?? e)); }
+    await test.step('mz: open the start page', async () => {
+      try { await page.goto(__mz_rt.startUrl, { waitUntil: 'load', timeout: 20000 }); } catch (e: any) { __mz_say('could not open the start page: ' + __mzPlain(e?.message ?? e)); }
+    });
   }
   for (const f of page.frames()) { try { await f.evaluate(__mz_install); } catch { /* cross-origin frame */ } }
   await __mzSettle(page);
@@ -493,10 +496,10 @@ internal static class FunctionHarnessBuilder
     __mz_curStep = null;
     try { rec.urlAfter = page.url(); } catch {}
     rec.after = await __mz_shot();
-    const tree: any = await __mzBound((async () => {
+    const tree: any = await test.step('mz: aria snapshot', () => __mzBound((async () => {
       const t = await (page as any).accessibility?.snapshot({ interestingOnly: true });
       return t ? __mzAriaText(t) : null;
-    })(), 3000);
+    })(), 3000));
     rec.aria = tree ? String(tree).slice(0, 20000) : null;
     __mz_say(`step ${__mz_i + 1}/${__mz_calls.length}: ${__mz_c.call} ${rec.ok ? 'done' : 'FAILED: ' + rec.error.message.split('\n')[0]}`);
   }
@@ -694,8 +697,11 @@ internal static class FunctionHarnessBuilder
         // RewriteHosts matches that shape and swaps in the __mzConnectViaHost
         // helper (which spoofs the Host header Chrome insists on). Its regex
         // captures the port, so a non-default port survives the rewrite.
-        sb.AppendLine($"  const browser = await chromium.connectOverCDP('http://localhost:{target.Port}');");
-        sb.AppendLine($"  const page = await __mzPickPage(browser, {JsNullableString(target.TargetId)});");
+        sb.AppendLine("  const { browser, page } = await test.step('mz: connect to the browser', async () => {");
+        sb.AppendLine($"    const browser = await chromium.connectOverCDP('http://localhost:{target.Port}');");
+        sb.AppendLine($"    const page = await __mzPickPage(browser, {JsNullableString(target.TargetId)});");
+        sb.AppendLine("    return { browser, page };");
+        sb.AppendLine("  });");
         sb.AppendLine();
     }
 
@@ -734,7 +740,9 @@ internal static class FunctionHarnessBuilder
             // don't take parameters still typecheck when the harness passes
             // the empty object. The destructuring below re-narrows into the
             // actual param names.
-            sb.AppendLine($"  const {identifier} = async (page: Page, args: Record<string, unknown>): Promise<any> => {{");
+            // Every call is a named step ("fn <name>") so the trace can tell calls apart, and the body sits
+            // between markers so the trace maps each Playwright call back to the body line that made it.
+            sb.AppendLine($"  const {identifier} = async (page: Page, args: Record<string, unknown>): Promise<any> => test.step({JsString(ScriptTrace.FunctionStepPrefix + fn.QualifiedName)}, async () => {{");
             if (fn.ParamNames.Count > 0)
             {
                 var names = string.Join(", ", fn.ParamNames);
@@ -743,11 +751,13 @@ internal static class FunctionHarnessBuilder
                 // against the parameters schema at the interpreter boundary.
                 sb.AppendLine($"    const {{ {names} }} = args as any;");
             }
-            // Reindent each body line by two spaces so nested inside the async
+            sb.AppendLine("    " + ScriptTrace.BodyStartMarker + fn.QualifiedName);
+            // Reindent each body line by four spaces so nested inside the async
             // function it reads naturally. Blank lines survive intact.
             foreach (var line in fn.Body.Split('\n'))
                 sb.AppendLine("    " + line.TrimEnd('\r'));
-            sb.AppendLine("  };");
+            sb.AppendLine("    " + ScriptTrace.BodyEndMarker);
+            sb.AppendLine("  });");
             sb.AppendLine();
         }
     }

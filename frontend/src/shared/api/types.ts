@@ -234,6 +234,8 @@ export interface FunctionTestResultDto {
   forensicsJson?: string | null;
   /** Plain-text digest of the snapshot; send it back with a Fix-with-AI request. */
   failureReport?: string | null;
+  /** Where the check's time went: /traces/{traceId}. */
+  traceId?: string | null;
 }
 
 /**

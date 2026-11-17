@@ -18,7 +18,7 @@ public sealed class RoundTripReplayer(IScriptRunner runner, IExecutionRegistry r
         export default defineConfig({
           testDir: '.',
           timeout: 900_000,
-          reporter: [['list']],
+          reporter: [['list'], ['./mz-trace-reporter.mjs']],
           use: { actionTimeout: 10_000, navigationTimeout: 20_000, trace: 'off', screenshot: 'off', video: 'off' },
         });
         """;
