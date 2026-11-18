@@ -628,9 +628,30 @@ All authenticated routes require `Authorization: Bearer <jwt>`. Full routing: [`
 
 ## How Mazda compares
 
-Mazda sits in a different architectural bucket from most "AI browser agent" tools. The table below compares the main alternatives by **when** LLM work happens and **what** gets reused across runs.
+### Measured: Mazda vs Claude driving the browser
+
+We gave one prompt to Mazda and to Claude driving the browser itself, on the same live BI dashboard: *"Build some charts to examine discount, profit, dollar sales and unit sales by country, state and order number."* Both used the same model, claude-opus-5-5, and every run ended with the same three clustered column charts.
+
+<p align="center">
+  <img src="docs/mazda-vs-claude.png" alt="Mazda vs Claude driving the browser: 8.7× cheaper and 2.1× faster" width="100%" />
+</p>
+
+| | Mazda | Claude + Playwright MCP (3 runs) |
+|---|---|---|
+| LLM cost per request | **$0.083** | $0.525 – $0.740 |
+| Wall time | **2:12** | 3:06 – 6:24 |
+| LLM calls | **1** (the plan) | 33 – 42 turns |
+| Tokens processed | **8.0k** | 562k – 831k |
+
+How it was measured:
+- **Cost** is the API list price that Claude Code reports.
+- **Mazda's time** is gather + plan plus execute, taken from its traces. The author's review pause between them isn't counted.
+- **Claude** ran as `claude -p` with Playwright MCP, attached over CDP to the same logged-in tab. It got a short system prompt and no hints about the app, and the dashboard was emptied before each run.
+- **Not included:** Mazda's one-time cost to analyse the component and generate its catalogue. It is paid once per component and shared by every later request.
 
 ### Comparison table
+
+Mazda sits in a different architectural bucket from most "AI browser agent" tools. The table below compares the main alternatives by **when** LLM work happens and **what** gets reused across runs.
 
 | Tool | Type | When LLM runs | What gets cached / reused | Best for | Weak at |
 |------|------|---------------|---------------------------|----------|---------|
