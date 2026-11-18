@@ -1360,7 +1360,7 @@ public class LlmScriptGenerator(ILlmGateway llm) : IScriptGenerator
     {
         var userMsg = BuildSignatureContext(signature, dependencies) +
             $"\n\nSetup prompt:\n{setupPrompt}";
-        return Call(LlmTier.Generator, SetupSystemPrompt, userMsg, ct);
+        return Call(LlmTier.Generator, "generate setup script", SetupSystemPrompt, userMsg, ct);
     }
 
     public Task<ScriptGenerationResult> GenerateTestAsync(Signature signature, string testPrompt, string? setupScript, string? stateJson = null, IReadOnlyList<Signature>? dependencies = null, CancellationToken ct = default)
@@ -1375,7 +1375,7 @@ public class LlmScriptGenerator(ILlmGateway llm) : IScriptGenerator
             : $"\n\nCurrent component state (captured live before this run; semantic JSON built from the informational signature elements):\n```json\n{stateJson}\n```";
         var userMsg = BuildSignatureContext(signature, dependencies) + flowsBlock + relationshipsBlock + setupBlock + stateBlock +
             $"\n\nTest prompt:\n{testPrompt}";
-        return Call(LlmTier.Generator, TestSystemPrompt, userMsg, ct);
+        return Call(LlmTier.Generator, "generate test script", TestSystemPrompt, userMsg, ct);
     }
 
     /// <summary>
@@ -1476,7 +1476,7 @@ public class LlmScriptGenerator(ILlmGateway llm) : IScriptGenerator
             {testScript}
             ```
             """;
-        return Call(LlmTier.Generator, MergeSystemPrompt, userMsg, ct);
+        return Call(LlmTier.Generator, "merge scripts", MergeSystemPrompt, userMsg, ct);
     }
 
     // ── helpers ──────────────────────────────────────────────────────
@@ -1536,9 +1536,9 @@ public class LlmScriptGenerator(ILlmGateway llm) : IScriptGenerator
         })
     };
 
-    private async Task<ScriptGenerationResult> Call(LlmTier tier, string systemPrompt, string userMsg, CancellationToken ct)
+    private async Task<ScriptGenerationResult> Call(LlmTier tier, string purpose, string systemPrompt, string userMsg, CancellationToken ct)
     {
-        var chat = await llm.ChatAsync(tier, ct);
+        var chat = await llm.ChatAsync(tier, purpose, ct);
 
         var completion = await chat.CompleteChatSafeAsync(
             new List<ChatMessage>

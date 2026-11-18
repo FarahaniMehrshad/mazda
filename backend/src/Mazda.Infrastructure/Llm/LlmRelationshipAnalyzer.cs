@@ -226,7 +226,7 @@ public class LlmRelationshipAnalyzer(ILlmGateway llm) : IRelationshipAnalyzer
     public async Task<RelationshipAnalysisResult> AnalyzeRelationshipsAsync(
         Signature signature, string componentSource, CancellationToken ct = default)
     {
-        var chat = await llm.ChatAsync(LlmTier.Analyzer, ct);
+        var chat = await llm.ChatAsync(LlmTier.Analyzer, "analyze relationships", ct);
 
         var existingSig = JsonSerializer.Serialize(new
         {

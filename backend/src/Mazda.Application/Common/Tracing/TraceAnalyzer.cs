@@ -11,7 +11,15 @@ public sealed record TraceLine(string Fn, string Body, int Line, string Source, 
 /// <param name="BetweenCallsMs">The function's own time outside Playwright calls (JavaScript, timers).</param>
 public sealed record TraceFunction(string Fn, int Calls, long Ms, long BetweenCallsMs);
 
-public sealed record TraceSummary(long TotalMs, List<TraceBucket> Buckets, List<TraceLine> Lines, List<TraceFunction> Functions);
+/// <summary>All LLM calls in a trace. <c>CostUsd</c> sums the calls whose cost is known.</summary>
+public sealed record TraceLlmTotals(
+    int Calls, long Input, long CacheRead, long CacheWrite, long Output, long Reasoning, long Total,
+    decimal CostUsd, int UnknownCostCalls);
+
+public sealed record TraceSummary(long TotalMs, List<TraceBucket> Buckets, List<TraceLine> Lines, List<TraceFunction> Functions)
+{
+    public TraceLlmTotals? Llm { get; init; }
+}
 
 /// <summary>
 /// Where the time went. Every node contributes only its own time (its
@@ -60,11 +68,19 @@ public static class TraceAnalyzer
             .Select(g => new TraceFunction(g.Key, g.Count(), g.Sum(n => n.Ms), g.Sum(n => SelfMs(n, children.GetValueOrDefault(n.Id)))))
             .OrderByDescending(f => f.Ms).ToList();
 
+        var llm = doc.Nodes.Where(n => n.Llm is not null).Select(n => n.Llm!).ToList();
+        var llmTotals = llm.Count == 0 ? null : new TraceLlmTotals(
+            llm.Count, llm.Sum(u => u.Input), llm.Sum(u => u.CacheRead), llm.Sum(u => u.CacheWrite),
+            llm.Sum(u => u.Output), llm.Sum(u => u.Reasoning),
+            llm.Sum(u => u.Input + u.CacheRead + u.CacheWrite + u.Output),
+            llm.Sum(u => u.CostUsd ?? 0m),
+            llm.Count(u => u.CostUsd is null && u.Input + u.CacheRead + u.CacheWrite + u.Output > 0));
+
         return new TraceSummary(doc.Ms,
             buckets.Where(b => b.Value.Ms > 0).Select(b => new TraceBucket(b.Key, b.Value.Ms, b.Value.Count, TraceCategory.IsNormal(b.Key)))
                 .OrderByDescending(b => b.Ms).ToList(),
             lines.OrderByDescending(l => l.Ms).ToList(),
-            functions);
+            functions) { Llm = llmTotals };
     }
 
     /// <summary>The summary bucket a node's own time goes to.</summary>

@@ -30,7 +30,23 @@ public sealed record TraceNode(int Id, int? Parent, string Name, string Category
     public int? Line { get; init; }
     public string? Error { get; init; }
     public bool TimedOut { get; init; }
+    /// <summary>For an LLM call: exactly what it used and cost.</summary>
+    public TraceLlmUsage? Llm { get; init; }
 }
+
+/// <summary>One LLM call's usage on its trace node. <c>Input</c> is uncached input; <c>Reasoning</c> is part of <c>Output</c>.</summary>
+public sealed record TraceLlmUsage(
+    string Purpose,
+    string Provider,
+    string Model,
+    long Input,
+    long CacheRead,
+    long CacheWrite,
+    long Output,
+    long Reasoning,
+    decimal? CostUsd,
+    string CostSource,
+    bool Ok);
 
 public sealed record TraceBody(string Fn, List<string> Lines);
 

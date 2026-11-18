@@ -8,9 +8,12 @@ using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Mazda.Application.Common.Tracing;
+using Mazda.Application.Common.Usage;
 using Mazda.Application.Modules.Settings;
 using Mazda.Domain.Common;
 using Mazda.Domain.Modules.Settings;
+using Mazda.Domain.Modules.Usage;
 using Mazda.Infrastructure.Persistence;
 using OpenAI.Chat;
 
@@ -19,9 +22,35 @@ namespace Mazda.Infrastructure.Llm;
 /// <summary>Which model a call wants: the cheaper analyzer or the stronger generator.</summary>
 public enum LlmTier { Analyzer, Generator }
 
-/// <summary>An LLM answer: its text and the tokens it cost.</summary>
-public sealed record LlmCompletion(string Text, int Tokens)
+/// <summary>
+/// Exactly what one call used, as the provider reported it. Anthropic's split:
+/// <see cref="InputTokens"/> is uncached input only, cache reads and writes are
+/// separate, and <see cref="ReasoningTokens"/> is part of <see cref="OutputTokens"/>.
+/// </summary>
+/// <param name="ResolvedModel">The model the provider says answered; empty when it did not say.</param>
+/// <param name="ReportedCostUsd">What the provider says the call cost; null when it reports no cost.</param>
+public sealed record LlmUsage(
+    long InputTokens,
+    long CacheReadTokens,
+    long CacheWriteTokens,
+    long OutputTokens,
+    long ReasoningTokens,
+    string ResolvedModel,
+    decimal? ReportedCostUsd)
 {
+    public static readonly LlmUsage None = new(0, 0, 0, 0, 0, "", null);
+
+    public long TotalTokens => InputTokens + CacheReadTokens + CacheWriteTokens + OutputTokens;
+
+    public LlmTokenCounts Counts => new(InputTokens, CacheReadTokens, CacheWriteTokens, OutputTokens, ReasoningTokens);
+}
+
+/// <summary>An LLM answer: its text and exactly what it used.</summary>
+public sealed record LlmCompletion(string Text, LlmUsage Usage)
+{
+    /// <summary>Every token the call used (input, cache read, cache write, output).</summary>
+    public int Tokens => (int)Math.Min(int.MaxValue, Usage.TotalTokens);
+
     /// <summary>The text, or <paramref name="fallback"/> when the model returned nothing.</summary>
     public string TextOr(string fallback) => string.IsNullOrWhiteSpace(Text) ? fallback : Text;
 }
@@ -46,19 +75,136 @@ public interface ILlmChat
 /// </summary>
 public interface ILlmGateway
 {
-    Task<ILlmChat> ChatAsync(LlmTier tier, CancellationToken ct = default);
+    /// <param name="purpose">What the calls do ("plan", "judge picture", …), as the usage ledger shows it.</param>
+    Task<ILlmChat> ChatAsync(LlmTier tier, string purpose, CancellationToken ct = default);
 }
 
-public sealed class LlmGateway(ILlmSettingsStore store, IHttpClientFactory http) : ILlmGateway
+public sealed class LlmGateway(ILlmSettingsStore store, IHttpClientFactory http, ILlmUsageRecorder usage) : ILlmGateway
 {
-    public async Task<ILlmChat> ChatAsync(LlmTier tier, CancellationToken ct = default)
+    public async Task<ILlmChat> ChatAsync(LlmTier tier, string purpose, CancellationToken ct = default)
     {
         var s = await store.GetAsync(ct);
         var model = tier == LlmTier.Analyzer ? s.AnalyzerModel : s.GeneratorModel;
-        return s.Provider == LlmProviders.ClaudeCode
+        ILlmChat chat = s.Provider == LlmProviders.ClaudeCode
             ? new ClaudeBridgeChat(http.CreateClient(ClaudeBridgeChat.HttpClientName), s.ClaudeBridgeUrl, s.ClaudeBridgeToken, model, s.TimeoutSeconds)
             : new OpenAiCompatibleChat(s.OpenAiBaseUrl, s.OpenAiApiKey, model, s.TimeoutSeconds);
+        return new MeteredChat(chat, purpose, s.Prices, usage);
     }
+}
+
+/// <summary>
+/// Records every call: one ledger row (attributed through
+/// <see cref="LlmUsageContext"/>) and one node on the current trace. Failed
+/// and cancelled calls are recorded too, with whatever usage is known.
+/// </summary>
+internal sealed class MeteredChat(ILlmChat inner, string purpose, IReadOnlyList<LlmPrice> prices, ILlmUsageRecorder recorder) : ILlmChat
+{
+    public string Provider => inner.Provider;
+    public string Model => inner.Model;
+
+    public async Task<LlmCompletion> CompleteChatSafeAsync(IEnumerable<ChatMessage> messages, ChatCompletionOptions options, CancellationToken ct = default)
+    {
+        var start = TraceRecorder.Now();
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            var completion = await inner.CompleteChatSafeAsync(messages, options, ct);
+            await RecordAsync(completion.Usage, start, sw.ElapsedMilliseconds, null);
+            return completion;
+        }
+        catch (LlmException ex)
+        {
+            await RecordAsync(ex.Usage ?? LlmUsage.None, start, sw.ElapsedMilliseconds, ex.Message);
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            await RecordAsync(LlmUsage.None, start, sw.ElapsedMilliseconds, "Cancelled before the answer arrived.");
+            throw;
+        }
+    }
+
+    private async Task RecordAsync(LlmUsage usage, long start, long ms, string? error)
+    {
+        var (cost, source, pricesJson) = LlmCosting.Cost(usage, Model, prices);
+        var scope = LlmUsageContext.Current;
+        var trace = TraceContext.Current;
+        trace?.AddLlmCall($"LLM: {purpose} ({(usage.ResolvedModel.Length > 0 ? usage.ResolvedModel : Model)})", start, ms,
+            new TraceLlmUsage(purpose, Provider, usage.ResolvedModel.Length > 0 ? usage.ResolvedModel : Model,
+                usage.InputTokens, usage.CacheReadTokens, usage.CacheWriteTokens, usage.OutputTokens, usage.ReasoningTokens,
+                cost, source, error is null),
+            error);
+        await recorder.RecordAsync(new LlmCall(
+            scope?.OwnerId, string.IsNullOrEmpty(scope?.Kind) ? LlmUsageKinds.Unattributed : scope.Kind,
+            scope?.SubjectId, scope?.SubjectLabel ?? "", purpose, trace?.Id,
+            Provider, Model, usage.ResolvedModel,
+            usage.InputTokens, usage.CacheReadTokens, usage.CacheWriteTokens, usage.OutputTokens, usage.ReasoningTokens,
+            cost, source, pricesJson, ms, error is null, error), CancellationToken.None);
+    }
+}
+
+/// <summary>What a call cost: what the provider reported, else an estimate from the price list.</summary>
+public static class LlmCosting
+{
+    public static (decimal? Cost, string Source, string PricesJson) Cost(LlmUsage usage, string configuredModel, IReadOnlyList<LlmPrice> prices)
+    {
+        if (usage.ReportedCostUsd is { } reported) return (reported, LlmCostSources.Reported, "");
+        if (usage.TotalTokens == 0) return (null, LlmCostSources.Unknown, "");
+        var price = LlmPricing.Find(prices, usage.ResolvedModel, configuredModel);
+        if (price is null) return (null, LlmCostSources.Unknown, "");
+        return (Math.Round(LlmPricing.Cost(usage.Counts, price), 8), LlmCostSources.Estimated,
+            JsonSerializer.Serialize(price, LlmPricing.Json));
+    }
+}
+
+/// <summary>
+/// Usage from an OpenAI-compatible Chat Completions response body. Read from the
+/// raw JSON because the SDK (2.0.0) drops cached-token details and providers'
+/// extras: OpenRouter's <c>usage.cost</c>, proxies' cache-write counts.
+/// OpenAI's <c>prompt_tokens</c> includes cached tokens; they are split out so
+/// every provider means the same by "input".
+/// </summary>
+public static class OpenAiUsage
+{
+    public static LlmUsage? Parse(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+            var model = root.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() ?? "" : "";
+            if (!root.TryGetProperty("usage", out var u) || u.ValueKind != JsonValueKind.Object) return null;
+
+            var prompt = Num(u, "prompt_tokens") ?? Num(u, "input_tokens") ?? 0;
+            var output = Num(u, "completion_tokens") ?? Num(u, "output_tokens") ?? 0;
+            var pd = Obj(u, "prompt_tokens_details") ?? Obj(u, "input_tokens_details");
+            var cd = Obj(u, "completion_tokens_details") ?? Obj(u, "output_tokens_details");
+            var cacheRead = (pd is { } p1 ? Num(p1, "cached_tokens") : null) ?? Num(u, "cache_read_input_tokens") ?? 0;
+            var cacheWrite = (pd is { } p2 ? Num(p2, "cache_write_tokens") : null) ?? Num(u, "cache_creation_input_tokens") ?? 0;
+            var reasoning = cd is { } c ? Num(c, "reasoning_tokens") ?? 0 : 0;
+            decimal? cost = u.TryGetProperty("cost", out var k) && k.ValueKind == JsonValueKind.Number ? k.GetDecimal() : null;
+
+            return new LlmUsage(
+                InputTokens: Math.Max(0, prompt - cacheRead - cacheWrite),
+                CacheReadTokens: cacheRead,
+                CacheWriteTokens: cacheWrite,
+                OutputTokens: output,
+                ReasoningTokens: reasoning,
+                ResolvedModel: model,
+                ReportedCostUsd: cost);
+        }
+        catch (JsonException) { return null; }
+        catch (FormatException) { return null; }
+    }
+
+    private static JsonElement? Obj(JsonElement o, string p)
+        => o.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.Object ? v : null;
+
+    private static long? Num(JsonElement o, string p)
+        => o.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.Number
+            ? (v.TryGetInt64(out var x) ? x : (long)v.GetDouble())
+            : null;
 }
 
 /// <summary>Any OpenAI-compatible Chat Completions API (OpenAI, OpenRouter, Ollama, vLLM, …).</summary>
@@ -72,7 +218,12 @@ internal sealed class OpenAiCompatibleChat(string baseUrl, string apiKey, string
         var chat = ChatClientFactory.Create(baseUrl, apiKey, model, timeoutSeconds);
         var completion = await chat.CompleteChatSafeAsync(messages, options, ct);
         var text = completion.Value.Content.Count > 0 ? completion.Value.Content[0].Text ?? "" : "";
-        return new LlmCompletion(text, completion.Value.Usage?.TotalTokenCount ?? 0);
+        LlmUsage? usage = null;
+        try { usage = OpenAiUsage.Parse(completion.GetRawResponse().Content.ToString()); } catch (Exception) { }
+        usage ??= completion.Value.Usage is { } u
+            ? new LlmUsage(u.InputTokenCount, 0, 0, u.OutputTokenCount, 0, completion.Value.Model ?? "", null)
+            : LlmUsage.None;
+        return new LlmCompletion(text, usage);
     }
 }
 
@@ -136,15 +287,49 @@ internal sealed class ClaudeBridgeChat(HttpClient client, string bridgeUrl, stri
                 var why = r?.Error ?? (body.Length > 500 ? body[..500] + "…" : body);
                 throw new LlmException(res.StatusCode == HttpStatusCode.GatewayTimeout
                     ? why
-                    : $"Claude Code ({(int)res.StatusCode}): {why}");
+                    : $"Claude Code ({(int)res.StatusCode}): {why}")
+                {
+                    Usage = r?.Usage is null ? null : UsageOf(r, model),
+                };
             }
-            return new LlmCompletion(r.Text ?? "", r.InputTokens + r.OutputTokens);
+            return new LlmCompletion(r.Text ?? "", UsageOf(r, model));
         }
     }
 
     private static string Combine(string baseUrl, string path) => baseUrl.TrimEnd('/') + path;
 
-    private sealed record BridgeResponse(string? Text, int InputTokens, int OutputTokens, double CostUsd, long DurationMs, string? Error);
+    /// <summary>
+    /// The bridge's exact usage. An older bridge sends only flat totals (input
+    /// with cache reads and writes folded in): those are kept as input, since
+    /// the split is unknown.
+    /// </summary>
+    internal static LlmUsage UsageOf(BridgeResponse r, string configuredModel)
+    {
+        if (r.Usage is { } u)
+        {
+            var models = u.Models ?? new List<BridgeModelUsage>();
+            var resolved = models.Count switch
+            {
+                0 => configuredModel,
+                1 => models[0].Id ?? configuredModel,
+                // Several models in one call: the main one (most output) first.
+                _ => string.Join(" + ", models.OrderByDescending(m => m.OutputTokens).Select(m => m.Id)),
+            };
+            return new LlmUsage(u.InputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.OutputTokens, u.ThinkingTokens,
+                resolved, u.CostUsd);
+        }
+        return new LlmUsage(r.InputTokens, 0, 0, r.OutputTokens, 0, configuredModel, r.CostUsd);
+    }
+
+    internal sealed record BridgeResponse(
+        string? Text, long InputTokens, long OutputTokens, decimal? CostUsd, long DurationMs, string? Error, BridgeUsage? Usage);
+
+    internal sealed record BridgeUsage(
+        long InputTokens, long CacheReadTokens, long CacheWriteTokens, long OutputTokens, long ThinkingTokens,
+        decimal? CostUsd, List<BridgeModelUsage>? Models);
+
+    internal sealed record BridgeModelUsage(
+        string? Id, long InputTokens, long CacheReadTokens, long CacheWriteTokens, long OutputTokens, long ThinkingTokens, decimal CostUsd);
 }
 
 /// <summary>
@@ -254,7 +439,8 @@ public sealed class LlmConnectionTester(ILlmGateway gateway) : ILlmConnectionTes
         ILlmChat? chat = null;
         try
         {
-            chat = await gateway.ChatAsync(LlmTier.Analyzer, ct);
+            LlmUsageContext.SetSubject(LlmUsageKinds.ConnectionTest, null, "Settings: test connection");
+            chat = await gateway.ChatAsync(LlmTier.Analyzer, "connection test", ct);
             var r = await chat.CompleteChatSafeAsync(
                 new List<ChatMessage>
                 {

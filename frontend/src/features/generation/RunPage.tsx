@@ -16,6 +16,8 @@ import type {
 } from "@/shared/api/types";
 import { ApiError } from "@/shared/api/client";
 import { TraceLinks } from "@/features/traces/TracePage";
+import { UsagePanel } from "@/features/usage/UsagePanel";
+import { costNote, fmtInt, fmtUsd, useSubjectUsage } from "@/features/usage/api";
 
 /**
  * Step 7 of the wizard — Run.
@@ -161,6 +163,12 @@ export function RunPage() {
         {planBlob && <PlanPane plan={planBlob} />}
         {runId && gen.data?.executionStatus && gen.data.executionStatus !== "Idle" && (
           <ExecutionPane key={runId} runId={runId} status={gen.data.executionStatus} envelope={envelope} hasForensics={!!gen.data.hasForensics} onDone={() => gen.refetch()} />
+        )}
+        {runId && (
+          <div style={{ marginTop: 20 }}>
+            <UsagePanel subject={runId} refreshKey={`${gen.data?.status}-${gen.data?.executionStatus}`}
+              live={gen.data?.status === "Generating"} />
+          </div>
         )}
         {runId && (
           <div style={{ marginTop: 20 }}>
@@ -496,11 +504,7 @@ function PromptPane({
             exec: {gen.executionStatus}
           </Pill>
         )}
-        {gen && gen.tokensUsed > 0 && (
-          <span style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--f-mono)" }}>
-            {gen.tokensUsed} tokens
-          </span>
-        )}
+        {gen && <RunCost id={gen.id} />}
       </div>
     </div>
   );
@@ -846,4 +850,17 @@ function parseBlob<T>(json: string | null | undefined): T | null {
   } catch {
     return null;
   }
+}
+
+/** Exact LLM tokens and cost of this run, in one line (the full breakdown is in the usage panel). */
+function RunCost({ id }: { id: string }) {
+  const q = useSubjectUsage(id);
+  const t = q.data?.totals;
+  if (!t || t.calls === 0) return null;
+  return (
+    <span style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--f-mono)" }}
+      title={`${fmtInt(t.input)} input + ${fmtInt(t.cacheRead)} cache read + ${fmtInt(t.cacheWrite)} cache write + ${fmtInt(t.output)} output; cost ${costNote(t)}`}>
+      {fmtInt(t.total)} tokens · {fmtUsd(t.costUsd)}{t.unknownCostCalls ? "+?" : ""}
+    </span>
+  );
 }

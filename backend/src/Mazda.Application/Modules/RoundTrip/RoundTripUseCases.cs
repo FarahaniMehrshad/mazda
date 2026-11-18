@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
+using Mazda.Application.Common.Usage;
 using Mazda.Application.Common.Abstractions;
 using Mazda.Application.Common.Tracing;
 using Mazda.Domain.Common;
@@ -95,13 +96,16 @@ public class StartRoundTripHandler(
         var actions = RoundTripMapping.Actions(sig);
         if (actions.Count == 0) return Result.Failure<RoundTripDto>(Error.Validation("Generate the function catalogue first."));
 
+        // The session's id is chosen now so the planning call is counted for it.
+        var sessionId = Guid.NewGuid();
+        LlmUsageContext.SetSubject(LlmUsageKinds.RoundTrip, sessionId, $"round trip: {rec.Label}");
         var trace = TraceContext.Begin("roundtrip-plan", $"rebuild the plan from “{rec.Label}”");
         ReversePlanResult planned;
-        try { using (trace.Span("rebuild the plan (LLM)", TraceCategory.Llm)) planned = await planner.PlanAsync(sig, actions, rec.Label, rec.Intent, rec.EpisodesJson, ct); }
+        try { using (trace.Span("rebuild the plan (LLM)")) planned = await planner.PlanAsync(sig, actions, rec.Label, rec.Intent, rec.EpisodesJson, ct); }
         catch (Exception ex) { return Result.Failure<RoundTripDto>(Error.External($"Could not rebuild the plan: {ExceptionMessage.Describe(ex)}")); }
 
         var plan = new PlanModel(planned.Steps.Select(s => new PlanStepModel(s.Call, s.ArgsJson, s.Episodes.ToList(), s.ContrastArgsJson, s.Why)).ToList(), planned.Notes);
-        var session = new RoundTripSession(me.UserId.Value, sig.Id, rec.Id, RoundTripJson.Write(plan));
+        var session = new RoundTripSession(me.UserId.Value, sig.Id, rec.Id, RoundTripJson.Write(plan), sessionId);
         session.SetLog(RoundTripJson.Write(new List<LogEntry> { new(DateTime.UtcNow, "plan", $"Plan rebuilt from “{rec.Label}”: {plan.Steps.Count} step(s). Waiting for your confirmation.") }));
         await roundTrips.AddAsync(session, ct);
         await uow.SaveChangesAsync(ct);

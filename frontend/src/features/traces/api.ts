@@ -19,6 +19,34 @@ export interface TraceNode {
   line?: number | null;
   error?: string | null;
   timedOut?: boolean;
+  /** For an LLM call: exactly what it used and cost. */
+  llm?: TraceLlmUsage | null;
+}
+
+export interface TraceLlmUsage {
+  purpose: string;
+  provider: string;
+  model: string;
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+  output: number;
+  reasoning: number;
+  costUsd: number | null;
+  costSource: string;
+  ok: boolean;
+}
+
+export interface TraceLlmTotals {
+  calls: number;
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+  output: number;
+  reasoning: number;
+  total: number;
+  costUsd: number;
+  unknownCostCalls: number;
 }
 
 export interface TraceBody {
@@ -68,7 +96,7 @@ export interface TraceView {
   createdAt: string;
   updatedAt: string;
   trace: TraceDoc;
-  summary: { totalMs: number; buckets: TraceBucket[]; lines: TraceLine[]; functions: TraceFunction[] };
+  summary: { totalMs: number; buckets: TraceBucket[]; lines: TraceLine[]; functions: TraceFunction[]; llm?: TraceLlmTotals | null };
 }
 
 export interface TraceListItem {

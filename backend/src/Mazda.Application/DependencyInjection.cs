@@ -14,6 +14,8 @@ public static class DependencyInjection
         var asm = Assembly.GetExecutingAssembly();
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(asm));
         services.AddValidatorsFromAssembly(asm);
+        // Attributes every LLM call a request causes to the signed-in user.
+        services.AddTransient(typeof(IPipelineBehavior<,>), typeof(Mazda.Application.Common.Usage.LlmUsageScopeBehavior<,>));
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
         // Effective-signature resolver — loads root + transitive deps, BFS
         // by level, used by generation use cases to merge dep elements into

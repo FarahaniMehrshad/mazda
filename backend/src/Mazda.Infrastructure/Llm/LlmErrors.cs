@@ -13,7 +13,11 @@ namespace Mazda.Infrastructure.Llm;
 /// ProblemDetails <c>detail</c>.
 /// </summary>
 public class LlmException(string message, Exception? innerException = null)
-    : Exception(message, innerException);
+    : Exception(message, innerException)
+{
+    /// <summary>What the failed call still used, when the provider said (it is counted like any call).</summary>
+    public LlmUsage? Usage { get; init; }
+}
 
 internal static class LlmChatExtensions
 {

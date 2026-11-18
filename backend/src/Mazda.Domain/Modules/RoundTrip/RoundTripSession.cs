@@ -42,8 +42,10 @@ public class RoundTripSession : Entity
 
     private RoundTripSession() { }
 
-    public RoundTripSession(Guid ownerId, Guid signatureId, Guid recordingId, string planJson)
+    /// <param name="id">Chosen up front when work (an LLM call) must name the session before it exists.</param>
+    public RoundTripSession(Guid ownerId, Guid signatureId, Guid recordingId, string planJson, Guid? id = null)
     {
+        if (id is { } given) Id = given;
         OwnerId = ownerId;
         SignatureId = signatureId;
         RecordingId = recordingId;

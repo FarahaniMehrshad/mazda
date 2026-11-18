@@ -522,7 +522,7 @@ public class LlmComponentAnalyzer(ILlmGateway llm) : IComponentAnalyzer
 
     public async Task<ComponentAnalysisResult> AnalyzeAsync(string componentSource, string fileName, string? humanDescription = null, CancellationToken ct = default)
     {
-        var chat = await llm.ChatAsync(LlmTier.Analyzer, ct);
+        var chat = await llm.ChatAsync(LlmTier.Analyzer, "analyze component", ct);
         var descriptionBlock = string.IsNullOrWhiteSpace(humanDescription)
             ? string.Empty
             : $"Human-written description of how the component works (use as context, do not echo back):\n\n{humanDescription}\n\n---\n\n";

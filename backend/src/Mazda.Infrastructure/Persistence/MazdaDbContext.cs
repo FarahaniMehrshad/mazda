@@ -129,6 +129,7 @@ public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContex
     public DbSet<FunctionBodyRevision> FunctionBodyRevisions => Set<FunctionBodyRevision>();
     public DbSet<FunctionComparisonProfile> FunctionComparisonProfiles => Set<FunctionComparisonProfile>();
     public DbSet<RunTrace> RunTraces => Set<RunTrace>();
+    public DbSet<Mazda.Domain.Modules.Usage.LlmCall> LlmCalls => Set<Mazda.Domain.Modules.Usage.LlmCall>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -141,6 +142,7 @@ public class MazdaDbContext(DbContextOptions<MazdaDbContext> options) : DbContex
         mb.ApplyConfiguration(new UserConfig());
         mb.ApplyConfiguration(new UserSettingsConfig());
         mb.ApplyConfiguration(new LlmSettingsConfig());
+        mb.ApplyConfiguration(new LlmCallConfig());
         mb.ApplyConfiguration(new SignatureConfig());
         mb.ApplyConfiguration(new SignatureElementConfig());
         mb.ApplyConfiguration(new SignatureDependencyConfig());
@@ -178,6 +180,40 @@ internal class LlmSettingsConfig : IEntityTypeConfiguration<Mazda.Domain.Modules
         b.Property(x => x.ClaudeAnalyzerModel).HasColumnName("claude_analyzer_model").HasMaxLength(200);
         b.Property(x => x.ClaudeGeneratorModel).HasColumnName("claude_generator_model").HasMaxLength(200);
         b.Property(x => x.TimeoutSeconds).HasColumnName("timeout_seconds");
+        b.Property(x => x.PricesJson).HasColumnName("prices_json");
+    }
+}
+
+internal class LlmCallConfig : IEntityTypeConfiguration<Mazda.Domain.Modules.Usage.LlmCall>
+{
+    public void Configure(EntityTypeBuilder<Mazda.Domain.Modules.Usage.LlmCall> b)
+    {
+        b.ToTable("llm_calls");
+        b.HasKey(x => x.Id);
+        b.Property(x => x.Id).ValueGeneratedNever();
+        b.Ignore(x => x.TotalTokens);
+        b.Property(x => x.OwnerId).HasColumnName("owner_id");
+        b.Property(x => x.Kind).HasColumnName("kind").HasMaxLength(40);
+        b.Property(x => x.SubjectId).HasColumnName("subject_id");
+        b.Property(x => x.SubjectLabel).HasColumnName("subject_label").HasMaxLength(300);
+        b.Property(x => x.Purpose).HasColumnName("purpose").HasMaxLength(100);
+        b.Property(x => x.TraceId).HasColumnName("trace_id");
+        b.Property(x => x.Provider).HasColumnName("provider").HasMaxLength(30);
+        b.Property(x => x.Model).HasColumnName("model").HasMaxLength(200);
+        b.Property(x => x.ResolvedModel).HasColumnName("resolved_model").HasMaxLength(200);
+        b.Property(x => x.InputTokens).HasColumnName("input_tokens");
+        b.Property(x => x.CacheReadTokens).HasColumnName("cache_read_tokens");
+        b.Property(x => x.CacheWriteTokens).HasColumnName("cache_write_tokens");
+        b.Property(x => x.OutputTokens).HasColumnName("output_tokens");
+        b.Property(x => x.ReasoningTokens).HasColumnName("reasoning_tokens");
+        b.Property(x => x.CostUsd).HasColumnName("cost_usd").HasPrecision(18, 8);
+        b.Property(x => x.CostSource).HasColumnName("cost_source").HasMaxLength(20);
+        b.Property(x => x.PricesJson).HasColumnName("prices_json");
+        b.Property(x => x.DurationMs).HasColumnName("duration_ms");
+        b.Property(x => x.Ok).HasColumnName("ok");
+        b.Property(x => x.Error).HasColumnName("error").HasMaxLength(2000);
+        b.HasIndex(x => new { x.OwnerId, x.CreatedAt });
+        b.HasIndex(x => x.SubjectId);
     }
 }
 

@@ -1,5 +1,6 @@
 using FluentValidation;
 using MediatR;
+using Mazda.Application.Common.Usage;
 using Mazda.Application.Common.Abstractions;
 using Mazda.Domain.Common;
 using Mazda.Domain.Modules.Signatures;
@@ -260,6 +261,7 @@ public class AnalyzeComponentHandler(
         if (me.UserId is null) return Result.Failure<SignatureDto>(Error.Validation("Not authenticated."));
 
         ComponentAnalysisResult analysis;
+        LlmUsageContext.SetSubject(LlmUsageKinds.SignatureAnalysis, null, $"analyze component: {cmd.FileName}");
         try { analysis = await analyzer.AnalyzeAsync(cmd.Source, cmd.FileName, cmd.Description, ct); }
         catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Analyzer failed: {ExceptionMessage.Describe(ex)}")); }
 
@@ -307,6 +309,7 @@ public class GenerateUserFlowsHandler(
         if (sig is null) return Result.Failure<SignatureDto>(Error.NotFound("Signature"));
 
         FlowAnalysisResult result;
+        LlmUsageContext.SetSubject(LlmUsageKinds.SignatureAnalysis, sig.Id, $"{sig.Name}: user flows");
         try { result = await analyzer.InferFlowsAsync(sig, ct); }
         catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Flow analyzer failed: {ExceptionMessage.Describe(ex)}")); }
 
@@ -380,6 +383,7 @@ public class ReanalyzeInteractiveHandler(
             return Result.Failure<SignatureDto>(Error.Validation("Original component source not available; re-upload the component."));
 
         ComponentAnalysisResult analysis;
+        LlmUsageContext.SetSubject(LlmUsageKinds.SignatureAnalysis, sig.Id, $"{sig.Name}: re-analyze interactive elements");
         try { analysis = await analyzer.AnalyzeAsync(sig.SourceCode, sig.Source, sig.HumanDescription, ct); }
         catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Analyzer failed: {ExceptionMessage.Describe(ex)}")); }
 
@@ -474,6 +478,7 @@ public class AnalyzeInformationalHandler(
             return Result.Failure<SignatureDto>(Error.Validation("Original component source not available; re-upload the component."));
 
         InformationalAnalysisResult result;
+        LlmUsageContext.SetSubject(LlmUsageKinds.SignatureAnalysis, sig.Id, $"{sig.Name}: informational elements");
         try { result = await analyzer.AnalyzeInformationalAsync(sig, sig.SourceCode, ct); }
         catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Informational analyzer failed: {ExceptionMessage.Describe(ex)}")); }
 
@@ -572,6 +577,7 @@ public class AnalyzeRelationshipsHandler(
             return Result.Failure<SignatureDto>(Error.Validation("Original component source not available; re-upload the component."));
 
         RelationshipAnalysisResult result;
+        LlmUsageContext.SetSubject(LlmUsageKinds.SignatureAnalysis, sig.Id, $"{sig.Name}: relationships");
         try { result = await analyzer.AnalyzeRelationshipsAsync(sig, sig.SourceCode, ct); }
         catch (Exception ex) { return Result.Failure<SignatureDto>(Error.External($"Relationship analyzer failed: {ExceptionMessage.Describe(ex)}")); }
 

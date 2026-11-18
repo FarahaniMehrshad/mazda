@@ -173,7 +173,7 @@ public class LlmPlanGenerator(ILlmGateway llm) : IPlanGenerator
         // Runtime path uses the generator model, same tier as the catalogue
         // generator. The plan is short but grounding args in observed state
         // benefits from a strong instruction-follower.
-        var chat = await llm.ChatAsync(LlmTier.Generator, ct);
+        var chat = await llm.ChatAsync(LlmTier.Generator, "plan", ct);
 
         var actionCatalogue = BuildActionCatalogue(signature, dependencies);
         // Empty catalogue is an actionable failure: no functions → no plan

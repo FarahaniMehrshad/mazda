@@ -424,6 +424,39 @@ using (var scope = app.Services.CreateScope())
             "CreatedAt"             timestamptz   NOT NULL DEFAULT NOW(),
             "UpdatedAt"             timestamptz   NOT NULL DEFAULT NOW()
         );
+        -- Price list for estimating API-key costs; empty = built-in defaults.
+        ALTER TABLE llm_settings ADD COLUMN IF NOT EXISTS prices_json text NOT NULL DEFAULT '';
+
+        -- The LLM usage ledger: one row per call, exactly as the provider
+        -- reported it. Never pruned. owner_id is null for calls nothing
+        -- attributed.
+        CREATE TABLE IF NOT EXISTS llm_calls (
+            "Id"                uuid          PRIMARY KEY,
+            owner_id            uuid          NULL REFERENCES users("Id") ON DELETE CASCADE,
+            kind                varchar(40)   NOT NULL DEFAULT '',
+            subject_id          uuid          NULL,
+            subject_label       varchar(300)  NOT NULL DEFAULT '',
+            purpose             varchar(100)  NOT NULL DEFAULT '',
+            trace_id            uuid          NULL,
+            provider            varchar(30)   NOT NULL DEFAULT '',
+            model               varchar(200)  NOT NULL DEFAULT '',
+            resolved_model      varchar(200)  NOT NULL DEFAULT '',
+            input_tokens        bigint        NOT NULL DEFAULT 0,
+            cache_read_tokens   bigint        NOT NULL DEFAULT 0,
+            cache_write_tokens  bigint        NOT NULL DEFAULT 0,
+            output_tokens       bigint        NOT NULL DEFAULT 0,
+            reasoning_tokens    bigint        NOT NULL DEFAULT 0,
+            cost_usd            numeric(18,8) NULL,
+            cost_source         varchar(20)   NOT NULL DEFAULT 'unknown',
+            prices_json         text          NOT NULL DEFAULT '',
+            duration_ms         bigint        NOT NULL DEFAULT 0,
+            ok                  boolean       NOT NULL DEFAULT TRUE,
+            error               varchar(2000) NOT NULL DEFAULT '',
+            "CreatedAt"         timestamptz   NOT NULL DEFAULT NOW(),
+            "UpdatedAt"         timestamptz   NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS ix_llm_calls_owner_created ON llm_calls(owner_id, "CreatedAt");
+        CREATE INDEX IF NOT EXISTS ix_llm_calls_subject ON llm_calls(subject_id);
         """);
 
     // Collapse mcp_tools' setup/test prompt pair into one default_prompt.

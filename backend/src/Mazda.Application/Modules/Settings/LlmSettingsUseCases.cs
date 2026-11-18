@@ -1,6 +1,7 @@
 using FluentValidation;
 using MediatR;
 using Mazda.Application.Common.Abstractions;
+using Mazda.Application.Common.Usage;
 using Mazda.Domain.Common;
 using Mazda.Domain.Modules.Settings;
 
@@ -34,6 +35,9 @@ public sealed record ResolvedLlmSettings(
     string ClaudeGeneratorModel,
     int TimeoutSeconds)
 {
+    /// <summary>The price list for estimating API-key costs (saved, or the built-in defaults).</summary>
+    public IReadOnlyList<LlmPrice> Prices { get; init; } = LlmPricing.Defaults;
+
     public string AnalyzerModel => Provider == LlmProviders.ClaudeCode ? ClaudeAnalyzerModel : OpenAiAnalyzerModel;
     public string GeneratorModel => Provider == LlmProviders.ClaudeCode ? ClaudeGeneratorModel : OpenAiGeneratorModel;
 }
@@ -63,7 +67,10 @@ public static class LlmSettingsResolver
             ClaudeBridgeToken: env.ClaudeBridgeToken?.Trim() ?? string.Empty,
             ClaudeAnalyzerModel: Pick(saved?.ClaudeAnalyzerModel, env.ClaudeAnalyzerModel, DefaultClaudeAnalyzerModel),
             ClaudeGeneratorModel: Pick(saved?.ClaudeGeneratorModel, env.ClaudeGeneratorModel, DefaultClaudeGeneratorModel),
-            TimeoutSeconds: saved is { TimeoutSeconds: > 0 } ? saved.TimeoutSeconds : env.TimeoutSeconds > 0 ? env.TimeoutSeconds : 600);
+            TimeoutSeconds: saved is { TimeoutSeconds: > 0 } ? saved.TimeoutSeconds : env.TimeoutSeconds > 0 ? env.TimeoutSeconds : 600)
+        {
+            Prices = LlmPricing.Parse(saved?.PricesJson) ?? LlmPricing.Defaults,
+        };
     }
 }
 
@@ -104,7 +111,14 @@ public record LlmSettingsDto(
     string ClaudeGeneratorModel,
     int TimeoutSeconds,
     LlmDefaultsDto Defaults,
-    LlmEffectiveDto Effective);
+    LlmEffectiveDto Effective)
+{
+    /// <summary>The price list in effect.</summary>
+    public IReadOnlyList<LlmPrice> Prices { get; init; } = LlmPricing.Defaults;
+    /// <summary>False while the built-in defaults apply.</summary>
+    public bool PricesCustomized { get; init; }
+    public IReadOnlyList<LlmPrice> DefaultPrices { get; init; } = LlmPricing.Defaults;
+}
 
 public record LlmDefaultsDto(
     string Provider,
@@ -143,7 +157,11 @@ internal static class LlmSettingsMapping
                 d.Provider, d.OpenAiBaseUrl, !string.IsNullOrEmpty(d.OpenAiApiKey), d.OpenAiAnalyzerModel, d.OpenAiGeneratorModel,
                 d.ClaudeBridgeUrl, !string.IsNullOrEmpty(d.ClaudeBridgeToken), d.ClaudeAnalyzerModel, d.ClaudeGeneratorModel,
                 d.TimeoutSeconds),
-            Effective: new LlmEffectiveDto(r.Provider, r.AnalyzerModel, r.GeneratorModel, notReady is null, notReady));
+            Effective: new LlmEffectiveDto(r.Provider, r.AnalyzerModel, r.GeneratorModel, notReady is null, notReady))
+        {
+            Prices = r.Prices,
+            PricesCustomized = LlmPricing.Parse(s?.PricesJson) is not null,
+        };
     }
 }
 
@@ -171,7 +189,13 @@ public record UpdateLlmSettingsCommand(
     string? ClaudeBridgeUrl,
     string? ClaudeAnalyzerModel,
     string? ClaudeGeneratorModel,
-    int TimeoutSeconds) : IRequest<Result<LlmSettingsDto>>;
+    int TimeoutSeconds) : IRequest<Result<LlmSettingsDto>>
+{
+    /// <summary>The new price list; null keeps the current one.</summary>
+    public IReadOnlyList<LlmPrice>? Prices { get; init; }
+    /// <summary>Go back to the built-in price list.</summary>
+    public bool ResetPrices { get; init; }
+}
 
 public class UpdateLlmSettingsValidator : AbstractValidator<UpdateLlmSettingsCommand>
 {
@@ -187,6 +211,18 @@ public class UpdateLlmSettingsValidator : AbstractValidator<UpdateLlmSettingsCom
         RuleFor(x => x.ClaudeAnalyzerModel).MaximumLength(LlmSettings.MaxModel);
         RuleFor(x => x.ClaudeGeneratorModel).MaximumLength(LlmSettings.MaxModel);
         RuleFor(x => x.OpenAiApiKey).MaximumLength(LlmSettings.MaxApiKey);
+        RuleFor(x => x.Prices).Must(p => p is null || p.Count <= 500).WithMessage("At most 500 prices.");
+        RuleForEach(x => x.Prices).ChildRules(p =>
+        {
+            p.RuleFor(x => x.Model).NotEmpty().WithMessage("Every price needs a model name.").MaximumLength(LlmSettings.MaxModel);
+            p.RuleFor(x => x.InputPerM).GreaterThanOrEqualTo(0).LessThan(100_000);
+            p.RuleFor(x => x.OutputPerM).GreaterThanOrEqualTo(0).LessThan(100_000);
+            p.RuleFor(x => x.CachedInputPerM).GreaterThanOrEqualTo(0).LessThan(100_000).When(x => x.CachedInputPerM is not null);
+            p.RuleFor(x => x.CacheWritePerM).GreaterThanOrEqualTo(0).LessThan(100_000).When(x => x.CacheWritePerM is not null);
+        });
+        RuleFor(x => x.Prices)
+            .Must(p => p is null || p.Select(x => x.Model.Trim().ToLowerInvariant()).Distinct().Count() == p.Count)
+            .WithMessage("Each model can have only one price.");
     }
 
     private static bool BeEmptyOrHttpUrl(string? s)
@@ -205,6 +241,9 @@ public class UpdateLlmSettingsHandler(ILlmSettingsRepository repo, ILlmSettingsS
         s.Update(c.Provider ?? "", c.OpenAiBaseUrl, c.OpenAiApiKey, c.ClearOpenAiApiKey,
             c.OpenAiAnalyzerModel, c.OpenAiGeneratorModel,
             c.ClaudeBridgeUrl, c.ClaudeAnalyzerModel, c.ClaudeGeneratorModel, c.TimeoutSeconds);
+        if (c.ResetPrices) s.SetPrices(null);
+        else if (c.Prices is not null)
+            s.SetPrices(LlmPricing.Serialize(c.Prices.Select(p => p with { Model = p.Model.Trim() }).ToList()));
         await uow.SaveChangesAsync(ct);
         store.Invalidate();
         return Result.Success(LlmSettingsMapping.ToDto(s, store.Environment));

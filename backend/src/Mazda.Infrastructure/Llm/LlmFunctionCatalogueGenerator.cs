@@ -544,7 +544,7 @@ public class LlmFunctionCatalogueGenerator(ILlmGateway llm) : IFunctionCatalogue
         // Function bodies ARE Playwright TypeScript, not analysis JSON, so we
         // use the stronger GeneratorModel here — the AnalyzerModel is tuned
         // for JSON extraction and regresses hard on real code generation.
-        var chat = await llm.ChatAsync(LlmTier.Generator, ct);
+        var chat = await llm.ChatAsync(LlmTier.Generator, "generate catalogue", ct);
 
         var signatureView = new
         {
@@ -658,7 +658,8 @@ public class LlmFunctionCatalogueGenerator(ILlmGateway llm) : IFunctionCatalogue
                 var report = string.Join("\n\n", flagged.Select(f =>
                     $"- {f.Name} ({f.Kind}): " + string.Join("; ", Lint(f)) +
                     $"\n```ts\n{f.Body}\n```"));
-                var repair = await chat.CompleteChatSafeAsync(
+                var repairChat = await llm.ChatAsync(LlmTier.Generator, "repair catalogue", ct);
+                var repair = await repairChat.CompleteChatSafeAsync(
                     new List<ChatMessage>
                     {
                         new SystemChatMessage(SystemPrompt),

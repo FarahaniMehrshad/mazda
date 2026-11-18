@@ -6,6 +6,7 @@ import { ApiError } from "@/shared/api/client";
 import { useSignature } from "@/features/signatures/api";
 import { useRecordings } from "@/features/recordings/api";
 import { TraceLinks } from "@/features/traces/TracePage";
+import { UsagePanel } from "@/features/usage/UsagePanel";
 import { ZoomableImage, type ViewerImage } from "@/shared/components/ImageViewer";
 import {
   roundTripApi,
@@ -212,6 +213,7 @@ function RoundTripView({ rt, sigId }: { rt: RoundTrip; sigId: string }) {
         )}
       </div>
       <TraceLinks subject={rt.id} refreshKey={`${rt.status}-${rt.log.length}`} />
+      <UsagePanel subject={rt.id} refreshKey={`${rt.status}-${rt.log.length}`} live={running} />
       {rt.error && <Pill tone="err">{rt.error}</Pill>}
       {err && <Pill tone="err">{err}</Pill>}
 
