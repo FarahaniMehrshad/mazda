@@ -52,6 +52,12 @@ RUNTIME (per agent request)
 
 **External agents:** An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server at `/api/mcp` lets external LLM agents invoke Mazda tools.
 
+**No source? Learn by watching.** For components without usable source (third-party libraries, closed bundles), you operate the component in the attached tab while Mazda records it, and it learns elements and flows from what the page did.
+
+**Check the functions against a recording.** A **round trip** replays a recording through the generated functions, compares each step with what you did, and fixes the functions that do something else.
+
+**See what happened.** A failed run keeps a snapshot of the page at the failing step. Every check, run and round trip has a **trace** that shows where the time went. Every LLM call is recorded with its exact tokens and cost.
+
 ---
 
 ## Tour the UI
@@ -165,6 +171,17 @@ TopBar panel: pick the Chrome tab Mazda should drive. Gather, function tests, an
 <p align="center">
   <img src="docs/screenshots/07-cdp.png" alt="CDP browser attachment panel" width="100%" />
 </p>
+
+### More pages
+
+These pages have no screenshots yet:
+
+- **Learn** (`/signatures/:id/learn`): record yourself using the component in the attached tab, say what you meant to do, and let Mazda analyze the recordings. Review what it understood, then apply the elements and flows it proposes.
+- **Round trip** (`/signatures/:id/roundtrip`): pick a recording, review the plan Mazda rebuilt from it, and confirm. Mazda replays the plan and shows your pictures next to the function's for each step; click a picture to open it bigger. Functions that do something else are fixed and can be undone one by one. You can change the start page and switch on the optional picture judge.
+- **Run failure snapshot:** when a step fails, the run page shows the page as it was: a screenshot, console, network and DOM.
+- **Trace** (`/traces/:id`): where the time of a function check, run or round trip went, down to each line of a function body, plus the LLM calls with their tokens and cost.
+- **Usage** (`/usage`): every LLM call with its tokens (input, cache read, cache write, output) and cost, per day, per model and per kind of work. Run and round-trip pages show their own calls.
+- **Settings** (`/settings`): the language model (Claude Code on this computer, or any OpenAI-compatible API), Test connection, and the prices used to estimate cost.
 
 ---
 
@@ -352,7 +369,7 @@ Signatures can **embed other signatures** as dependencies; the effective context
 ### Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) and Docker Compose
-- An **OpenAI-compatible** LLM endpoint (OpenAI, Ollama, OpenRouter, Groq, DeepSeek, vLLM, etc.)
+- An LLM: either an **OpenAI-compatible** endpoint (OpenAI, Ollama, OpenRouter, Groq, DeepSeek, vLLM, etc.) or the **Claude Code** CLI logged in on your computer (see [LLM provider configuration](#llm-provider-configuration))
 - **Google Chrome** with remote debugging enabled (for runs)
 
 ### 1. Configure environment
@@ -367,6 +384,7 @@ Edit `.env`:
 
 ```env
 JWT_SECRET=change-me-this-must-be-at-least-32-chars-long
+LLM_PROVIDER=openai          # or claude-code; the Settings page can change it later
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_API_KEY=sk-...
 LLM_ANALYZER_MODEL=gpt-4o-mini
@@ -539,6 +557,41 @@ All authenticated routes require `Authorization: Bearer <jwt>`. Full routing: [`
 | POST | `/api/generations/plan` | Create run: gather state + LLM plan (sync) |
 | POST | `/api/generations/{id}/execute` | Execute plan (async) |
 | GET | `/api/generations/{id}/execution/stream` | SSE live step events |
+| GET | `/api/generations/{id}/forensics` | Page snapshot of the step that failed |
+| GET | `/api/generations/{id}/forensics/network` | Network log around the failure (`urlContains`, `step`, `failedOnly`) |
+
+### Recordings (learn by watching)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET / POST | `/api/signatures/{id}/recordings` | List recordings / start one on the attached tab |
+| POST | `/api/signatures/{id}/recordings/analyze` | Analyze several recordings together (`fresh` to replace learned elements) |
+| GET / PATCH / DELETE | `/api/recordings/{rid}` | Get; rename, set the intent or "use for grounding"; delete |
+| POST | `/api/recordings/{rid}/stop` | Stop recording |
+| GET | `/api/recordings/{rid}/events`, `/episodes`, `/stream` | Raw events, condensed episodes, SSE live feed |
+| POST | `/api/recordings/{rid}/analyze`, `/apply` | Analyze one recording; apply a proposal |
+
+### Round trips
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET / POST | `/api/signatures/{id}/roundtrips` | List / start one from a recording (rebuilds the plan; nothing runs yet) |
+| GET | `/api/roundtrips/{rid}` | Get the round trip (plan, status, results, log) |
+| PUT | `/api/roundtrips/{rid}/plan`, `/start-url`, `/picture-judge` | Edit the plan, the start page, the picture judge |
+| POST | `/api/roundtrips/{rid}/confirm`, `/stop` | Start the replays / stop them |
+| POST | `/api/roundtrips/{rid}/plan-change`, `/answers`, `/revert` | Approve a plan change, answer a question, undo a fix |
+| GET | `/api/roundtrips/{rid}/shots/{side}/{step}/{phase}` | A replay or demo picture |
+| GET | `/api/roundtrips/{rid}/stream` | SSE progress |
+
+### Traces and usage
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/traces/{id}` | One trace with its summary |
+| GET | `/api/traces?subject={id}` | Traces of a run, round trip or function |
+| GET | `/api/usage/calls?subject={id}` | LLM calls and totals of a run or round trip |
+| GET | `/api/usage/subjects?ids=a,b` | LLM totals per run (for lists) |
+| GET | `/api/usage/summary?from&to&tz` | Totals per day, model and kind of work, plus the latest calls |
 
 ### CDP (browser attachment)
 
@@ -553,7 +606,7 @@ All authenticated routes require `Authorization: Bearer <jwt>`. Full routing: [`
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET/POST | `/api/mcp` | Streamable HTTP + legacy SSE transport |
+| GET/POST | `/api/mcp` | Streamable HTTP + legacy SSE transport. Besides your tools it lists `get_run_failure`, `get_step_artifact` and `search_run_network` for debugging a failed run |
 | POST | `/api/mcp/messages` | Legacy SSE message channel |
 | GET/POST/PUT/DELETE | `/api/mcp-tools[...]` | CRUD exposed MCP tools |
 
@@ -566,7 +619,7 @@ All authenticated routes require `Authorization: Bearer <jwt>`. Full routing: [`
 | Frontend | React 18, TypeScript, Vite 5, React Router 6, TanStack Query, Zustand, Monaco Editor, React Flow |
 | Backend | ASP.NET Core 8, Minimal APIs, MediatR, FluentValidation, JWT Bearer |
 | Database | PostgreSQL 16, EF Core 8 |
-| LLM | OpenAI SDK (any OpenAI-compatible endpoint) |
+| LLM | OpenAI SDK (any OpenAI-compatible endpoint), or the Claude Code CLI through a host bridge (`tools/claude-bridge`) |
 | Browser | Playwright, CDP attach |
 | Protocol | MCP (Model Context Protocol) |
 | Deploy | Docker Compose (api + web + db), nginx SPA |
@@ -627,13 +680,14 @@ Mazda (design-time catalogue)
 - **Stable agent contract:** Agents call `AddTask(name)` not `"click the third button in the modal"` — schema-validated before browser touch
 - **Legacy-app fit:** Built for poorly documented APIs + frontend-held logic (the 50h → 1h origin story)
 - **Framework-agnostic:** Works with HTML/JS, React, Vue, or any text-based UI source
-- **Inspectable & editable:** 7-step wizard, live function testing, AI-assisted fix, hand-edited bodies
+- **Inspectable & editable:** 7-step wizard, live function testing, AI-assisted fix, hand-edited bodies, round trips against your own recordings
+- **Observable:** failure snapshots, per-line traces, and exact LLM tokens and cost for every call
 - **MCP integration:** Expose curated tools to external agents via `/api/mcp`
 - **Self-hosted:** Docker Compose, your LLM, your Chrome via CDP — no vendor browser lock-in
 
 **Cons**
 - **Upfront investment:** Each component needs the wizard pipeline before runtime pays off
-- **Source access helps:** Analyser works best when you can upload/paste UI source; arbitrary black-box sites are harder
+- **Source access helps:** Analyser works best when you can upload/paste UI source. Without it, learn by watching needs you to demonstrate the component; arbitrary black-box sites are harder
 - **UI change maintenance:** Selector/body updates require re-analysis or manual edits (like any selector-based approach, but with clearer invalidation)
 - **No runtime vision fallback:** Relies on DOM/selectors + state functions, not computer-vision re-read of the page (unlike Skyvern)
 - **Browser-only:** Web tab via CDP — no native desktop apps (SAP GUI, Citrix, etc.)
@@ -656,7 +710,7 @@ Mazda (design-time catalogue)
 
 | Document | Contents |
 |----------|----------|
-| [MAZDA.md](MAZDA.md) | Full architecture, runtime pipeline, CDP stack, MCP server, persistence, ops, glossary |
+| [MAZDA.md](MAZDA.md) | Full architecture, runtime pipeline, LLM providers and usage, CDP stack, learn by watching, round trip, traces, MCP server, persistence, ops, glossary |
 | [FUNCTION_CATALOGUE.md](FUNCTION_CATALOGUE.md) | Function catalogue design, live testing, browser attachment, AI fix |
 
 ---
@@ -666,16 +720,19 @@ Mazda (design-time catalogue)
 ```
 mazda-app/
 ├── backend/
-│   └── src/
-│       ├── Mazda.Domain/          # Entities
-│       ├── Mazda.Application/     # Use cases
-│       ├── Mazda.Infrastructure/  # EF Core, LLM, Playwright, CDP
-│       └── Mazda.Api/             # HTTP endpoints, MCP
+│   ├── src/
+│   │   ├── Mazda.Domain/          # Entities
+│   │   ├── Mazda.Application/     # Use cases
+│   │   ├── Mazda.Infrastructure/  # EF Core, LLM, Playwright, CDP
+│   │   └── Mazda.Api/             # HTTP endpoints, MCP
+│   └── tests/Mazda.Tests/         # Unit tests (dotnet test)
 ├── frontend/
 │   └── src/
 │       ├── app/                   # Router, auth guard
 │       ├── shared/                # API client, components, tokens
-│       └── features/              # auth, studio, signatures, generation, cdp, mcp
+│       └── features/              # auth, studio, signatures, generation, recordings,
+│                                  # roundtrip, traces, usage, settings, cdp, mcp
+├── tools/claude-bridge/           # Host bridge for Claude Code (node bridge.mjs)
 ├── docker-compose.yml
 ├── .env.example
 ├── MAZDA.md

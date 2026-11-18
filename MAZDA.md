@@ -214,6 +214,13 @@ Each step is addressable by URL via `useStepNavigator`.
 Steps 1–6 are **signature-scoped** (per component, done once). Step 7 is
 **run-scoped** — one pass per user request.
 
+Two more signature pages sit beside the wizard: **Learn**
+(`/signatures/:id/learn`) records the user operating the component and learns
+elements and flows from it ([Learn by watching](#learn-by-watching-recordings)),
+and **Round trip** (`/signatures/:id/roundtrip`) checks the functions against a
+recording and fixes the ones that do something else
+([Round trip](#round-trip-check-and-fix-functions-against-a-recording)).
+
 ---
 
 ## Runtime: gather → plan → execute
@@ -241,6 +248,12 @@ Keys are function names; dependency-owned functions are namespaced
 rather than aborting the snapshot — the planner sees what was and wasn't
 observed. Signatures with no state functions skip the browser round-trip
 entirely.
+
+The harness settles the page once before the first state function. Each state
+function then has its own 30 s (`FunctionHarnessBuilder.StateFunctionBudgetMs`).
+One that runs out, usually because it waits for something the page does not
+show right now, lands as `{"__mz_error": "timed out after 30s …"}`, and the
+other state functions still reach the planner.
 
 ### 2. Plan (the only runtime LLM call)
 
@@ -278,6 +291,30 @@ live.
 
 **Fail-fast:** the first failed step stops the run. Everything after it is
 reported as `skipped`.
+
+**A time limit per step, not per run.** Each step races its own 60 s
+(`FunctionHarnessBuilder.ExecuteStepBudgetMs`); the timer starts with the step
+and is cleared when it ends, so a long plan of quick steps is never cut off. A
+stuck step fails with `Step timed out after 60 s: <call> was still running`.
+Playwright's test timeout (`steps × (60 s + 30 s) + 60 s`) is only a safety net,
+for example if closing the browser hangs. The round-trip harness keeps its own
+15-minute total.
+
+**Failure snapshot (forensics).** When a step fails while the page is still
+there, the harness captures one bundle (`__mzCaptureForensics`): URL and
+title, an accessibility snapshot, a trimmed DOM (scripts, styles and SVG
+removed, password values blanked), form-field values, console output and page
+errors, the network log around the failure, and a JPEG screenshot. Every probe
+is time-boxed, and capturing never changes the run's outcome.
+`ForensicsRedactor` scrubs URLs and bodies the same way recordings are
+scrubbed, and headers are never captured. The bundle is stored on the run
+(`generations.forensics_json`) and cleared when the run is executed again.
+Function tests capture the same bundle.
+- The run page shows the failing step's snapshot (`FailureSnapshot`).
+- `GET /api/generations/{id}/forensics` returns the bundle;
+  `GET /api/generations/{id}/forensics/network?urlContains&step&failedOnly`
+  filters its network log.
+- MCP agents get it through the debug tools (see [MCP server](#mcp-server)).
 
 The terminal result is an **execution envelope**:
 
@@ -335,8 +372,9 @@ Key cross-cutting tech:
 - **EF Core 8 + Npgsql** for persistence; schema is provisioned by
   `EnsureCreated` plus a sequence of idempotent `ADD COLUMN IF NOT EXISTS` /
   guarded `ALTER` blocks in `Program.cs` — no migrations folder.
-- **OpenAI SDK** against any OpenAI-compatible endpoint (OpenAI, OpenRouter,
-  vLLM, Ollama, …).
+- **LLM providers:** the OpenAI SDK against any OpenAI-compatible endpoint
+  (OpenAI, OpenRouter, vLLM, Ollama, …), or the Claude Code CLI on the host
+  through a small bridge. See [LLM ports and implementations](#llm-ports-and-implementations).
 - **JWT bearer auth** for the REST API; MCP traffic uses the same tokens.
 
 > ⚠️ Two traps this layout keeps setting. **(1)** `ExecuteSqlRaw` passes SQL
@@ -361,6 +399,11 @@ The Application layer defines the contracts; Infrastructure implements them.
 | `IRelationshipAnalyzer` | 4 | Semantic graph `{nodes, edges}` |
 | `IFlowAnalyzer` | 5 | User-flow DFA JSON |
 | `IFunctionCatalogueGenerator` | 6 | State + action functions |
+| `IFunctionFixer` | 6 | "Fix with AI": a new body for a function whose test failed |
+| `IRecordingAnalyzer` | Learn | Elements and flows from recordings |
+| `IReversePlanner` | Round trip | The calls that reproduce a recording |
+| `IEffectJudge` | Round trip | Picture judge (optional) |
+| `IRoundTripFixer` | Round trip | Diagnosis and fix of a step that differs |
 
 **Runtime:**
 
@@ -372,7 +415,8 @@ The Application layer defines the contracts; Infrastructure implements them.
 
 **Implementations** live in `Mazda.Infrastructure.Llm` (`LlmComponentAnalyzer`,
 `LlmInformationalAnalyzer`, `LlmRelationshipAnalyzer`, `LlmFlowAnalyzer`,
-`LlmFunctionCatalogueGenerator`, `LlmPlanGenerator`) and
+`LlmFunctionCatalogueGenerator`, `LlmPlanGenerator`, `LlmFunctionFixer`,
+`LlmRecordingAnalyzer`, `LlmReversePlanner`, `LlmEffectJudge`, `LlmRoundTripFixer`) and
 `Mazda.Infrastructure.Runner` (`FunctionHarnessBuilder`, `StateGatherer`,
 `PlanInterpreter`, `LocalProcessScriptRunner`).
 
@@ -382,9 +426,10 @@ catalogue generator and the plan generator both use the **generator** model
 rather than the analyzer model — one writes real Playwright, the other needs
 solid instruction-following to ground arguments in observed state.
 
-**Providers.** Every LLM call goes through `ILlmGateway.ChatAsync(LlmTier.Analyzer|Generator)`
-(`Infrastructure/Llm/LlmGateway.cs`), which picks the provider in effect. Messages stay in
-the OpenAI SDK's types; the answer is an `LlmCompletion(Text, Tokens)`.
+**Providers.** Every LLM call goes through `ILlmGateway.ChatAsync(LlmTier.Analyzer|Generator, purpose)`
+(`Infrastructure/Llm/LlmGateway.cs`), which picks the provider in effect and records the call
+(see *LLM usage* below). Messages stay in the OpenAI SDK's types; the answer is an
+`LlmCompletion(Text, Usage)`.
 - `openai`: any OpenAI-compatible API with an API key (`OpenAiCompatibleChat`).
 - `claude-code`: the Claude Code CLI on the user's computer (`ClaudeBridgeChat`). The API runs
   in Docker, so a host bridge, `tools/claude-bridge/bridge.mjs` (Node, no dependencies), runs
@@ -411,6 +456,11 @@ the OpenAI SDK's types; the answer is an `LlmCompletion(Text, Tokens)`.
   - API keys are write-only: the API reports only whether one is saved. The bridge token
     lives only in `.env`.
   - `POST /api/settings/llm/test` sends "Reply with OK" through the settings in effect.
+
+**Relationship vocabulary** (step 4): `labels`, `grouped-under`, `controls`,
+`submits`, `opens`, `closes`, `mutually-exclusive`, `depends-on`, `refers-to`,
+`sibling-of`, `list-item-of`, `value-of`, `related`. Direction matters —
+labellers, controllers and members are always the `from` side.
 
 ### LLM usage
 
@@ -455,11 +505,6 @@ included, in the ledger table `llm_calls` (never pruned, unlike traces).
   - tokens and cost in the runs list;
   - an LLM line in each trace;
   - the price list in Settings.
-
-**Relationship vocabulary** (step 4): `labels`, `grouped-under`, `controls`,
-`submits`, `opens`, `closes`, `mutually-exclusive`, `depends-on`, `refers-to`,
-`sibling-of`, `list-item-of`, `value-of`, `related`. Direction matters —
-labellers, controllers and members are always the `from` side.
 
 ---
 
@@ -764,7 +809,7 @@ rejected):
 short semantic attributes (`icon`, `name`, `title`, `aria-label`,
 `formcontrolname`, … and any token-like input on a custom element) on targets,
 ancestors and outline items, and uses one in path steps:
-`morva-icons.icon-12[icon="close"]` instead of `:nth-of-type(2)`. Framework
+`app-icon.icon-12[icon="close"]` instead of `:nth-of-type(2)`. Framework
 bookkeeping (`_ngcontent-*`, `ng-reflect-*`) is ignored. A click on an icon's
 `<svg>` resolves to the icon component around it (the first custom element or
 element with a key attribute), unless a real control wraps it closely.
@@ -940,8 +985,8 @@ is exercised with the demonstrated choice and one contrast choice. Clicks
 that fall back to a synthetic event are invisible to the recorder and show up
 as "no effect". State functions are not checked yet.
 
-Unit tests for the comparison engine: `backend/tests/Mazda.Tests` (standalone,
-not in `Mazda.sln`; run `dotnet test` there).
+Unit tests for the comparison engine are in `backend/tests/Mazda.Tests` (see
+[Running and operating the stack](#running-and-operating-the-stack)).
 
 ---
 
@@ -954,8 +999,11 @@ API: `GET /api/traces/{id}` (trace + summary), `GET /api/traces?subject={id}`.
 
 **Three layers, one tree.**
 - *Backend spans* (`Application/Common/Tracing/TraceRecorder`): use cases open
-  spans (`trace.Span("diagnose step 3 (LLM)", TraceCategory.Llm)`); the trace
-  of the current async flow is `TraceContext.Current`.
+  spans (`trace.Span("plan (LLM)")`, `trace.Span("save", TraceCategory.Db)`); the
+  trace of the current async flow is `TraceContext.Current`. Each model call
+  inside a span is an `llm` node added by the gateway (`AddLlmCall`) with its
+  tokens and cost, so the spans around it are plain operations and nothing is
+  counted twice.
 - *The runner* (`LocalProcessScriptRunner`): times preparing the run dir,
   spawn → test start (TypeScript + worker) and shut-down, reads the reporter's
   `trace/steps.json` and attaches the script under the open span
@@ -978,7 +1026,8 @@ calls) · **timed out** (any call that hit its timeout, also when the body
 swallowed it with `.catch`). `TraceAnalyzer` counts each node's own time
 once, so the buckets add up to the total, and lists the slowest body lines.
 A `waitForResponse` is charged to the line that starts the wait, not the
-`await`.
+`await`. The summary also totals the trace's model calls (calls, input, cached,
+output, cost), shown as one "LLM: …" line on the trace page.
 
 ---
 
@@ -1010,6 +1059,19 @@ the run appears on the Runs page attributed to the tool.
 
 So an external LLM can use MAZDA as a tool: *"drive this UI to accomplish X."*
 
+**When a run fails, the agent can look.** A failed invocation's result carries
+its `generation_id` and a failure report: the page state at the failing step,
+from the [failure snapshot](#3-execute-deterministic). Three fixed, read-only
+debug tools are listed next to the user's tools (`McpDebugUseCases`), all keyed
+by that `generation_id` and scoped to the caller's own runs:
+- `get_run_failure`: the full report. A run that passed, or is still running,
+  says so instead of describing an old failure.
+- `get_step_artifact`: one part of the bundle, paged with `offset` / `limit`:
+  `meta`, `aria`, `dom`, `network`, `console`, `fields`, `log` (the runner log)
+  or `screenshot` (returned as an image).
+- `search_run_network`: the network log filtered by `url_contains`, `step_id` and
+  `failed_only`.
+
 ---
 
 ## Frontend
@@ -1026,9 +1088,19 @@ Pages:
 
 - **Signature-scoped:** `LibraryPage`, `UploadPage`, `EditorPage` (step 2),
   `InformationalReviewPage` (step 3), `RelationshipsPage` (step 4),
-  `UserFlowsPage` (step 5), `FunctionsPage` (step 6).
-- **Run-scoped:** `RunPage` (step 7), `RunsPage` (history).
-- `McpServerPage`, `StudioPage`, `AuthPage`.
+  `UserFlowsPage` (step 5), `FunctionsPage` (step 6), `LearnPage`
+  (`/signatures/:id/learn`, recordings), `RoundTripPage`
+  (`/signatures/:id/roundtrip`).
+- **Run-scoped:** `RunPage` (step 7, with the failure snapshot and the LLM
+  usage panel), `RunsPage` (history, with tokens and cost per run).
+- `TracePage` (`/traces/:id`), `UsagePage` (`/usage`), `SettingsPage`
+  (`/settings`: language model, prices), `McpServerPage`, `StudioPage`,
+  `AuthPage`.
+
+Shared pieces worth knowing: `<Select>` (below), `ImageViewer` (click a
+picture to open it fitted, click again for real size, ← / → through a gallery,
+Esc to close; used for round-trip pictures and the failure snapshot),
+`FailureSnapshot`, and `UsagePanel` (`features/usage`).
 
 `FunctionsPage` shows two panes — state functions above, action functions
 below — with a per-row parameter preview parsed from the schema, a
@@ -1089,8 +1161,13 @@ PostgreSQL via Npgsql. Tables:
 | `signature_dependencies` | composite PK `(signature_id, depends_on_signature_id)` |
 | `signature_functions` | the catalogue — unique on `(signature_id, name)` |
 | `user_settings` | per-user CDP attachment (port + tab `targetId`) |
-| `generations` | one row per run |
+| `generations` | one row per run (incl. `forensics_json`, the failure snapshot) |
 | `mcp_tools` | external-agent tool exposures (one `default_prompt`) |
+| `recording_sessions`, `recording_events`, `recording_screenshots` | [Learn by watching](#learn-by-watching-recordings) |
+| `roundtrip_sessions`, `roundtrip_shots`, `function_body_history`, `function_profiles` | [Round trip](#round-trip-check-and-fix-functions-against-a-recording) |
+| `run_traces` | [Traces](#trace-where-the-time-goes), latest 30 per subject |
+| `llm_settings` | one installation-wide row: provider, models, keys, prices |
+| `llm_calls` | the [LLM usage](#llm-usage) ledger, one row per model call, never pruned |
 
 A `generations` row is a single-shot record of one request, filled in order:
 `prompt` → `gathered_state_json` → `plan_json` → `execution_envelope_json`.
@@ -1195,6 +1272,20 @@ filesystem and hot-reloads, while the backend keeps running in Docker:
 cd frontend && npm install && npm run dev     # http://localhost:5173
 ```
 
+**Unit tests** live in `backend/tests/Mazda.Tests` (standalone, not in
+`Mazda.sln`): the round-trip comparison, traces, the body lint, the execute
+harness, LLM providers and LLM usage. Without a local .NET SDK:
+
+```bash
+docker run --rm -v "$PWD/backend:/src" -w /src/tests/Mazda.Tests \
+  mcr.microsoft.com/dotnet/sdk:8.0 dotnet test
+```
+
+**The Claude Code bridge** runs on the host, not in Docker
+(`node tools/claude-bridge/bridge.mjs`). Restart it after pulling changes to
+`tools/claude-bridge/`; each call is logged as one line with its tokens and
+cost.
+
 **Introspection recipes**
 
 ```bash
@@ -1212,6 +1303,11 @@ SELECT element_selector, category, "ElementType", "ElementDescription",
 FROM signature_elements
 WHERE "SignatureId" = '<uuid>'
 ORDER BY "Order";
+
+-- LLM usage of one run or round trip
+SELECT purpose, resolved_model, input_tokens, cache_read_tokens,
+       cache_write_tokens, output_tokens, cost_usd, cost_source
+FROM llm_calls WHERE subject_id = '<uuid>' ORDER BY "CreatedAt";
 
 -- A signature's function catalogue
 SELECT name, kind, description, "order"
@@ -1246,7 +1342,6 @@ ORDER BY "order";
 - **Don't name a `CancellationToken` parameter `_`** in a handler that also does
   `_ = Task.Run(...)` — the parameter shadows the discard and the compiler tries
   to assign a `Task` to a `CancellationToken`.
-- **`gh` CLI is not installed** on the dev machine; PRs go through a compare URL.
 - Most rules in [Playwright authoring rules](#playwright-authoring-rules) exist
   because a single observed failure got escalated to a hard rule. When a
   generated body fails in a new way, the fix is usually a new rule there rather
@@ -1274,6 +1369,12 @@ ORDER BY "order";
 | **Harness** | The ephemeral `.spec.ts` that `FunctionHarnessBuilder` stitches from function bodies for one gather or execute pass. |
 | **CDP** | Chrome DevTools Protocol. MAZDA connects to an externally-running browser instead of bundling Chromium. |
 | **MCP** | Model Context Protocol. The server-side tool exposure that lets external agents call MAZDA. |
+| **Failure snapshot** | The forensics bundle captured when a step fails: page, DOM, console, network, screenshot. |
+| **Recording** | A session of the user operating the attached tab, captured for learn by watching. |
+| **Episode** | One action and its effects (DOM, network, URL), condensed from a recording's events. |
+| **Round trip** | Replaying a recording through the functions and comparing each step with what the user did; differing functions are fixed. |
+| **Trace** | Where the time of a function check, run or round trip went, down to each body line. |
+| **LLM call ledger** | `llm_calls`: every model call with its tokens, cost and what it was for. |
 
 ---
 
