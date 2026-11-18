@@ -63,7 +63,7 @@ public class LlmReversePlanner(ILlmGateway llm) : IReversePlanner
         string episodesJson,
         CancellationToken ct = default)
     {
-        var chat = await llm.ChatAsync(LlmTier.Generator, ct);
+        var chat = await llm.ChatAsync(LlmTier.Generator, "rebuild the plan", ct);
 
         var functions = JsonSerializer.Serialize(actions.OrderBy(f => f.Order).Select(f => new
         {
@@ -155,7 +155,7 @@ public class LlmEffectJudge(ILlmGateway llm) : IEffectJudge
         string? demoBefore, string? demoAfter, string? replayBefore, string? replayAfter,
         CancellationToken ct = default)
     {
-        var chat = await llm.ChatAsync(LlmTier.Generator, ct);
+        var chat = await llm.ChatAsync(LlmTier.Generator, "judge picture", ct);
         var parts = new List<ChatMessageContentPart>
         {
             ChatMessageContentPart.CreateTextPart($"Operation: {stepDescription}\n\nDifferences found automatically:\n{differences}"),
@@ -258,7 +258,7 @@ public class LlmRoundTripFixer(ILlmGateway llm) : IRoundTripFixer
         RoundTripEvidence ev,
         CancellationToken ct = default)
     {
-        var chat = await llm.ChatAsync(LlmTier.Generator, ct);
+        var chat = await llm.ChatAsync(LlmTier.Generator, "diagnose step", ct);
 
         var payload = JsonSerializer.Serialize(new
         {

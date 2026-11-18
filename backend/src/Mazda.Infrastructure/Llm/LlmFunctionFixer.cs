@@ -134,7 +134,7 @@ public class LlmFunctionFixer(ILlmGateway llm) : IFunctionFixer
         string? userHint,
         CancellationToken ct = default)
     {
-        var chat = await llm.ChatAsync(LlmTier.Generator, ct);
+        var chat = await llm.ChatAsync(LlmTier.Generator, "fix function", ct);
 
         var payload = JsonSerializer.Serialize(new
         {

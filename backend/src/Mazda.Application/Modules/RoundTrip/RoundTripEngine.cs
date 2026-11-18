@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json.Nodes;
+using Mazda.Application.Common.Usage;
 using Mazda.Application.Common.Abstractions;
 using Mazda.Application.Common.Tracing;
 using Mazda.Application.Modules.Cdp;
@@ -61,6 +62,8 @@ public sealed class RoundTripEngine(
     public async Task RunAsync(Guid sessionId, Guid ownerId, CancellationToken ct = default)
     {
         _trace = TraceContext.Begin("roundtrip", "round trip");
+        // Its own usage scope: this runs in the background, after the request that started it.
+        LlmUsageContext.Begin(ownerId, LlmUsageKinds.RoundTrip, sessionId, "round trip");
         _ownerId = ownerId;
         var root = _trace.Span("round trip");
         try
@@ -108,6 +111,7 @@ public sealed class RoundTripEngine(
             _deps = (await resolver.ResolveAsync(_sig.Id, ownerId, ct))?.Where(s => s.Id != _sig.Id).ToList();
         _plan = RoundTripJson.Read<PlanModel>(_session.PlanJson) ?? throw new InvalidOperationException("The plan could not be read.");
         _trace.Label = $"round trip: {_plan.Steps.Count} step(s) ({string.Join(", ", _plan.Steps.Select(x => x.Call).Distinct().Take(4))})";
+        if (LlmUsageContext.Current is { } usageScope) usageScope.SubjectLabel = _trace.Label;
         var events = await recordings.ListAllEventsAsync(_session.RecordingId, ct);
         if (events.Count == 0) throw new InvalidOperationException("The recording has no events.");
         _demo = RoundTripDemo.Build(_plan, events);
@@ -179,7 +183,7 @@ public sealed class RoundTripEngine(
             using (_trace.Span($"collect evidence for step {target + 1}", TraceCategory.Db))
                 evidence = await EvidenceAsync(target, results, current, currentRun, previousAttempts.GetValueOrDefault(target)?.ToString(), ct);
             RoundTripFix fix;
-            try { using (_trace.Span($"diagnose step {target + 1} (LLM)", TraceCategory.Llm)) fix = await fixer.DiagnoseAsync(_sig, fn, actions, evidence, ct); }
+            try { using (_trace.Span($"diagnose step {target + 1} (LLM)")) fix = await fixer.DiagnoseAsync(_sig, fn, actions, evidence, ct); }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
                 Say("error", $"The repair model could not be reached: {ExceptionMessage.Describe(ex)}", fn.Name);
@@ -466,7 +470,7 @@ public sealed class RoundTripEngine(
             var replayBefore = await roundTrips.FindShotAsync(_session.Id, runNo, step, "before", ct);
             var replayAfter = await roundTrips.FindShotAsync(_session.Id, runNo, step, "after", ct);
             var diffs = string.Join("\n", j.Findings.Where(f => f.Severity != "note").Select(f => "- " + f.Summary));
-            using var span = _trace.Span($"picture judge, step {step + 1} (LLM)", TraceCategory.Llm);
+            using var span = _trace.Span($"picture judge, step {step + 1} (LLM)");
             var v = await judge.JudgeAsync($"{_plan.Steps[step].Call} {_plan.Steps[step].ArgsJson}: {_demo.Descriptions[step]}",
                 diffs, demoBefore, demoAfter, replayBefore, replayAfter, ct);
             return (v.Verdict, v.Reason);

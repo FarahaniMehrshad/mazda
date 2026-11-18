@@ -1,3 +1,4 @@
+using Mazda.Application.Common.Usage;
 using Mazda.Application.Common.Tracing;
 using FluentValidation;
 using MediatR;
@@ -180,6 +181,7 @@ public class GenerateFunctionCatalogueHandler(
         FunctionCatalogueResult result;
         try
         {
+            LlmUsageContext.SetSubject(LlmUsageKinds.Catalogue, sig.Id, $"{sig.Name}: function catalogue");
             result = await generator.GenerateAsync(sig, deps, recordedEpisodes, ct);
         }
         catch (InvalidOperationException ex)
@@ -729,6 +731,7 @@ public class FixSignatureFunctionHandler(
         FunctionFixResult result;
         try
         {
+            LlmUsageContext.SetSubject(LlmUsageKinds.FunctionFix, fn.Id, $"{sig.Name}.{fn.Name}: fix");
             result = await fixer.FixAsync(sig, deps, fn, failure, cmd.UserHint, ct);
         }
         catch (InvalidOperationException ex)

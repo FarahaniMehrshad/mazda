@@ -80,7 +80,7 @@ public class LlmFlowAnalyzer(ILlmGateway llm) : IFlowAnalyzer
 
     public async Task<FlowAnalysisResult> InferFlowsAsync(Signature signature, CancellationToken ct = default)
     {
-        var chat = await llm.ChatAsync(LlmTier.Analyzer, ct);
+        var chat = await llm.ChatAsync(LlmTier.Analyzer, "analyze user flows", ct);
 
         var sigJson = JsonSerializer.Serialize(new
         {

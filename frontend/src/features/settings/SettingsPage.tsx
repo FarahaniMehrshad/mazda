@@ -6,6 +6,7 @@ import {
   useLlmSettings,
   useSaveLlmSettings,
   useTestLlm,
+  type LlmPrice,
   type LlmProvider,
   type LlmSettingsDto,
   type LlmTestResult,
@@ -215,10 +216,149 @@ export function SettingsPage() {
             )}
           </div>
         )}
+
+        {d && saved && (
+          <PricesCard
+            key={JSON.stringify(d.prices)}
+            prices={d.prices}
+            customized={d.pricesCustomized}
+            onSave={async (prices) => { await save.mutateAsync({ ...toBody(saved), prices }); }}
+            onReset={async () => { await save.mutateAsync({ ...toBody(saved), resetPrices: true }); }}
+          />
+        )}
       </div>
     </ScreenShell>
   );
 }
+
+// ── Prices ───────────────────────────────────────────────────────────
+
+/** One editable row: text while typing, parsed on save. */
+interface PriceRow { model: string; input: string; cached: string; write: string; output: string }
+
+const toRow = (p: LlmPrice): PriceRow => ({
+  model: p.model,
+  input: String(p.inputPerM),
+  cached: p.cachedInputPerM === null ? "" : String(p.cachedInputPerM),
+  write: p.cacheWritePerM === null ? "" : String(p.cacheWritePerM),
+  output: String(p.outputPerM),
+});
+
+/** Parses the rows; returns the problem instead when one is wrong. */
+function parseRows(rows: PriceRow[]): LlmPrice[] | string {
+  const out: LlmPrice[] = [];
+  const seen = new Set<string>();
+  for (const [i, r] of rows.entries()) {
+    const model = r.model.trim();
+    if (!model) return `Row ${i + 1} needs a model name.`;
+    if (seen.has(model.toLowerCase())) return `${model} is listed twice.`;
+    seen.add(model.toLowerCase());
+    const num = (v: string, optional: boolean): number | null | undefined => {
+      if (v.trim() === "") return optional ? null : undefined;
+      const n = Number(v);
+      return Number.isFinite(n) && n >= 0 ? n : undefined;
+    };
+    const input = num(r.input, false);
+    const output = num(r.output, false);
+    const cached = num(r.cached, true);
+    const write = num(r.write, true);
+    if (input == null || output == null || cached === undefined || write === undefined)
+      return `${model}: prices must be numbers of 0 or more (input and output are required).`;
+    out.push({ model, inputPerM: input, cachedInputPerM: cached, cacheWritePerM: write, outputPerM: output });
+  }
+  return out;
+}
+
+function PricesCard({ prices, customized, onSave, onReset }: {
+  prices: LlmPrice[];
+  customized: boolean;
+  onSave: (p: LlmPrice[]) => Promise<void>;
+  onReset: () => Promise<void>;
+}) {
+  const [rows, setRows] = useState<PriceRow[]>(() => prices.map(toRow));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const dirty = JSON.stringify(rows) !== JSON.stringify(prices.map(toRow));
+  const setCell = (i: number, k: keyof PriceRow, v: string) =>
+    setRows((rs) => rs.map((r, j) => (j === i ? { ...r, [k]: k === "model" ? v : v.replace(/[^0-9.]/g, "") } : r)));
+
+  const run = async (work: () => Promise<void>) => {
+    setErr(null);
+    setBusy(true);
+    try { await work(); } catch (e) { setErr(e instanceof ApiError ? e.message : String(e)); } finally { setBusy(false); }
+  };
+  const save = () => {
+    const parsed = parseRows(rows);
+    if (typeof parsed === "string") { setErr(parsed); return; }
+    void run(() => onSave(parsed));
+  };
+
+  return (
+    <section className="mz-glass" aria-label="Prices" style={{ padding: 22, borderRadius: 16, display: "flex", flexDirection: "column", gap: 14, maxWidth: 820 }}>
+      <div>
+        <div style={{ fontSize: 15, fontWeight: 500 }}>Prices</div>
+        <div style={{ color: "var(--text-3)", marginTop: 4, fontSize: 12.5, lineHeight: 1.55 }}>
+          US dollars per 1 million tokens, used to estimate what API-key calls cost on the Usage page. A model
+          matches its exact name or a dated snapshot of it (<code>gpt-4o-2024-08-06</code> uses <code>gpt-4o</code>).
+          An empty cached or cache-write price uses the input price. Claude Code and OpenRouter report each call's
+          cost themselves, so these prices are not used for them; Claude Code's is the API list price, and on a
+          subscription you are not billed per token. Editing prices does not change calls already recorded.
+          {!customized && " These are the built-in prices (OpenAI's standard rates)."}
+        </div>
+      </div>
+      <div className="mz-scroll" style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead>
+            <tr>
+              {["Model", "Input", "Cached input", "Cache write", "Output", ""].map((h) => (
+                <th key={h} style={{ textAlign: "left", padding: "4px 6px", fontFamily: "var(--f-mono)", fontSize: 10.5, fontWeight: 400,
+                  letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-3)", whiteSpace: "nowrap" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i}>
+                <td style={{ padding: "3px 6px", minWidth: 160 }}>
+                  <input style={cellInput} value={r.model} aria-label={`Model, row ${i + 1}`} onChange={(e) => setCell(i, "model", e.target.value)} />
+                </td>
+                {(["input", "cached", "write", "output"] as const).map((k) => (
+                  <td key={k} style={{ padding: "3px 6px", width: 104 }}>
+                    <input style={{ ...cellInput, textAlign: "right", fontFamily: "var(--f-mono)" }} inputMode="decimal" value={r[k]}
+                      placeholder={k === "cached" || k === "write" ? "= input" : ""}
+                      aria-label={`${{ input: "Input", cached: "Cached input", write: "Cache write", output: "Output" }[k]} price, row ${i + 1}`}
+                      onChange={(e) => setCell(i, k, e.target.value)} />
+                  </td>
+                ))}
+                <td style={{ padding: "3px 6px", width: 1 }}>
+                  <button type="button" aria-label={`Remove ${r.model || `row ${i + 1}`}`} onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))}
+                    style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", fontSize: 15, padding: "2px 6px" }}>×</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <BtnGhost onClick={() => setRows((rs) => [...rs, { model: "", input: "", cached: "", write: "", output: "" }])}>Add a model</BtnGhost>
+        <BtnPrimary onClick={save} disabled={!dirty || busy}>{busy ? "Saving…" : dirty ? "Save prices" : "Prices saved"}</BtnPrimary>
+        {customized && <BtnGhost onClick={() => void run(onReset)} disabled={busy}>Reset to built-in prices</BtnGhost>}
+      </div>
+      {err && <Pill tone="err">{err}</Pill>}
+    </section>
+  );
+}
+
+const cellInput: CSSProperties = {
+  width: "100%",
+  padding: "6px 8px",
+  background: "var(--glass-1)",
+  border: "1px solid var(--glass-stroke-2)",
+  borderRadius: 6,
+  color: "var(--text-1)",
+  fontSize: 12.5,
+  outline: "none",
+};
 
 function ProviderCard({ checked, onSelect, title, text }: { checked: boolean; onSelect: () => void; title: string; text: string }) {
   const descId = useId();

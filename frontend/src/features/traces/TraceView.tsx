@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Pill } from "@/shared/components/Primitives";
 import { Select } from "@/shared/components/Select";
 import { catOf, fmtMs, useTrace, type TraceNode, type TraceView as TraceData } from "./api";
+import { fmtInt, fmtTok, fmtUsd, fmtUsdExact } from "@/features/usage/api";
 
 /**
  * Where the time went in one operation:
@@ -54,6 +55,16 @@ function Breakdown({ data }: { data: TraceData }) {
           {fmtMs(avoidable)} outside network waits ({Math.round((avoidable / total) * 100)}%)
         </span>
       </div>
+      {data.summary.llm && (
+        <div style={{ fontSize: 12, color: "var(--text-2)", marginTop: 8, fontFamily: "var(--f-mono)" }}
+          title={`${fmtInt(data.summary.llm.input)} input + ${fmtInt(data.summary.llm.cacheRead)} cache read + ${fmtInt(data.summary.llm.cacheWrite)} cache write + ${fmtInt(data.summary.llm.output)} output (${fmtInt(data.summary.llm.reasoning)} reasoning) · ${fmtUsdExact(data.summary.llm.costUsd)}`}>
+          LLM: {data.summary.llm.calls} call{data.summary.llm.calls === 1 ? "" : "s"}
+          {" · "}{fmtTok(data.summary.llm.input + data.summary.llm.cacheRead + data.summary.llm.cacheWrite)} in
+          {data.summary.llm.cacheRead > 0 && <> ({fmtTok(data.summary.llm.cacheRead)} cached)</>}
+          {" · "}{fmtTok(data.summary.llm.output)} out
+          {" · "}{fmtUsd(data.summary.llm.costUsd)}{data.summary.llm.unknownCostCalls ? " + unpriced calls" : ""}
+        </div>
+      )}
       <div style={{ display: "flex", height: 14, borderRadius: 7, overflow: "hidden", marginTop: 12, background: "var(--glass-1)" }}>
         {buckets.map((b) => (
           <div key={b.category} title={`${catOf(b.category).label}: ${fmtMs(b.ms)}`}
@@ -299,6 +310,12 @@ function Timeline({ data }: { data: TraceData }) {
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: n.timedOut ? "var(--err)" : undefined }}
                   title={(n.fn && n.line ? `${n.fn}:${n.line} · ` : "") + n.name + (n.error ? ` — ${n.error}` : "")}>
                   {n.name}{n.fn && n.line ? <span style={{ color: "var(--text-3)" }}> · {n.fn}:{n.line}</span> : null}
+                  {n.llm ? (
+                    <span style={{ color: "var(--text-3)", fontFamily: "var(--f-mono)" }}
+                      title={`${fmtInt(n.llm.input)} input + ${fmtInt(n.llm.cacheRead)} cache read + ${fmtInt(n.llm.cacheWrite)} cache write + ${fmtInt(n.llm.output)} output · ${fmtUsdExact(n.llm.costUsd)} (${n.llm.costSource})`}>
+                      {" · "}{fmtTok(n.llm.input + n.llm.cacheRead + n.llm.cacheWrite)} in / {fmtTok(n.llm.output)} out · {fmtUsd(n.llm.costUsd)}
+                    </span>
+                  ) : null}
                 </span>
               </div>
               <span style={{ fontFamily: "var(--f-mono)", textAlign: "right" }}>{fmtMs(n.ms)}</span>

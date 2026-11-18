@@ -412,6 +412,50 @@ the OpenAI SDK's types; the answer is an `LlmCompletion(Text, Tokens)`.
     lives only in `.env`.
   - `POST /api/settings/llm/test` sends "Reply with OK" through the settings in effect.
 
+### LLM usage
+
+Every LLM call is recorded exactly as the provider reported it, failed and cancelled calls
+included, in the ledger table `llm_calls` (never pruned, unlike traces).
+
+- **One place records:** `LlmGateway.ChatAsync(tier, purpose)` wraps the provider in
+  `MeteredChat`. Each call writes one row through `ILlmUsageRecorder` (its own unit of work,
+  never throws) and adds an `llm` node with the usage to the current trace.
+- **Token kinds, one convention for every provider:**
+  - `input` is uncached input only;
+  - `cache_read` and `cache_write` are separate, because they are priced differently;
+  - `output` includes reasoning, and `reasoning` is the part of it spent thinking.
+
+  OpenAI's `prompt_tokens` includes cached tokens, so they are split out. The response is read
+  as raw JSON, because the SDK drops `cached_tokens`, OpenRouter's `usage.cost` and proxies'
+  cache-write counts. The bridge returns Claude Code's per-model `modelUsage`.
+- **Cost:**
+  - `reported`: the provider said, as Claude Code (API list price; not billed per token on a
+    subscription) and OpenRouter do.
+  - `estimated`: tokens × the price list in Settings (`llm_settings.prices_json`, built-in
+    OpenAI prices when empty). A model matches its exact name or a dated snapshot of it, never
+    a mere prefix. The prices used are stored on the row, so editing prices never rewrites
+    history.
+  - `unknown`: neither of the above.
+- **Attribution:** `LlmUsageContext` is an AsyncLocal, like `TraceContext`.
+  - `LlmUsageScopeBehavior` opens it for every MediatR request, with the owner and a kind
+    named after the request.
+  - Handlers that reach the LLM name their subject with `SetSubject`, e.g. run → generation,
+    roundtrip → session, catalogue → signature, function-fix → function.
+  - Background work started with `Task.Run` inherits it; `RoundTripEngine` opens its own.
+  - A round trip's session id is chosen before its plan is rebuilt, so that call counts for it.
+  - Calls with no scope are still recorded, as `unattributed`.
+- **API:**
+  - `GET /api/usage/calls?subject=` returns a run's or round trip's calls and totals;
+  - `GET /api/usage/subjects?ids=` returns totals for lists;
+  - `GET /api/usage/summary?from&to&tz` returns totals, per day, per model, per kind and the
+    latest calls.
+- **UI:**
+  - the Usage page (`/usage`);
+  - a usage panel on the run and round-trip pages;
+  - tokens and cost in the runs list;
+  - an LLM line in each trace;
+  - the price list in Settings.
+
 **Relationship vocabulary** (step 4): `labels`, `grouped-under`, `controls`,
 `submits`, `opens`, `closes`, `mutually-exclusive`, `depends-on`, `refers-to`,
 `sibling-of`, `list-item-of`, `value-of`, `related`. Direction matters —

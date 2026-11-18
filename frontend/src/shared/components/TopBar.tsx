@@ -30,6 +30,7 @@ const NAV = [
   { label: "Signatures", path: "/signatures" },
   { label: "Runs", path: "/runs" },
   { label: "MCP", path: "/mcp" },
+  { label: "Usage", path: "/usage" },
   { label: "Settings", path: "/settings" },
 ];
 

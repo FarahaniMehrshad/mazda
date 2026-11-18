@@ -40,6 +40,9 @@ public static class DependencyInjection
         services.Configure<ClaudeBridgeOptions>(cfg.GetSection("ClaudeBridge"));
         services.AddHttpClient(ClaudeBridgeChat.HttpClientName, c => c.Timeout = Timeout.InfiniteTimeSpan);
         services.AddSingleton<Mazda.Application.Modules.Settings.ILlmSettingsStore, LlmSettingsStore>();
+        services.AddSingleton<LlmUsageStore>();
+        services.AddSingleton<Mazda.Application.Common.Usage.ILlmUsageRecorder>(sp => sp.GetRequiredService<LlmUsageStore>());
+        services.AddSingleton<Mazda.Application.Common.Usage.ILlmUsageQueries>(sp => sp.GetRequiredService<LlmUsageStore>());
         services.AddSingleton<ILlmGateway, LlmGateway>();
         services.AddSingleton<Mazda.Application.Modules.Settings.ILlmConnectionTester, LlmConnectionTester>();
         services.Configure<Cdp.CdpOptions>(cfg.GetSection("Cdp"));

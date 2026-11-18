@@ -183,7 +183,7 @@ public class LlmRecordingAnalyzer(ILlmGateway llm) : IRecordingAnalyzer
         // interpreting behaviour (which candidate generalises, which effect a
         // script must wait on) is where small models slip — and every
         // function generated later inherits the result.
-        var chat = await llm.ChatAsync(LlmTier.Generator, ct);
+        var chat = await llm.ChatAsync(LlmTier.Generator, "analyze recording", ct);
 
         var recordings = new JsonArray();
         foreach (var s in sessions)

@@ -1,3 +1,4 @@
+using Mazda.Application.Common.Usage;
 using Mazda.Application.Common.Tracing;
 using System.Text.Json;
 using FluentValidation;
@@ -195,6 +196,7 @@ public class PlanRunHandler(
         await generations.AddAsync(gen, ct);
         await uow.SaveChangesAsync(ct);
 
+        LlmUsageContext.SetSubject(LlmUsageKinds.Run, gen.Id, cmd.Prompt.Length > 120 ? cmd.Prompt[..120] + "…" : cmd.Prompt);
         var trace = TraceContext.Begin("plan", "gather + plan: " + (cmd.Prompt.Length > 80 ? cmd.Prompt[..80] + "…" : cmd.Prompt));
         var root = trace.Span("gather state and plan");
         try
@@ -222,7 +224,7 @@ public class PlanRunHandler(
                 await uow.SaveChangesAsync(ct);
 
             PlanGenerationResult planResult;
-            using (trace.Span("plan (LLM)", TraceCategory.Llm))
+            using (trace.Span("plan (LLM)"))
                 planResult = await planner.GeneratePlanAsync(sig, deps, state, cmd.Prompt, ct);
             gen.RecordPlan(GenerationMapper.SerializePlan(planResult.Plan));
             gen.MarkReady(planResult.TokensUsed);

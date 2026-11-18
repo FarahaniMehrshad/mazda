@@ -52,6 +52,19 @@ public sealed class TraceRecorder
         _current.Value = s.Parent;
     }
 
+    /// <summary>Adds a finished LLM call (it ran from <paramref name="start"/> for <paramref name="ms"/>) under the current span.</summary>
+    public void AddLlmCall(string name, long start, long ms, TraceLlmUsage usage, string? error = null)
+    {
+        lock (_gate)
+        {
+            _nodes.Add(new TraceNode(_nextId++, _current.Value, name, TraceCategory.Llm, start, Math.Max(0, ms))
+            {
+                Llm = usage,
+                Error = error,
+            });
+        }
+    }
+
     /// <summary>Attaches a Playwright script's nodes under the current span.</summary>
     public void AddScript(ScriptTraceResult script)
     {

@@ -214,6 +214,20 @@ public static class Endpoints
         traces.MapGet("/", async ([FromQuery] Guid subject, ISender s) =>
             (await s.Send(new Mazda.Application.Modules.Traces.ListTracesQuery(subject))).ToHttp());
 
+        // LLM usage: every call with its exact tokens and cost.
+        var usage = app.MapGroup("/api/usage").RequireAuthorization().WithTags("Usage");
+        usage.MapGet("/calls", async ([FromQuery] Guid subject, ISender s) =>
+            (await s.Send(new Mazda.Application.Modules.Usage.GetSubjectUsageQuery(subject))).ToHttp());
+        usage.MapGet("/subjects", async ([FromQuery] string? ids, ISender s) =>
+        {
+            var list = (ids ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(x => Guid.TryParse(x, out var g) ? g : (Guid?)null).OfType<Guid>().ToList();
+            return (await s.Send(new Mazda.Application.Modules.Usage.GetSubjectsUsageQuery(list))).ToHttp();
+        });
+        usage.MapGet("/summary", async ([FromQuery] DateTime? from, [FromQuery] DateTime? to, [FromQuery] int? tz, ISender s) =>
+            (await s.Send(new Mazda.Application.Modules.Usage.GetUsageSummaryQuery(
+                from?.ToUniversalTime(), to?.ToUniversalTime(), tz ?? 0))).ToHttp());
+
         // ── MCP tools (auth) — REST CRUD ──────────────────────────
         // ── CDP attachment ────────────────────────────────────────
         // Which Chrome, and which tab, MAZDA drives. GET probes the browser

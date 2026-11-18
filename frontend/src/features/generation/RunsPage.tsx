@@ -2,10 +2,12 @@ import { useNavigate } from "react-router-dom";
 import { TopBar } from "@/shared/components/TopBar";
 import { ScreenShell, Pill } from "@/shared/components/Primitives";
 import { useRecentGenerations } from "./api";
+import { fmtInt, fmtUsd, useSubjectsUsage } from "@/features/usage/api";
 
 export function RunsPage() {
   const navigate = useNavigate();
   const { data: runs = [], isLoading } = useRecentGenerations(50);
+  const usage = useSubjectsUsage(runs.map((r) => r.id)).data;
 
   return (
     <ScreenShell>
@@ -44,7 +46,7 @@ export function RunsPage() {
               style={{
                 padding: 16,
                 display: "grid",
-                gridTemplateColumns: "1fr 120px 180px 90px",
+                gridTemplateColumns: "1fr 170px 180px 90px",
                 gap: 16,
                 alignItems: "center",
                 cursor: "pointer",
@@ -88,7 +90,11 @@ export function RunsPage() {
                 </div>
               </div>
               <div style={{ fontFamily: "var(--f-mono)", fontSize: 11, color: "var(--text-3)" }}>
-                {r.tokensUsed.toLocaleString()} tok
+                {usage?.[r.id]?.calls
+                  ? <span title={`${fmtInt(usage[r.id].input)} input + ${fmtInt(usage[r.id].cacheRead)} cache read + ${fmtInt(usage[r.id].cacheWrite)} cache write + ${fmtInt(usage[r.id].output)} output`}>
+                      {fmtInt(usage[r.id].total)} tok · {fmtUsd(usage[r.id].costUsd)}{usage[r.id].unknownCostCalls ? "+?" : ""}
+                    </span>
+                  : `${r.tokensUsed.toLocaleString()} tok`}
               </div>
               <div style={{ fontFamily: "var(--f-mono)", fontSize: 11, color: "var(--text-3)" }}>
                 {new Date(r.createdAt).toLocaleString()}

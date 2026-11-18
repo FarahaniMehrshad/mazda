@@ -115,6 +115,37 @@ const readBody = (req) => new Promise((resolveBody, reject) => {
   req.on('error', reject);
 });
 
+/**
+ * Exact usage from Claude Code's result line. `inputTokens` is uncached input
+ * only (Anthropic's convention): cache reads and cache writes are separate and
+ * priced differently. `models` lists every model the call used (Claude Code
+ * reports them per model), each with its own list-price cost.
+ */
+function usageOf(result) {
+  const u = result.usage ?? {};
+  const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const models = Object.entries(result.modelUsage ?? {}).map(([id, m]) => ({
+    id,
+    inputTokens: n(m.inputTokens),
+    cacheReadTokens: n(m.cacheReadInputTokens),
+    cacheWriteTokens: n(m.cacheCreationInputTokens),
+    outputTokens: n(m.outputTokens),
+    thinkingTokens: n(m.thinkingTokens),
+    costUsd: n(m.costUSD),
+  }));
+  const sum = (k) => models.reduce((s, m) => s + m[k], 0);
+  const has = models.length > 0;
+  return {
+    inputTokens: has ? sum('inputTokens') : n(u.input_tokens),
+    cacheReadTokens: has ? sum('cacheReadTokens') : n(u.cache_read_input_tokens),
+    cacheWriteTokens: has ? sum('cacheWriteTokens') : n(u.cache_creation_input_tokens),
+    outputTokens: has ? sum('outputTokens') : n(u.output_tokens),
+    thinkingTokens: has ? sum('thinkingTokens') : n(u.output_tokens_details?.thinking_tokens),
+    costUsd: n(result.total_cost_usd),
+    models,
+  };
+}
+
 /** Runs one isolated `claude -p` call. Resolves to { status, body }. */
 function complete({ model, system, content, timeoutSec }) {
   return new Promise((done) => {
@@ -168,24 +199,29 @@ function complete({ model, system, content, timeoutSec }) {
         finish(502, { error: `Claude Code exited (code ${code}) without an answer. ${err.trim().slice(-600)}`.trim() });
         return;
       }
-      const u = result.usage ?? {};
-      const inputTokens = (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
-      const outputTokens = u.output_tokens ?? 0;
+      const usage = usageOf(result);
+      // Kept for older Mazda versions: all input (uncached + cache read + cache write) in one number.
+      const inputTokens = usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
+      const outputTokens = usage.outputTokens;
       if (result.is_error || result.subtype !== 'success') {
         const why = typeof result.result === 'string' && result.result.trim()
           ? result.result.trim()
           : (result.errors?.join?.('; ') || result.subtype || 'unknown error');
-        finish(502, { error: `Claude Code failed: ${why}` });
+        // A failed call can still have used tokens: report them.
+        finish(502, { error: `Claude Code failed: ${why}`, usage });
         return;
       }
-      console.log(`${new Date().toISOString()}  ${model || 'default'}  ${ms} ms  ${inputTokens} in / ${outputTokens} out`);
+      console.log(`${new Date().toISOString()}  ${model || 'default'}  ${ms} ms  `
+        + `${usage.inputTokens} in + ${usage.cacheReadTokens} cache read + ${usage.cacheWriteTokens} cache write / `
+        + `${usage.outputTokens} out  $${usage.costUsd.toFixed(6)}`);
       finish(200, {
         text: result.result ?? '',
         model: model || '',
         inputTokens,
         outputTokens,
-        costUsd: result.total_cost_usd ?? 0,
+        costUsd: usage.costUsd,
         durationMs: ms,
+        usage,
       });
     });
     child.stdin.on('error', () => {});

@@ -254,7 +254,7 @@ public class LlmStateBuilder(ILlmGateway llm) : IStateBuilder
 
     public async Task<StateBuildResult> BuildStateAsync(Signature signature, string rawExtractionJson, IReadOnlyList<Signature>? dependencies = null, CancellationToken ct = default)
     {
-        var chat = await llm.ChatAsync(LlmTier.Analyzer, ct);
+        var chat = await llm.ChatAsync(LlmTier.Analyzer, "build state", ct);
 
         // Union of root + dependency informational elements. The analyze
         // script captured every informational selector in the union, so the

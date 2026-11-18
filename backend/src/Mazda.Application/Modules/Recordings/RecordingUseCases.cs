@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using FluentValidation;
 using MediatR;
+using Mazda.Application.Common.Usage;
 using Mazda.Application.Common.Abstractions;
 using Mazda.Application.Modules.Cdp;
 using Mazda.Application.Modules.Signatures;
@@ -418,6 +419,7 @@ public class AnalyzeSignatureRecordingsHandler(
         RecordingAnalysisResult result;
         try
         {
+            LlmUsageContext.SetSubject(LlmUsageKinds.RecordingAnalysis, sig.Id, $"{sig.Name}: analyze recordings");
             result = await analyzer.AnalyzeAsync(
                 sig,
                 picked.Select(r => new RecordedSessionInput(r.Id, r.LabelIsAuto ? "" : r.Label, r.Intent, r.EpisodesJson)).ToList(),

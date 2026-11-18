@@ -221,7 +221,7 @@ public class LlmInformationalAnalyzer(ILlmGateway llm) : IInformationalAnalyzer
 
     public async Task<InformationalAnalysisResult> AnalyzeInformationalAsync(Signature signature, string componentSource, CancellationToken ct = default)
     {
-        var chat = await llm.ChatAsync(LlmTier.Analyzer, ct);
+        var chat = await llm.ChatAsync(LlmTier.Analyzer, "analyze informational elements", ct);
 
         var existingSig = JsonSerializer.Serialize(new
         {

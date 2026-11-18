@@ -434,6 +434,10 @@ node tools/claude-bridge/bridge.mjs
 
 Then choose **Claude Code on this computer** in Settings and click **Test connection**. The defaults are `sonnet` for analysis and `opus` for code, plans and fixes. You can use any alias or full model id. Each call is isolated from your own Claude Code setup: no tools, MCP servers, hooks or CLAUDE.md are used, and no session is saved.
 
+### LLM usage
+
+Every LLM call is recorded with its exact token counts: uncached input, cache reads, cache writes, output and reasoning. Each call also gets its cost. Claude Code and OpenRouter report it; for other API-key models it is estimated from the price list in **Settings → Prices**. You can see it per run and per round trip on their pages, in the runs list, and on the **Usage** page, with totals per day, model and kind of work.
+
 ### Any OpenAI-compatible API
 
 Mazda speaks the **OpenAI Chat Completions API**. Set four env vars, or use the Settings page, to point at any compatible endpoint:

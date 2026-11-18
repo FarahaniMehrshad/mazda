@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using FluentValidation;
 using MediatR;
+using Mazda.Application.Common.Usage;
 using Mazda.Application.Common.Abstractions;
 using Mazda.Application.Modules.Cdp;
 using Mazda.Application.Modules.Generations;
@@ -292,6 +293,7 @@ public class InvokeMcpToolHandler(
         // Materialise the Generation row up front so the run is visible on
         // the Runs page even if the pipeline fails mid-way.
         var gen = Generation.Create(me.UserId.Value, sig.Id, prompt);
+        LlmUsageContext.SetSubject(LlmUsageKinds.Mcp, gen.Id, $"MCP {tool.Name}: " + (prompt.Length > 100 ? prompt[..100] + "…" : prompt));
         gen.AttributeToMcp(tool.Id);
         gen.MarkGenerating();
         await generations.AddAsync(gen, ct);

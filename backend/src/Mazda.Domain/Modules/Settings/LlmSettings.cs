@@ -43,6 +43,12 @@ public class LlmSettings : Entity
     /// <summary>Seconds one LLM call may take; 0 for the .env default.</summary>
     public int TimeoutSeconds { get; private set; }
 
+    /// <summary>
+    /// The price list (JSON) used to estimate what API-key calls cost; empty
+    /// for the built-in defaults.
+    /// </summary>
+    public string PricesJson { get; private set; } = string.Empty;
+
     private LlmSettings() { } // EF
 
     public static LlmSettings CreateDefault() => new();
@@ -74,6 +80,13 @@ public class LlmSettings : Entity
         ClaudeAnalyzerModel = Clean(claudeAnalyzerModel, MaxModel);
         ClaudeGeneratorModel = Clean(claudeGeneratorModel, MaxModel);
         TimeoutSeconds = timeoutSeconds;
+        Touch();
+    }
+
+    /// <summary>Replaces the price list; empty goes back to the built-in defaults.</summary>
+    public void SetPrices(string? pricesJson)
+    {
+        PricesJson = pricesJson?.Trim() ?? string.Empty;
         Touch();
     }
 
