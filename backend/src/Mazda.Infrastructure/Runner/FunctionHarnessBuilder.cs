@@ -47,6 +47,13 @@ internal static class FunctionHarnessBuilder
 
     /// <summary>How long one state function may take during a gather before it is recorded as timed out.</summary>
     public const int StateFunctionBudgetMs = 30_000;
+
+    /// <summary>
+    /// How long one plan step (one action call) may take in the execute harness.
+    /// The budget starts over at every step, so a long plan of quick steps never
+    /// times out; only a step that is itself stuck does.
+    /// </summary>
+    public const int ExecuteStepBudgetMs = 60_000;
     /// <summary>Sentinel that the state gather harness prints just after the JSON payload.</summary>
     public const string StateEndSentinel = "__MZ_STATE_END__";
     /// <summary>Prefix for every per-step JSON event emitted by the execute harness.</summary>
@@ -184,6 +191,12 @@ internal static class FunctionHarnessBuilder
         // on a failure we emit `step-failed` and `run-aborted` and return.
         // The interpreter reconstructs "skipped" entries for steps after the
         // failure using the plan and the events it observed.
+        // Time limit per step, not per run: each step gets the full budget,
+        // starting when it starts. The test timeout only backs this up (a
+        // wedged settle, forensics or browser close), sized so a plan whose
+        // every step uses its whole budget still fits.
+        sb.AppendLine($"  const __mz_stepBudgetMs = {ExecuteStepBudgetMs};");
+        sb.AppendLine("  test.setTimeout(__mz_plan.steps.length * (__mz_stepBudgetMs + 30_000) + 60_000);");
         sb.AppendLine("  let __mz_prevId: string | null = null;");
         sb.AppendLine("  for (const __mz_step of __mz_plan.steps) {");
         // Let the previous step's effects land (requests answered, the UI
@@ -201,11 +214,18 @@ internal static class FunctionHarnessBuilder
         sb.AppendLine("      await browser.close();");
         sb.AppendLine("      return;");
         sb.AppendLine("    }");
+        sb.AppendLine("    let __mz_timer: ReturnType<typeof setTimeout> | undefined;");
         sb.AppendLine("    try {");
-        sb.AppendLine("      await __mz_handler(page, __mz_step.args ?? {});");
+        sb.AppendLine("      await Promise.race([");
+        sb.AppendLine("        __mz_handler(page, __mz_step.args ?? {}),");
+        sb.AppendLine("        new Promise((_, reject) => { __mz_timer = setTimeout(() => reject(new Error(");
+        sb.AppendLine("          `Step timed out after ${__mz_stepBudgetMs / 1000} s: ${__mz_step.call} was still running (each step has its own ${__mz_stepBudgetMs / 1000} s).`)), __mz_stepBudgetMs); }),");
+        sb.AppendLine("      ]);");
+        sb.AppendLine("      clearTimeout(__mz_timer);");
         sb.AppendLine("      __mz_emit({ type: 'step-ok', id: __mz_step.id, call: __mz_step.call, durationMs: Date.now() - __mz_t0 });");
         sb.AppendLine("      __mz_prevId = __mz_step.id;");
         sb.AppendLine("    } catch (__mz_err: any) {");
+        sb.AppendLine("      clearTimeout(__mz_timer);");
         // Cheap, time-boxed page probes so the failure says where the page was.
         sb.AppendLine("      let __mz_url: string | null = null, __mz_title: string | null = null;");
         sb.AppendLine("      try { __mz_url = page.url(); } catch {}");
