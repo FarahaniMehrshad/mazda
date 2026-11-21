@@ -42,6 +42,28 @@ function toForm(d: LlmSettingsDto): Form {
   };
 }
 
+/**
+ * Only the selected provider's fields are saved; the hidden card's fields go
+ * back to their saved values, so a stray edit there can't block the save.
+ */
+function onlyActive(f: Form, saved: Form): Form {
+  return f.provider === "claude-code"
+    ? {
+        ...f,
+        openAiBaseUrl: saved.openAiBaseUrl,
+        openAiApiKey: "",
+        clearOpenAiApiKey: false,
+        openAiAnalyzerModel: saved.openAiAnalyzerModel,
+        openAiGeneratorModel: saved.openAiGeneratorModel,
+      }
+    : {
+        ...f,
+        claudeBridgeUrl: saved.claudeBridgeUrl,
+        claudeAnalyzerModel: saved.claudeAnalyzerModel,
+        claudeGeneratorModel: saved.claudeGeneratorModel,
+      };
+}
+
 function toBody(f: Form): UpdateLlmSettings {
   const t = Number(f.timeoutSeconds);
   return {
@@ -82,7 +104,7 @@ export function SettingsPage() {
     if (!form) return false;
     setErr(null);
     try {
-      const d = await save.mutateAsync(toBody(form));
+      const d = await save.mutateAsync(toBody(saved ? onlyActive(form, saved) : form));
       const f = toForm(d);
       setForm(f);
       setSaved(f);
