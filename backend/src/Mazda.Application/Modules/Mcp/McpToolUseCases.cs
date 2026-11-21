@@ -310,6 +310,12 @@ public class InvokeMcpToolHandler(
             // 2 — Ask the planner.
             var planResult = await planner.GeneratePlanAsync(sig, deps, state, prompt, ct);
             gen.RecordPlan(GenerationMapper.SerializePlan(planResult.Plan));
+            if (planResult.Plan.NothingToDo is { } nothing)
+            {
+                gen.MarkFailed(nothing);
+                await uow.SaveChangesAsync(ct);
+                return Result.Success(new McpInvocationResult(gen.Id, true, "Failed", null, nothing, nothing));
+            }
             gen.MarkReady(planResult.TokensUsed);
             await uow.SaveChangesAsync(ct);
 

@@ -74,10 +74,10 @@ public class LlmPlanGenerator(ILlmGateway llm) : IPlanGenerator
              failure the interpreter STOPS — do not compose "cleanup" steps
              assuming earlier steps succeeded unless you'd want them to
              fire on partial state.
-          6. Keep it short. A well-composed plan is typically 1–5 steps.
-             If you find yourself writing 10+ steps for a single prompt,
-             the catalogue is probably missing a higher-level function —
-             emit what you can and stop.
+          6. Plan the WHOLE request. Use the fewest steps that do all of
+             it, but never leave part of the request out to keep the plan
+             short: a request with many parts needs one step per part, even
+             if that is 20 or 30 steps.
           7. Use the state snapshot to translate user references into args.
              The user says "mark the groceries task done" → find the task
              named "groceries" in `state.GetTasks`, read its `index`, emit
@@ -88,6 +88,12 @@ public class LlmPlanGenerator(ILlmGateway llm) : IPlanGenerator
              cannot be inferred from the prompt, do NOT invent one. Emit
              an empty `steps` array with a reasoning line explaining what
              information you'd have needed.
+          9. Things your own plan creates are not in the snapshot yet; that
+             is expected, never a reason to stop. Work out their position
+             from the snapshot: if a function's description says where a
+             new item goes, follow it; otherwise a new item goes after the
+             existing ones (with none, the first one you add is index 0,
+             the next index 1, and so on).
 
         ── STATE SNAPSHOT SHAPE ──
         The state JSON is a flat object keyed by state-function name (or
@@ -138,6 +144,17 @@ public class LlmPlanGenerator(ILlmGateway llm) : IPlanGenerator
         matters — remove from HIGHEST index downward so earlier removals
         don't shift the indices of later ones.
 
+        Prompt: "add 'pay rent' and 'buy stamps', then mark 'buy stamps' done"
+        Good plan (the new tasks follow the three existing ones):
+          {
+            "reasoning": "Three tasks exist (0-2), so the new ones become index 3 and 4. Mark index 4 done.",
+            "steps": [
+              { "id": "s1", "call": "AddTask",  "args": { "name": "pay rent", "priority": "med" } },
+              { "id": "s2", "call": "AddTask",  "args": { "name": "buy stamps", "priority": "med" } },
+              { "id": "s3", "call": "DoneTask", "args": { "index": 4 } }
+            ]
+          }
+
         Prompt: "mark the task about groceries done"
         Good plan (no such task):
           {
@@ -151,8 +168,8 @@ public class LlmPlanGenerator(ILlmGateway llm) : IPlanGenerator
             wrong type, enum out of range).
           ✗ Emitting a plan when the required grounding isn't in the
             snapshot — return an empty plan with a reasoning line instead.
-          ✗ Long plans (>10 steps) — that's a signal the catalogue is missing
-            a compound action; emit what you can and stop.
+          ✗ Doing only part of the request, or returning an empty plan
+            because the items your plan creates aren't in the snapshot yet.
           ✗ Anything that looks like control flow: "if", "while", "for", or
             a "call": "if" with args. There's no such action.
 

@@ -227,7 +227,8 @@ public class PlanRunHandler(
             using (trace.Span("plan (LLM)"))
                 planResult = await planner.GeneratePlanAsync(sig, deps, state, cmd.Prompt, ct);
             gen.RecordPlan(GenerationMapper.SerializePlan(planResult.Plan));
-            gen.MarkReady(planResult.TokensUsed);
+            if (planResult.Plan.NothingToDo is { } nothing) gen.MarkFailed(nothing);
+            else gen.MarkReady(planResult.TokensUsed);
             using (trace.Span("save", TraceCategory.Db))
                 await uow.SaveChangesAsync(ct);
 

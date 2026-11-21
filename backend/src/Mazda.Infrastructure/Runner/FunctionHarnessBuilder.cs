@@ -197,6 +197,45 @@ internal static class FunctionHarnessBuilder
         // every step uses its whole budget still fits.
         sb.AppendLine($"  const __mz_stepBudgetMs = {ExecuteStepBudgetMs};");
         sb.AppendLine("  test.setTimeout(__mz_plan.steps.length * (__mz_stepBudgetMs + 30_000) + 60_000);");
+        // One retry for a lost click or drag: the step timed out waiting for
+        // the app's response and the page sent no request that could change
+        // anything (only GET/HEAD/OPTIONS, or nothing) during that attempt, so
+        // nothing happened on the server and running it again is safe. A busy
+        // page (mid re-render) sometimes ignores an input; that should not
+        // fail the run. Both attempts share the step's budget.
+        //
+        // A server error fails the step. Function bodies wait for the app's
+        // response but not its status, so a 504 on the request that saves the
+        // change would otherwise count as success and the run would fail a
+        // step later, somewhere that has nothing to do with the cause. Any
+        // write a step sent (tagged with the step that sent it, so a late
+        // answer to an earlier step can't fail this one) that comes back 5xx
+        // fails the step, naming the request.
+        sb.AppendLine("  let __mz_writes = 0;");
+        sb.AppendLine("  const __mz_writeStep = new WeakMap<object, string | null>();");
+        sb.AppendLine("  const __mz_serverErrors: { step: string | null; text: string }[] = [];");
+        sb.AppendLine("  page.on('request', (r: any) => { try { if (['xhr', 'fetch'].includes(r.resourceType()) && !['GET', 'HEAD', 'OPTIONS'].includes(r.method())) { __mz_writes++; __mz_writeStep.set(r, __mz_curStep); } } catch {} });");
+        sb.AppendLine("  page.on('response', (resp: any) => { try { const req = resp.request(); if (__mz_writeStep.has(req) && resp.status() >= 500)");
+        sb.AppendLine("    __mz_serverErrors.push({ step: __mz_writeStep.get(req) ?? null, text: `${req.method()} ${new URL(req.url()).pathname} → ${resp.status()} ${resp.statusText()}`.trim() }); } catch {} });");
+        sb.AppendLine("  const __mzServerFailed = (stepId: string) => {");
+        sb.AppendLine("    const errs = [...new Set(__mz_serverErrors.filter((x) => x.step === stepId).map((x) => x.text))];");
+        sb.AppendLine("    if (errs.length) throw new Error(`The app's server failed: ${errs.join('; ')}. The change was not saved.`);");
+        sb.AppendLine("  };");
+        sb.AppendLine("  const __mzRunStep = async (handler: any, step: any) => {");
+        sb.AppendLine("    const before = __mz_writes;");
+        sb.AppendLine("    let out: any;");
+        sb.AppendLine("    try { out = await handler(page, step.args ?? {}); }");
+        sb.AppendLine("    catch (e: any) {");
+        sb.AppendLine("      __mzServerFailed(step.id);");
+        sb.AppendLine("      const msg = __mzPlain(e?.message ?? e);");
+        sb.AppendLine("      if (__mz_writes !== before || !/waitFor(Response|Request)/.test(msg) || !/Timeout/i.test(msg)) throw e;");
+        sb.AppendLine("      __mz_emit({ type: 'step-retried', id: step.id, call: step.call, reason: 'no request reached the app; running the step once more' });");
+        sb.AppendLine("      await __mzSettle(page);");
+        sb.AppendLine("      out = await handler(page, step.args ?? {});");
+        sb.AppendLine("    }");
+        sb.AppendLine("    __mzServerFailed(step.id);");
+        sb.AppendLine("    return out;");
+        sb.AppendLine("  };");
         sb.AppendLine("  let __mz_prevId: string | null = null;");
         sb.AppendLine("  for (const __mz_step of __mz_plan.steps) {");
         // Let the previous step's effects land (requests answered, the UI
@@ -217,7 +256,7 @@ internal static class FunctionHarnessBuilder
         sb.AppendLine("    let __mz_timer: ReturnType<typeof setTimeout> | undefined;");
         sb.AppendLine("    try {");
         sb.AppendLine("      await Promise.race([");
-        sb.AppendLine("        __mz_handler(page, __mz_step.args ?? {}),");
+        sb.AppendLine("        __mzRunStep(__mz_handler, __mz_step),");
         sb.AppendLine("        new Promise((_, reject) => { __mz_timer = setTimeout(() => reject(new Error(");
         sb.AppendLine("          `Step timed out after ${__mz_stepBudgetMs / 1000} s: ${__mz_step.call} was still running (each step has its own ${__mz_stepBudgetMs / 1000} s).`)), __mz_stepBudgetMs); }),");
         sb.AppendLine("      ]);");

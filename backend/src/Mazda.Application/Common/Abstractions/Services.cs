@@ -231,7 +231,16 @@ public record GatheredState(
 /// args, no variables / refs / control flow (per the v1 design). Order matters
 /// — steps execute in list order, fail-fast on the first failure.
 /// </summary>
-public record Plan(string? Reasoning, IReadOnlyList<PlanStep> Steps);
+public record Plan(string? Reasoning, IReadOnlyList<PlanStep> Steps)
+{
+    /// <summary>
+    /// Why nothing will happen, when the plan has no steps; otherwise null.
+    /// An empty plan never counts as a run that passed: nothing was done.
+    /// </summary>
+    public string? NothingToDo => Steps.Count > 0 ? null
+        : "The plan has no steps, so nothing was done." +
+          (string.IsNullOrWhiteSpace(Reasoning) ? "" : $" The planner said: {Reasoning.Trim()}");
+}
 
 /// <summary>
 /// One step in a <see cref="Plan"/>. <see cref="ArgsJson"/> is the raw JSON
